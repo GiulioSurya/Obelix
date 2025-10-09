@@ -1,0 +1,170 @@
+
+================================================================================
+SLIDE 1
+================================================================================
+
+Testing with Pythons unittesting and unittest framework
+
+================================================================================
+SLIDE 2
+================================================================================
+
+Cos'è il testing del codice?
+Il testing del codice è un processo essenziale che verifica il corretto funzionamento del software, assicurandosi che produca i risultati attesi. 
+
+Tipi di test principali:
+
+Unit Test: verificano il corretto funzionamento di singole funzioni o metodi.
+Integration Test: controllano che più componenti funzionino correttamente insieme.
+End-to-End Test: simulano l’interazione dell’utente con l’intero sistema
+Perché è Importante?
+Identificare bug prima che il codice venga rilasciato in produzione.
+
+Facilitare il refactoring senza introdurre regressioni.
+
+Migliorare la qualità del codice.
+
+================================================================================
+SLIDE 3
+================================================================================
+
+Caratteristiche degli unit tests
+Delle tipologie di testing, la prima che andrebbe implementata dai developer nel proprio progetto è quella dello unit testing.
+
+
+Caratteristiche degli unit tests
+Isola ciascuna componente del codice e ne testa la correttezza individualmente
+
+Di ogni componente isolata, possono essere valutati:
+Correttezza e completezza funzionale  «fa tutto ciò che deve fare?»
+Corretta gestione degli errori  «restituisce errori attesi?»
+Correttezza degli output  «restituisce output attesi?»
+In questo caso, vorrei per esempio testare i seguenti comportamenti:
+a non numerico  raise di un ValueError
+a pari a 0  raise di un ZeroDivisionError
+a valido (es: a = 7)  effettiva stampa a video di «Yes, I did it»
+a valido (es: a = 2)  valore di ritorno pari a 0.5
+
+================================================================================
+SLIDE 4
+================================================================================
+
+Caratteristiche degli unit tests
+La parola chiave degli unittest è «isolamento»: la caratteristica distintiva di questa tipologia di test è infatti quella di essere applicati su singole funzionalità isolate piuttosto che su intere pipeline.
+
+
+Quali sono i vantaggi di questo approccio?
+Bug Tracking: testare funzionalità isolate facilità il tracciamento di bug ed errori
+Readability:  testare funzionalità isolate aumenta in numero i test ma ne diminuisce la complessità
+Documentation: gli unit tests validano i comportamenti attesi delle singole funzionalità, diventando una sorta di documentazione
+Testare in modo esaustivo ed isolato le due funzioni fa sì che – alla luce di un bug introdotto commentando una validazione – si possa:
+Identificare il bug verificando il raise non avvenuto di ValueError in caso di parametri non numerici nella funzione somma
+Documentare che la prima funziona ritornerà sempre un valore numerico (cosa non più vera eliminando la validazione!)
+
+================================================================================
+SLIDE 5
+================================================================================
+
+Guidelines nella scrittura degli Unit Tests
+Scrivere gli unit test è il primo passo per allinearsi alle best practice, ma bisogna poi imparare a scrivere dei buoni unit tests.
+UNIT TESTS
+
+================================================================================
+SLIDE 6
+================================================================================
+
+Guidelines nell’utilizzo degli Unit Tests
+Una volta scritti dei buoni unittest, il passo finale è metterne a terra un utilizzo efficace ed efficiente.
+UNIT TESTS
+Abstract classes and interfaces in Python
+
+================================================================================
+SLIDE 7
+================================================================================
+
+Introduzione al modulo unittest
+Ispirato a JUnit di Java, unittest è il framework nativo di Python per scrivere test in modo semplice e strutturato.
+
+Caratteristiche principali:
+Struttura basata su classi per definire test organizzati
+Meccanismo di setup e teardown per gestire le risorse
+Metodi di asserzione per verificare condizioni specifiche
+Supporta l'esecuzione automatizzata dei test.
+Concetti chiave
+
+Test fixture: inizializza e pulisce l’ambiente di test (es. database temporanei, file, server).
+
+Test case: unità base di test che verifica un comportamento specifico
+
+Test suite: raccolta di test case e altre suite, per eseguire più test insieme.
+
+Test runner: componente che esegue i test e mostra i risultati
+
+================================================================================
+SLIDE 8
+================================================================================
+
+Le principali asserzioni di unittest
+Concetti chiave:
+
+Ogni test è un metodo della classe, il cui nome inizia con test_.
+
+I test usano asserzioni per verificare il risultato atteso.
+
+Il metodo unittest.main() esegue tutti i test della classe.
+Un test con unittest è una classe che eredita da unittest.TestCase e contiene metodi di test
+
+================================================================================
+SLIDE 9
+================================================================================
+
+Scrivere test con unittest
+Per l'elenco completo dei metodi di asserzione disponibili in unittest, consulta la documentazione ufficiale:🔗 unittest — Asserzioni in Python
+Il framework unittest offre diversi metodi di asserzione per confrontare valori attesi e ottenuti:
+
+================================================================================
+SLIDE 10
+================================================================================
+
+Setup e Teardown nei test
+Nei test con unittest, i metodi setUp() e tearDown() vengono eseguiti rispettivamente prima e dopo ogni test, permettendo di inizializzare dati e rilasciare risorse in modo controllato.
+
+L’ordine di esecuzione per ogni test nella classe sarà:
+<ClasseDiTest>.setUp() 
+<ClasseDiTest>.<metodo_di_test> 
+<ClasseDiTest>.tearDown()
+
+È possibile eseguire l'override dei metodi setUp() e tearDown() ereditati da unittest.TestCase, personalizzandone il comportamento all'interno della classe di test.
+
+================================================================================
+SLIDE 11
+================================================================================
+
+Organizzare i test con TestSuite
+Per mantenere il codice modulare e facilmente manutenibile, è importante organizzare i test in modo strutturato all'interno del progetto.
+Best practices per l'organizzazione dei test
+
+Separare i test dal codice di produzione: mantiene il codice pulito e facilita la manutenzione.
+Nominare i file con il prefisso test_ : permette a unittest discover di individuarli facilmente.
+Usare una directory tests/: consente di raccogliere tutti i test in un unico posto.
+Includere un __init__.py nella cartella dei test: rende la directory un modulo Python, semplificando gli import.
+
+================================================================================
+SLIDE 12
+================================================================================
+
+Strutturare e organizzare i test in un progetto
+Nei test con unittest, una Test Suite permette di raggruppare ed eseguire più test case insieme, rendendo più semplice l'organizzazione e l'esecuzione di test complessi.
+Vantaggi dell'uso di TestSuite
+
+Consente di eseguire test specifici senza dover lanciare l'intera suite di test.
+Permette di combinare più test case in un'unica esecuzione.
+Facilita il controllo sull'ordine di esecuzione dei test.
+Nota
+unittest.TextTestRunner() è il runner di test predefinito di unittest. Esegue i test e mostra i risultati in formato testuale nella console.
+
+================================================================================
+SLIDE 13
+================================================================================
+
+Esecuzione dei test
