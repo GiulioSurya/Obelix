@@ -1,9 +1,0 @@
-{"model": "claude-sonnet-4-20250514",
-  "permissions": {
-    "allow": [
-      "WebSearch"
-    ],
-    "deny": [],
-    "ask": []
-  }
-}

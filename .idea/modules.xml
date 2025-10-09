@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<project version="4">
-  <component name="ProjectModuleManager">
-    <modules>
-      <module fileurl="file://$PROJECT_DIR$/../ChatBot/.idea/ChatBot.iml" filepath="$PROJECT_DIR$/../ChatBot/.idea/ChatBot.iml" />
-      <module fileurl="file://$PROJECT_DIR$/.idea/Obelix.iml" filepath="$PROJECT_DIR$/.idea/Obelix.iml" />
-    </modules>
-  </component>
-</project>
