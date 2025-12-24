@@ -9,7 +9,7 @@ from src.messages.assistant_message import AssistantMessage
 from src.messages.tool_message import ToolMessage, ToolCall, ToolResult, ToolStatus
 from src.base_agent.middleware import AgentEvent, Middleware, MiddlewareContext
 from src.messages.standard_message import StandardMessage
-from src.messages.assistant_message import AssistantResponse  # Nuovo import
+from src.messages.assistant_message import AssistantResponse
 from src.messages.usage import AgentUsage
 from src.tools.tool_base import ToolBase
 from src.llm_providers.llm_abstraction import AbstractLLMProvider
