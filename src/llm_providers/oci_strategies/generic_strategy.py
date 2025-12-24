@@ -1,6 +1,13 @@
 # src/llm_providers/oci_strategies/generic_strategy.py
 from typing import List, Any, Optional, Dict
-from oci.generative_ai_inference.models import GenericChatRequest, BaseChatRequest, Message
+from oci.generative_ai_inference.models import (
+    GenericChatRequest,
+    BaseChatRequest,
+    Message,
+    ToolChoiceAuto,
+    ToolChoiceRequired,
+    ToolChoiceNone
+)
 
 from src.llm_providers.oci_strategies.base_strategy import OCIRequestStrategy
 from src.messages.standard_message import StandardMessage
@@ -10,6 +17,10 @@ from src.messages.assistant_message import AssistantMessage
 from src.messages.tool_message import ToolMessage
 from src.tools.tool_base import ToolBase
 from src.mapping.provider_mapping import OCI_GENERATIVE_AI_GENERIC
+from src.logging_config import get_logger
+
+# Logger per GenericRequestStrategy
+logger = get_logger(__name__)
 
 
 class GenericRequestStrategy(OCIRequestStrategy):
@@ -22,11 +33,21 @@ class GenericRequestStrategy(OCIRequestStrategy):
         """
         Convert StandardMessage objects to Generic format (UserMessage, SystemMessage, etc.)
         """
+        logger.debug(f"Converting {len(messages)} messages to OCI GENERIC format")
+
         mapping = self.get_mapping()
         message_converters = mapping["message_input"]
 
         converted_messages = []
-        for message in messages:
+        for i, message in enumerate(messages):
+            msg_type = type(message).__name__
+
+            # TRACE: preview del contenuto messaggio
+            content_preview = ""
+            if hasattr(message, 'content') and message.content:
+                content_preview = str(message.content)[:100]
+            logger.trace(f"msg[{i}] {msg_type}: {content_preview}")
+
             if isinstance(message, HumanMessage):
                 converted_messages.append(message_converters["human_message"](message))
             elif isinstance(message, SystemMessage):
@@ -36,16 +57,26 @@ class GenericRequestStrategy(OCIRequestStrategy):
             elif isinstance(message, ToolMessage):
                 converted_messages.extend(message_converters["tool_message"](message))
 
+        logger.debug(f"Converted {len(converted_messages)} messages to OCI GENERIC format")
         return converted_messages
 
     def convert_tools(self, tools: List[ToolBase]) -> List[Any]:
         """
         Convert ToolBase objects to FunctionDefinition format
         """
+        if not tools:
+            logger.debug("No tools to convert for OCI GENERIC format")
+            return []
+
+        logger.debug(f"Converting {len(tools)} tools to OCI GENERIC format")
+
         mapping = self.get_mapping()
         tool_mapper = mapping["tool_input"]["tool_schema"]
 
-        return [tool_mapper(tool.create_schema()) for tool in tools]
+        converted_tools = [tool_mapper(tool.create_schema()) for tool in tools]
+        logger.debug(f"Converted {len(converted_tools)} tools to OCI GENERIC format")
+
+        return converted_tools
 
     def build_request(
         self,
@@ -77,6 +108,7 @@ class GenericRequestStrategy(OCIRequestStrategy):
             - is_parallel_tool_calls: bool
             - seed: int
             - metadata: dict
+            - tool_choice: str or ToolChoice object (AUTO, REQUIRED, NONE)
         """
         request_params = {
             "api_format": BaseChatRequest.API_FORMAT_GENERIC,
@@ -96,7 +128,7 @@ class GenericRequestStrategy(OCIRequestStrategy):
         if presence_penalty is not None:
             request_params["presence_penalty"] = presence_penalty
         if stop_sequences is not None:
-            request_params["stop_sequences"] = stop_sequences
+            request_params["stop"] = stop_sequences
         if is_stream:
             request_params["is_stream"] = is_stream
 
@@ -115,6 +147,27 @@ class GenericRequestStrategy(OCIRequestStrategy):
         for param in generic_specific_params:
             if param in kwargs and kwargs[param] is not None:
                 request_params[param] = kwargs[param]
+
+        # Handle tool_choice conversion from string to OCI ToolChoice object
+        if "tool_choice" in kwargs and kwargs["tool_choice"] is not None:
+            tool_choice_value = kwargs["tool_choice"]
+            if isinstance(tool_choice_value, str):
+                # Convert string to appropriate ToolChoice object
+                tool_choice_map = {
+                    "AUTO": ToolChoiceAuto(),
+                    "REQUIRED": ToolChoiceRequired(),
+                    "NONE": ToolChoiceNone()
+                }
+                if tool_choice_value.upper() in tool_choice_map:
+                    request_params["tool_choice"] = tool_choice_map[tool_choice_value.upper()]
+                else:
+                    raise ValueError(
+                        f"Invalid tool_choice value: '{tool_choice_value}'. "
+                        f"Expected one of: AUTO, REQUIRED, NONE"
+                    )
+            else:
+                # Already a ToolChoice object, use as-is
+                request_params["tool_choice"] = tool_choice_value
 
         return GenericChatRequest(**request_params)
 

@@ -1,9 +1,8 @@
 # src/mcp/mcp_tool.py
 import time
-from typing import Dict, Any, Type, cast
+from typing import Any
 
 from src.tools.tool_base import ToolBase
-from src.tools.tool_schema import ToolSchema
 from src.messages.tool_message import ToolCall, ToolResult, ToolStatus, MCPToolSchema
 from src.tools.mcp.run_time_manager import MCPRuntimeManager
 
@@ -22,6 +21,11 @@ class MCPTool(ToolBase):
 
     La validazione e conversione tipi ora avviene in MCPClientManager tramite
     MCPValidator, sfruttando Pydantic per conversione automatica.
+
+    Note:
+        MCPTool NON usa il decoratore @tool perché lo schema è dinamico
+        (proviene dal server MCP). Implementa direttamente tool_name,
+        tool_description e create_schema().
     """
 
     def __init__(self, tool_name: str, manager: MCPRuntimeManager):
@@ -32,32 +36,26 @@ class MCPTool(ToolBase):
             tool_name: Nome del tool MCP da wrappare
             manager: Runtime manager per comunicazione sincrona
         """
-        self.tool_name = tool_name
         self.manager = manager
-        self._create_dynamic_schema()
+        self._init_tool_metadata(tool_name)
 
-    def _create_dynamic_schema(self):
+    def _init_tool_metadata(self, tool_name: str) -> None:
         """
-        Crea schema_class minimale per coerenza architetturale con ToolBase.
+        Inizializza tool_name e tool_description dal server MCP.
 
-        Mantiene compatibilità LSP (Liskov Substitution Principle) senza
-        duplicare validazione che ora avviene nel manager.
+        Args:
+            tool_name: Nome del tool da cercare
+
+        Raises:
+            ValueError: Se il tool non esiste nel server MCP
         """
-        tool = self.manager.find_tool(self.tool_name)
+        tool = self.manager.find_tool(tool_name)
         if not tool:
-            raise ValueError(f"Tool {self.tool_name} not found")
+            raise ValueError(f"Tool {tool_name} not found")
 
-        # Attributi minimali per LSP compatibility
-        class_attrs = {
-            'tool_name': tool.name,
-            'tool_description': tool.description or f"MCP tool: {tool.name}"
-        }
-
-        # Crea classe minimale che estende ToolSchema
-        class_name = f"Dynamic{self.tool_name.title()}Schema"
-        dynamic_schema = cast(Type[ToolSchema], type(class_name, (ToolSchema,), class_attrs))
-
-        self.schema_class = dynamic_schema
+        # Popola attributi direttamente (compatibile con nuova API)
+        self.tool_name = tool.name
+        self.tool_description = tool.description or f"MCP tool: {tool.name}"
 
     def create_schema(self) -> MCPToolSchema:
         """

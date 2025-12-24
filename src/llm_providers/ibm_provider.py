@@ -3,144 +3,164 @@ from typing import List, Dict, Any, Optional
 
 from src.llm_providers.llm_abstraction import AbstractLLMProvider
 from src.messages.assistant_message import AssistantMessage
-from src.messages.human_message import HumanMessage
-from src.messages.system_message import SystemMessage
-from src.messages.tool_message import ToolMessage
 from src.messages.standard_message import StandardMessage
 from src.tools.tool_base import ToolBase
-from src.mapping.provider_mapping import ProviderRegistry
 from src.providers import Providers
-from ibm_watsonx_ai import Credentials
-from ibm_watsonx_ai.foundation_models import ModelInference
-from ibm_watsonx_ai.foundation_models.schema import TextChatParameters
-import os
+from src.connections.llm_connection import IBMConnection
+from src.logging_config import get_logger
+
+try:
+    from ibm_watsonx_ai.foundation_models import ModelInference
+    from ibm_watsonx_ai.foundation_models.schema import TextChatParameters
+except ImportError:
+    raise ImportError(
+        "ibm-watsonx-ai is not installed. Install with: pip install ibm-watsonx-ai"
+    )
+
+# Logger per IBM Watson X provider
+logger = get_logger(__name__)
+
 #mistralai/mistral-large
 #meta-llama/llama-3-3-70b-instruct
-
+#['ibm/granite-13b-instruct-v2', 'ibm/granite-3-2b-instruct', 'ibm/granite-3-3-8b-instruct', 'ibm/granite-3-8b-instruct', 'ibm/granite-4-h-small', 'meta-llama/llama-2-13b-chat', 'meta-llama/llama-3-2-11b-vision-instruct', 'meta-llama/llama-3-2-90b-vision-instruct', 'meta-llama/llama-3-3-70b-instruct', 'meta-llama/llama-4-maverick-17b-128e-instruct-fp8', 'mistralai/mistral-medium-2505', 'mistralai/mistral-small-3-1-24b-instruct-2503', 'sdaia/allam-1-13b-instruct']
 class IBMWatsonXLLm(AbstractLLMProvider):
     """Provider per IBM Watson X con parametri configurabili"""
 
+    @property
+    def provider_type(self) -> Providers:
+        return Providers.IBM_WATSON
+
     def __init__(self,
-                 model_id: str = "mistralai/mistral-large",
-                 max_tokens: int = 1000,
-                 temperature: float = 0.1,
+                 connection: Optional[IBMConnection] = None,
+                 model_id: str = "meta-llama/llama-3-3-70b-instruct",
+                 max_tokens: int = 3000,
+                 temperature: float = 0.3,
                  top_p: Optional[float] = None,
-                 top_k: Optional[int] = None,
-                 repetition_penalty: Optional[float] = None,
-                 random_seed: Optional[int] = None,
-                 stop_sequences: Optional[List[str]] = None,
-                 decoding_method: str = "greedy",
-                 length_penalty: Optional[Dict[str, float]] = None):
+                 seed: Optional[int] = None,
+                 stop: Optional[List[str]] = None,
+                 frequency_penalty: Optional[float] = None,
+                 presence_penalty: Optional[float] = None,
+                 logprobs: Optional[bool] = None,
+                 top_logprobs: Optional[int] = None,
+                 n: Optional[int] = None,
+                 logit_bias: Optional[Dict[int, float]] = None):
         """
-        Inizializza il provider IBM Watson X
+        Inizializza il provider IBM Watson X con dependency injection della connection
 
         Args:
-            model_id: ID del modello (default: "mistralai/mistral-large")
-            max_tokens: Numero massimo di token (default: 1500)
-            temperature: Temperatura per sampling (default: 0.1)
+            connection: IBMConnection singleton (default: None, riusa da GlobalConfig se provider match)
+            model_id: ID del modello (default: "meta-llama/llama-3-3-70b-instruct")
+            max_tokens: Numero massimo di token (default: 3000)
+            temperature: Temperatura per sampling (default: 0.3)
             top_p: Top-p sampling (default: None)
-            top_k: Top-k sampling (default: None)
-            repetition_penalty: Penalità per ripetizioni (default: None)
-            random_seed: Seed per riproducibilità (default: None)
-            stop_sequences: Sequenze di stop (default: None)
-            decoding_method: Metodo decoding "greedy" o "sample" (default: "greedy")
-            length_penalty: Penalità per lunghezza (default: None)
-        """
+            seed: Seed per riproducibilità (default: None)
+            stop: Sequenze di stop (default: None)
+            frequency_penalty: Penalità frequenza token (default: None)
+            presence_penalty: Penalità presenza token (default: None)
+            logprobs: Restituisci log probabilities (default: None)
+            top_logprobs: Numero top log probabilities (default: None)
+            n: Numero di completamenti da generare (default: None)
+            logit_bias: Bias per specifici token (default: None)
 
-        # Costruisce i parametri per TextChatParameters
+        Raises:
+            ValueError: Se connection=None e GlobalConfig non ha IBM_WATSON settato
+        """
+        # Dependency injection della connection con fallback a GlobalConfig
+        if connection is None:
+            connection = self._get_connection_from_global_config(
+                Providers.IBM_WATSON,
+                "IBMWatsonXLLm"
+            )
+
+        self.connection = connection
+
+        # Salva model_id
+        self.model_id = model_id
+
+        # Costruisci parametri
         params_dict = {
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
 
-        # Aggiungi parametri opzionali solo se specificati
         if top_p is not None:
             params_dict["top_p"] = top_p
-        if top_k is not None:
-            params_dict["top_k"] = top_k
-        if repetition_penalty is not None:
-            params_dict["repetition_penalty"] = repetition_penalty
-        if random_seed is not None:
-            params_dict["random_seed"] = random_seed
-        if stop_sequences is not None:
-            params_dict["stop_sequences"] = stop_sequences
-        if decoding_method != "greedy":
-            params_dict["decoding_method"] = decoding_method
-        if length_penalty is not None:
-            params_dict["length_penalty"] = length_penalty
+        if seed is not None:
+            params_dict["seed"] = seed
+        if stop is not None:
+            params_dict["stop"] = stop
+        if frequency_penalty is not None:
+            params_dict["frequency_penalty"] = frequency_penalty
+        if presence_penalty is not None:
+            params_dict["presence_penalty"] = presence_penalty
+        if logprobs is not None:
+            params_dict["logprobs"] = logprobs
+        if top_logprobs is not None:
+            params_dict["top_logprobs"] = top_logprobs
+        if n is not None:
+            params_dict["n"] = n
+        if logit_bias is not None:
+            params_dict["logit_bias"] = logit_bias
 
+        # Crea ModelInference usando credenziali dalla connection
+        credentials = self.connection.get_client()
         self.client = ModelInference(
             model_id=model_id,
             params=TextChatParameters(**params_dict),
-            credentials=Credentials(
-                url="https://eu-de.ml.cloud.ibm.com",
-                api_key=os.getenv("IBM_WATSONX_API_KEY"),
-            ),
-            project_id=os.getenv("IBM_WATSONX_PROJECT_ID")
+            credentials=credentials,
+            project_id=self.connection.get_project_id()
         )
 
     def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
         """
         Invoca il modello IBM Watson con messaggi e tool standardizzati
         """
-        # 1. Converte messaggi e tool nel formato IBM
+        logger.debug(f"IBM Watson invoke: model={self.model_id}, messages={len(messages)}, tools={len(tools)}")
+
+        # 1. Converte messaggi e tool nel formato IBM (usa metodi base class)
         ibm_messages = self._convert_messages_to_provider_format(messages)
         ibm_tools = self._convert_tools_to_provider_format(tools)
 
         # 2. Chiama IBM Watson
-        response = self.client.chat(
-            messages=ibm_messages,
-            tools=ibm_tools,
-            tool_choice_option="auto"
-        )
-        assistant_message = self._convert_response_to_assistant_message(response)
+        # NOTA: tool_choice_option va passato SOLO se ci sono tools definiti
+        try:
+            if ibm_tools:
+                response = self.client.chat(
+                    messages=ibm_messages,
+                    tools=ibm_tools,
+                    tool_choice_option="auto"
+                )
+            else:
+                response = self.client.chat(
+                    messages=ibm_messages
+                )
+
+            logger.info(f"IBM Watson chat completed: {self.model_id}")
+
+            # Log usage se disponibile
+            usage = response.get("usage", {})
+            if usage:
+                logger.debug(f"IBM Watson tokens: input={usage.get('prompt_tokens')}, output={usage.get('completion_tokens')}, total={usage.get('total_tokens')}")
+
+        except Exception as e:
+            logger.error(f"IBM Watson request failed: {e}")
+            raise
+
         # 3. Converte response in AssistantMessage standardizzato
+        assistant_message = self._convert_response_to_assistant_message(response)
         return assistant_message
-
-    def _convert_messages_to_provider_format(self, messages: List[StandardMessage]) -> List[Dict[str, str]]:
-        """
-        Converte StandardMessage nel formato IBM Watson usando il mapping centralizzato
-        """
-        mapping = ProviderRegistry.get_mapping(Providers.IBM_WATSON)
-        message_converters = mapping["message_input"]
-
-        converted_messages = []
-
-        for message in messages:
-            if isinstance(message, HumanMessage):
-                converted_messages.append(message_converters["human_message"](message))
-            elif isinstance(message, SystemMessage):
-                converted_messages.append(message_converters["system_message"](message))
-            elif isinstance(message, AssistantMessage):
-                converted_messages.append(message_converters["assistant_message"](message))
-            elif isinstance(message, ToolMessage):
-                # ToolMessage può generare multiple messages
-                converted_messages.extend(message_converters["tool_message"](message))
-
-        return converted_messages
-
-    def _convert_tools_to_provider_format(self, tools: List[ToolBase]) -> List[Dict[str, Any]]:
-        """
-        Converte ToolBase nel formato IBM Watson
-        """
-        if not tools:
-            return []
-
-        mapping = ProviderRegistry.get_mapping(Providers.IBM_WATSON)
-        tool_mapper = mapping["tool_input"]["tool_schema"]
-
-        return [tool_mapper(tool.create_schema()) for tool in tools]
 
     def _convert_response_to_assistant_message(self, response) -> AssistantMessage:
         """
         Converte risposta IBM Watson in AssistantMessage standardizzato
         """
-        # Estrae tool_calls usando il mapping esistente
-        mapping = ProviderRegistry.get_mapping(Providers.IBM_WATSON)
-        tool_calls = mapping["tool_output"]["tool_calls"](response)
+        # Estrae tool_calls usando il metodo centralizzato
+        tool_calls = self._extract_tool_calls(response)
 
         # Estrae il contenuto testuale
         content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+        logger.debug(f"IBM Watson response: content_length={len(content)}, tool_calls={len(tool_calls)}")
 
         return AssistantMessage(
             content=content,

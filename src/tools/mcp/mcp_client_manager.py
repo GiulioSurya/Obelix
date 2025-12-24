@@ -337,14 +337,14 @@ class MCPClientManager:
         try:
             resources_result = await self._session.list_resources()
             self._available_resources = resources_result.resources
-        except:
+        except Exception:
             self._available_resources = []
 
         # Load prompts (if supported)
         try:
             prompts_result = await self._session.list_prompts()
             self._available_prompts = prompts_result.prompts
-        except:
+        except Exception:
             self._available_prompts = []
 
     # Properties and basic methods

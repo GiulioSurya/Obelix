@@ -4,6 +4,7 @@ from typing import List, Optional,Dict,Any
 
 from src.messages.base_message import BaseMessage, MessageRole
 from src.messages.tool_message import ToolCall
+from src.messages.usage import Usage
 
 
 
@@ -11,6 +12,7 @@ class AssistantMessage(BaseMessage):
     """Messaggio di risposta dell'assistant LLM"""
     role: MessageRole = Field(default=MessageRole.ASSISTANT)
     tool_calls: List[ToolCall] = Field(default_factory=list, description="Tool calls richiesti dall'assistant")
+    usage: Optional[Usage] = Field(default=None, description="Informazioni sull'utilizzo dei token per questa chiamata LLM")
 
 
 class AssistantResponse(BaseModel):

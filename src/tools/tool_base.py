@@ -1,34 +1,67 @@
-from abc import ABC, abstractmethod
-from typing import Type
+# src/tools/tool_base.py
+"""
+Classe base per i tool - versione semplificata.
 
-from src.tools.tool_schema import ToolSchema
-from src.messages.tool_message import ToolCall, ToolResult
-from src.messages.tool_message import MCPToolSchema
+Usare insieme al decoratore @tool:
+    from src.tools.tool_decorator import tool
+    from src.tools.tool_base import ToolBase
+
+    @tool(name="my_tool", description="Descrizione")
+    class MyTool(ToolBase):
+        param: str = Field(...)
+
+        async def execute(self) -> dict:
+            return {"result": self.param}
+"""
+from abc import ABC, abstractmethod
+from typing import Any
 
 
 class ToolBase(ABC):
-    """Classe base per l'esecuzione dei tool - Async Interface"""
+    """
+    Classe base astratta per tutti i tool.
 
-    schema_class: Type[ToolSchema] = None
+    Attributi popolati dal decoratore @tool:
+    - tool_name: str - Nome univoco del tool
+    - tool_description: str - Descrizione per LLM
+    - _input_schema: Type[BaseModel] - Schema Pydantic per validazione
+
+    Il decoratore @tool si occupa di:
+    - Validare name/description obbligatori
+    - Creare lo schema Pydantic dai Field
+    - Wrappare execute() per gestione automatica errori
+    - Popolare gli attributi prima di execute()
+    """
+
+    # Attributi popolati dal decoratore @tool
+    tool_name: str = None
+    tool_description: str = None
 
     @classmethod
-    def create_schema(cls) -> MCPToolSchema:
-        """Crea schema MCP standard per il tool"""
-        if not cls.schema_class:
-            raise ValueError("Devi definire schema_class")
+    def create_schema(cls):
+        """
+        Genera schema MCP per il tool.
 
-        name = cls.schema_class.get_tool_name()
-        description = cls.schema_class.get_tool_description()
-        input_schema = cls.schema_class.model_json_schema()
-
-        return MCPToolSchema(
-            name=name,
-            description=description,
-            inputSchema=input_schema,
-            outputSchema={"type": "object", "additionalProperties": True}
+        Questo metodo viene sovrascritto dal decoratore @tool.
+        Se chiamato senza decoratore, solleva errore.
+        """
+        raise NotImplementedError(
+            f"Classe {cls.__name__} deve usare il decoratore @tool. "
+            f"Esempio: @tool(name='...', description='...')"
         )
 
     @abstractmethod
-    async def execute(self, tool_call: ToolCall) -> ToolResult:
-        """Esegue il tool con parametri standardizzati - ASYNC"""
+    async def execute(self) -> Any:
+        """
+        Esegue la logica del tool.
+
+        Gli attributi Field sono già popolati dal decoratore prima della chiamata.
+        Non è necessario gestire ToolCall o ToolResult - il decoratore wrappa tutto.
+
+        Returns:
+            Any: Risultato dell'esecuzione (wrappato automaticamente in ToolResult)
+
+        Raises:
+            Exception: Qualsiasi eccezione viene catturata e convertita in ToolResult con status=ERROR
+        """
         pass
