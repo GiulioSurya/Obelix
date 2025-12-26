@@ -7,9 +7,21 @@ must inherit from these base classes.
 """
 
 import threading
+import time
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple, Union, TypeVar, Generic
+from typing import Any, Dict, List, Optional, Tuple, Union, TypeVar, Generic
+
+from src.connections.db_connection.query_result import (
+    QueryResult,
+    ColumnMetadata,
+)
+from src.connections.db_connection.security import (
+    SecurityMode,
+    SQLValidator,
+    create_validator,
+)
 
 
 # Type variables for generic connection and config types
@@ -59,23 +71,44 @@ class AbstractDatabaseConnection(ABC, Generic[TConfig, TConnection]):
         TConfig: Configuration class type (e.g., OracleConfig, PostgresConfig)
         TConnection: Connection object type (e.g., oracledb.Connection, psycopg.Connection)
 
-    Pattern:
+    Features:
         - Singleton: One instance per connection type
         - Thread-safe: Uses threading.Lock for initialization
-        - Configurable: Accepts config object or loads from K8sConfig
+        - Configurable security: SecurityMode controls allowed operations
+        - Uniform results: execute_query returns QueryResult
     """
 
     _instance: Optional['AbstractDatabaseConnection'] = None
     _lock: threading.Lock = threading.Lock()
     _config: Optional[TConfig] = None
 
+    def __init__(
+        self,
+        security_mode: SecurityMode = SecurityMode.READ_ONLY,
+        custom_validator: Optional[SQLValidator] = None
+    ):
+        """
+        Initialize connection with security settings.
+
+        Args:
+            security_mode: Security mode (default: READ_ONLY for AI safety)
+            custom_validator: Custom validator (required if mode is CUSTOM)
+        """
+        self._security_mode = security_mode
+        self._validator = create_validator(security_mode, custom_validator)
+
     # ============================================================================
-    # CORE METHODS - Must be implemented by all subclasses
+    # ABSTRACT METHODS - Must be implemented by all subclasses
     # ============================================================================
 
     @classmethod
     @abstractmethod
-    def get_instance(cls, config: Optional[TConfig] = None) -> 'AbstractDatabaseConnection':
+    def get_instance(
+        cls,
+        config: Optional[TConfig] = None,
+        security_mode: SecurityMode = SecurityMode.READ_ONLY,
+        **kwargs
+    ) -> 'AbstractDatabaseConnection':
         """
         Get singleton instance of the database connection.
 
@@ -84,6 +117,7 @@ class AbstractDatabaseConnection(ABC, Generic[TConfig, TConnection]):
 
         Args:
             config: Database configuration (optional). If None, loads from K8sConfig.
+            security_mode: Security mode for SQL validation.
 
         Returns:
             AbstractDatabaseConnection: Singleton instance
@@ -115,37 +149,26 @@ class AbstractDatabaseConnection(ABC, Generic[TConfig, TConnection]):
         """
         pass
 
-    # ============================================================================
-    # QUERY EXECUTION - Must be implemented by all subclasses
-    # ============================================================================
-
     @abstractmethod
-    def execute_query(
+    def _execute_raw(
         self,
         query: str,
-        params: Optional[Union[Dict[str, Any], Tuple[Any, ...]]] = None,
-        **kwargs
-    ) -> Any:
+        params: Optional[Union[Dict[str, Any], Tuple[Any, ...]]] = None
+    ) -> Tuple[List[Tuple[Any, ...]], List[ColumnMetadata]]:
         """
-        Execute SQL query and return results.
+        Execute query without validation (internal use).
 
-        Parameter style varies by database:
-        - Oracle: Dict with named parameters {:param_name}
-        - Postgres: Tuple with positional parameters %s
+        This is the database-specific execution logic. Validation is handled
+        by execute_query() which calls this method.
 
         Args:
             query: SQL query string
-            params: Query parameters (Dict for Oracle, Tuple for Postgres)
-            **kwargs: Additional database-specific parameters
+            params: Query parameters (Dict for Oracle :named, Tuple for Postgres %s)
 
         Returns:
-            Query results (format depends on implementation)
+            Tuple of (rows, column_metadata)
         """
         pass
-
-    # ============================================================================
-    # METADATA - Must be implemented by all subclasses
-    # ============================================================================
 
     @abstractmethod
     def get_database_version(self) -> Dict[str, Any]:
@@ -154,12 +177,114 @@ class AbstractDatabaseConnection(ABC, Generic[TConfig, TConnection]):
 
         Returns:
             Dict: Database-specific version information
-                - version/version_banner: Database version string
-                - database/database_name: Database name
-                - user/current_user: Connected user
-                - connection_status: Connection status
         """
         pass
+
+    @property
+    @abstractmethod
+    def param_style(self) -> str:
+        """
+        Parameter style for this database.
+
+        Returns:
+            'named' for Oracle (:param), 'positional' for PostgreSQL (%s)
+        """
+        pass
+
+    # ============================================================================
+    # CONCRETE METHODS - Query execution with validation
+    # ============================================================================
+
+    def execute_query(
+        self,
+        query: str,
+        params: Optional[Union[Dict[str, Any], Tuple[Any, ...]]] = None
+    ) -> QueryResult:
+        """
+        Execute SQL query with validation and return uniform QueryResult.
+
+        Security validation is applied based on the connection's SecurityMode.
+
+        Args:
+            query: SQL query string
+            params: Query parameters (Dict for Oracle :named, Tuple for Postgres %s)
+
+        Returns:
+            QueryResult with rows, columns, status
+        """
+        start_time = time.perf_counter()
+
+        try:
+            # Validate query based on security mode
+            self._validator.validate(query)
+
+            # Execute raw query
+            rows, columns = self._execute_raw(query, params)
+
+            execution_time = (time.perf_counter() - start_time) * 1000
+            return QueryResult.success(rows, columns, execution_time_ms=execution_time)
+
+        except Exception as e:
+            execution_time = (time.perf_counter() - start_time) * 1000
+            return QueryResult.error(str(e), execution_time_ms=execution_time)
+
+    def execute_query_dict(
+        self,
+        query: str,
+        params: Optional[Union[Dict[str, Any], Tuple[Any, ...]]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Execute query and return results as list of dictionaries.
+
+        Convenience method that calls execute_query() and converts to dicts.
+
+        Args:
+            query: SQL query string
+            params: Query parameters
+
+        Returns:
+            List[Dict[str, Any]]: Query results as dictionaries
+
+        Raises:
+            Exception: If query fails
+        """
+        result = self.execute_query(query, params)
+        if not result.is_success:
+            raise Exception(result.error)
+        return result.as_dicts()
+
+    # ============================================================================
+    # TRANSACTION MANAGEMENT
+    # ============================================================================
+
+    @contextmanager
+    def transaction(self):
+        """
+        Context manager for transactions.
+
+        Usage:
+            with db.transaction() as conn:
+                db.execute_query("INSERT ...")
+                db.execute_query("UPDATE ...")
+            # Auto-commit on success, rollback on exception
+        """
+        conn = self.get_connection()
+        try:
+            yield conn
+            self._commit(conn)
+        except Exception:
+            self._rollback(conn)
+            raise
+
+    def _commit(self, conn: TConnection) -> None:
+        """Commit transaction (override if needed)"""
+        if hasattr(conn, 'commit'):
+            conn.commit()
+
+    def _rollback(self, conn: TConnection) -> None:
+        """Rollback transaction (override if needed)"""
+        if hasattr(conn, 'rollback'):
+            conn.rollback()
 
     # ============================================================================
     # OPTIONAL METHODS - Override only if supported by database
@@ -256,29 +381,4 @@ class AbstractDatabaseConnection(ABC, Generic[TConfig, TConnection]):
         """
         raise NotImplementedError(
             f"{self.__class__.__name__} does not support insert_data()"
-        )
-
-    def execute_query_dict(
-        self,
-        query: str,
-        params: Optional[Union[Dict[str, Any], Tuple[Any, ...]]] = None
-    ) -> Any:
-        """
-        Execute query and return results as list of dictionaries.
-
-        Default: Not implemented (raises NotImplementedError)
-        Override: PostgresConnection
-
-        Args:
-            query: SQL query string
-            params: Query parameters
-
-        Returns:
-            List[Dict[str, Any]]: Query results as dictionaries
-
-        Raises:
-            NotImplementedError: If not supported by database implementation
-        """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} does not support execute_query_dict()"
         )

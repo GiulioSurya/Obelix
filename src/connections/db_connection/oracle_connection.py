@@ -16,7 +16,6 @@ Environment Variables:
     ORACLE_PASSWORD: Password
     ORACLE_DSN: Complete connection string (alternative to host/port/service)
 """
-import re
 import threading
 from typing import Optional, Dict, Any, Tuple, List
 from dataclasses import dataclass
@@ -27,6 +26,8 @@ from src.connections.db_connection.abstract_db_connection import (
     AbstractDatabaseConnection,
     DatabaseConfig
 )
+from src.connections.db_connection.query_result import ColumnMetadata
+from src.connections.db_connection.security import SecurityMode, SQLValidator
 
 load_dotenv()
 
@@ -78,136 +79,6 @@ except ImportError:
     raise ImportError(
         "oracledb package not found. Install with: pip install oracledb"
     )
-
-
-
-class SQLSecurityException(Exception):
-    """Exception raised when a dangerous SQL query is detected"""
-    pass
-
-
-class SQLValidator:
-    """
-    SQL query validator that allows only SELECT and WITH (CTE) statements.
-    Blocks all potentially dangerous operations like INSERT, UPDATE, DELETE, DROP, etc.
-
-    Security features:
-    - Blocks DML operations (INSERT, UPDATE, DELETE, MERGE, TRUNCATE)
-    - Blocks DDL operations (CREATE, ALTER, DROP, RENAME)
-    - Blocks privilege operations (GRANT, REVOKE)
-    - Blocks execution commands (EXECUTE, EXEC, CALL)
-    - Blocks transaction control (COMMIT, ROLLBACK, SAVEPOINT)
-    - Blocks table locking (LOCK)
-    - Detects multi-statement attacks (multiple queries separated by semicolons)
-    - Case-insensitive detection
-    - Removes comments before validation
-    """
-
-    # Dangerous keywords that should never be allowed
-    DANGEROUS_KEYWORDS = [
-        'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'MERGE',  # DML operations
-        'DROP', 'CREATE', 'ALTER', 'RENAME',  # DDL operations
-        'GRANT', 'REVOKE',  # Privilege operations
-        'EXECUTE', 'EXEC', 'CALL',  # Execution commands
-        'COMMIT', 'ROLLBACK', 'SAVEPOINT',  # Transaction control
-        'LOCK',  # Table locking
-    ]
-
-    @staticmethod
-    def _remove_comments(query: str) -> str:
-        """
-        Remove SQL comments from query.
-        Handles both -- line comments and /* block comments */
-        """
-        # Remove -- line comments (but not inside strings)
-        query = re.sub(r'--[^\n]*', ' ', query)
-
-        # Remove /* block comments */ (but not inside strings)
-        query = re.sub(r'/\*.*?\*/', ' ', query, flags=re.DOTALL)
-
-        return query
-
-    @staticmethod
-    def _remove_strings(query: str) -> str:
-        """
-        Replace string literals with placeholders to avoid false positives.
-        Handles both single quotes '' and double quotes ""
-        """
-        # Replace single-quoted strings with placeholder
-        query = re.sub(r"'[^']*'", "'STRING'", query)
-
-        # Replace double-quoted strings with placeholder
-        query = re.sub(r'"[^"]*"', '"STRING"', query)
-
-        return query
-
-    @staticmethod
-    def _detect_multi_statements(query: str) -> bool:
-        """
-        Detect if query contains multiple statements separated by semicolons.
-        Returns True if multiple statements are detected (dangerous).
-        """
-        # Remove strings first to avoid false positives from semicolons in strings
-        query_without_strings = SQLValidator._remove_strings(query)
-
-        # Count semicolons (not in strings)
-        # Split by semicolon and filter out empty parts
-        parts = [part.strip() for part in query_without_strings.split(';') if part.strip()]
-
-        # If more than one non-empty statement, it's a multi-statement attack
-        return len(parts) > 1
-
-    @classmethod
-    def validate(cls, query: str) -> None:
-        """
-        Validate SQL query for security.
-
-        Args:
-            query: SQL query string to validate
-
-        Raises:
-            ValueError: If query is empty or whitespace only
-            SQLSecurityException: If query contains dangerous operations
-        """
-        # Check for empty query
-        if not query or not query.strip():
-            raise ValueError("SQL query cannot be empty")
-
-        # Remove comments for validation
-        query_no_comments = cls._remove_comments(query)
-
-        # Check for multi-statement attacks
-        if cls._detect_multi_statements(query_no_comments):
-            raise SQLSecurityException(
-                "Multiple SQL statements detected. Only single SELECT or WITH queries are allowed."
-            )
-
-        # Remove strings to avoid false positives from keywords in string literals
-        query_no_strings = cls._remove_strings(query_no_comments)
-
-        # Normalize whitespace and convert to uppercase for validation
-        query_normalized = ' '.join(query_no_strings.split()).upper()
-
-        # FIRST: Check for dangerous keywords in the normalized query
-        # This must come before the SELECT/WITH check to provide specific error messages
-        for keyword in cls.DANGEROUS_KEYWORDS:
-            # Use word boundaries to avoid false positives like "INSERTED_AT"
-            pattern = r'\b' + keyword + r'\b'
-            if re.search(pattern, query_normalized):
-                raise SQLSecurityException(
-                    f"Dangerous SQL keyword detected: {keyword}. Only SELECT and WITH queries are allowed."
-                )
-
-        # SECOND: Check if query starts with SELECT or WITH (case-insensitive)
-        # Allow parentheses before SELECT
-        query_stripped = query_normalized.strip()
-        while query_stripped.startswith('('):
-            query_stripped = query_stripped[1:].strip()
-
-        if not (query_stripped.startswith('SELECT') or query_stripped.startswith('WITH')):
-            raise SQLSecurityException(
-                "Query must start with SELECT or WITH. Only read-only queries are allowed."
-            )
 
 
 class ConnectionMethod(Enum):
@@ -307,11 +178,9 @@ class OracleConnection(AbstractDatabaseConnection[OracleConfig, oracledb.Connect
         )
         conn = OracleConnection.get_instance(config)
 
-        # Get database connection
-        connection = conn.get_connection()
-        cursor = connection.cursor()
-        cursor.execute("SELECT * FROM dual")
-        result = cursor.fetchone()
+        # Execute query (returns QueryResult)
+        result = conn.execute_query("SELECT * FROM dual")
+        print(result.as_dicts())
     """
 
     _instance: Optional['OracleConnection'] = None
@@ -319,7 +188,7 @@ class OracleConnection(AbstractDatabaseConnection[OracleConfig, oracledb.Connect
     _connection: Optional[oracledb.Connection] = None
     _config: Optional[OracleConfig] = None
 
-    def __new__(cls):
+    def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
@@ -327,17 +196,24 @@ class OracleConnection(AbstractDatabaseConnection[OracleConfig, oracledb.Connect
         return cls._instance
 
     @classmethod
-    def get_instance(cls, config: Optional[OracleConfig] = None) -> 'OracleConnection':
+    def get_instance(
+        cls,
+        config: Optional[OracleConfig] = None,
+        security_mode: SecurityMode = SecurityMode.READ_ONLY,
+        custom_validator: Optional[SQLValidator] = None
+    ) -> 'OracleConnection':
         """
         Get singleton instance with optional configuration.
 
         Args:
             config: Oracle configuration. If None, will try to load from environment.
+            security_mode: Security mode (default: READ_ONLY for AI safety)
+            custom_validator: Custom SQL validator (if security_mode is CUSTOM)
 
         Returns:
             OracleConnection instance
         """
-        instance = cls()
+        instance = cls(security_mode=security_mode, custom_validator=custom_validator)
 
         # Set configuration if provided or if not already set
         if config is not None or cls._config is None:
@@ -349,11 +225,15 @@ class OracleConnection(AbstractDatabaseConnection[OracleConfig, oracledb.Connect
                 try:
                     cls._connection.close()
                 except Exception:
-                    # Ignora errori durante la chiusura della connessione
                     pass
                 cls._connection = None
 
         return instance
+
+    @property
+    def param_style(self) -> str:
+        """Oracle uses :named parameter style"""
+        return 'named'
 
     def _create_connection(self):
         """Create a new Oracle database connection"""
@@ -400,7 +280,6 @@ class OracleConnection(AbstractDatabaseConnection[OracleConfig, oracledb.Connect
             cursor.close()
             return True
         except Exception:
-            # Connessione non valida
             return False
 
     def close_connection(self):
@@ -410,34 +289,25 @@ class OracleConnection(AbstractDatabaseConnection[OracleConfig, oracledb.Connect
                 try:
                     self._connection.close()
                 except Exception:
-                    # Ignora errori durante la chiusura
                     pass
                 finally:
                     self._connection = None
 
-    def execute_query(self, query: str, params: Optional[Dict[str, Any]] = None) -> tuple:
+    def _execute_raw(
+        self,
+        query: str,
+        params: Optional[Dict[str, Any]] = None
+    ) -> Tuple[List[Tuple[Any, ...]], List[ColumnMetadata]]:
         """
-        Execute a SELECT query and return results with column metadata.
-
-        SECURITY: Query is validated BEFORE execution to block dangerous operations.
-        Only SELECT and WITH (CTE) queries are allowed.
+        Execute query without validation (internal use).
 
         Args:
             query: SQL query string
-            params: Query parameters
+            params: Query parameters (dict with :named style)
 
         Returns:
-            Tuple of (results, cursor_description) where:
-            - results: List of query results (tuples)
-            - cursor_description: List of column metadata tuples from cursor.description
-
-        Raises:
-            SQLSecurityException: If query contains dangerous operations
-            ValueError: If query is empty
+            Tuple of (rows, column_metadata)
         """
-        # SECURITY: Validate query BEFORE executing
-        SQLValidator.validate(query)
-
         connection = self.get_connection()
         cursor = connection.cursor()
 
@@ -448,9 +318,21 @@ class OracleConnection(AbstractDatabaseConnection[OracleConfig, oracledb.Connect
                 cursor.execute(query)
 
             results = cursor.fetchall()
-            description = cursor.description
 
-            return (results, description)
+            # Convert cursor.description to ColumnMetadata
+            columns = []
+            if cursor.description:
+                for desc in cursor.description:
+                    columns.append(ColumnMetadata(
+                        name=desc[0],
+                        type_code=desc[1],
+                        display_size=desc[2],
+                        precision=desc[4] if len(desc) > 4 else None,
+                        scale=desc[5] if len(desc) > 5 else None,
+                        nullable=desc[6] if len(desc) > 6 else None
+                    ))
+
+            return results, columns
         finally:
             cursor.close()
 
@@ -528,18 +410,20 @@ class OracleConnection(AbstractDatabaseConnection[OracleConfig, oracledb.Connect
         finally:
             cursor.close()
 
+
 # Convenience function for quick access
-def get_oracle_connection(config: Optional[OracleConfig] = None):
+def get_oracle_connection(
+    config: Optional[OracleConfig] = None,
+    security_mode: SecurityMode = SecurityMode.READ_ONLY
+) -> OracleConnection:
     """
     Convenience function to get Oracle connection singleton.
 
     Args:
         config: Optional Oracle configuration
+        security_mode: Security mode (default: READ_ONLY)
 
     Returns:
-        OracleConnectionSingleton instance
+        OracleConnection instance
     """
-    return OracleConnection.get_instance(config)
-
-
-
+    return OracleConnection.get_instance(config, security_mode=security_mode)

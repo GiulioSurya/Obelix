@@ -28,6 +28,8 @@ from src.connections.db_connection.abstract_db_connection import (
     AbstractDatabaseConnection,
     DatabaseConfig
 )
+from src.connections.db_connection.query_result import ColumnMetadata
+from src.connections.db_connection.security import SecurityMode, SQLValidator
 
 load_dotenv()
 
@@ -107,14 +109,9 @@ class PostgresConnection(AbstractDatabaseConnection[PostgresConfig, psycopg.Conn
         )
         conn = PostgresConnection.get_instance(config)
 
-        # Execute query with context manager
-        with conn.get_connection() as db_conn:
-            with db_conn.cursor() as cursor:
-                cursor.execute("SELECT * FROM users WHERE id = %s", (1,))
-                results = cursor.fetchall()
-
-        # Or use helper methods
-        results = conn.execute_query("SELECT * FROM users WHERE id = %s", (1,))
+        # Execute query (returns QueryResult)
+        result = conn.execute_query("SELECT * FROM users WHERE id = %s", (1,))
+        print(result.as_dicts())
 
         # Create table
         conn.create_table(
@@ -135,7 +132,7 @@ class PostgresConnection(AbstractDatabaseConnection[PostgresConfig, psycopg.Conn
     _pool: Optional[ConnectionPool] = None
     _config: Optional[PostgresConfig] = None
 
-    def __new__(cls):
+    def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
@@ -143,17 +140,24 @@ class PostgresConnection(AbstractDatabaseConnection[PostgresConfig, psycopg.Conn
         return cls._instance
 
     @classmethod
-    def get_instance(cls, config: Optional[PostgresConfig] = None) -> 'PostgresConnection':
+    def get_instance(
+        cls,
+        config: Optional[PostgresConfig] = None,
+        security_mode: SecurityMode = SecurityMode.READ_ONLY,
+        custom_validator: Optional[SQLValidator] = None
+    ) -> 'PostgresConnection':
         """
         Get singleton instance with optional configuration.
 
         Args:
             config: PostgreSQL configuration. If None, will try to load from environment.
+            security_mode: Security mode (default: READ_ONLY for AI safety)
+            custom_validator: Custom SQL validator (if security_mode is CUSTOM)
 
         Returns:
             PostgresConnection instance
         """
-        instance = cls()
+        instance = cls(security_mode=security_mode, custom_validator=custom_validator)
 
         # Set configuration if provided or if not already set
         if config is not None or cls._config is None:
@@ -166,6 +170,11 @@ class PostgresConnection(AbstractDatabaseConnection[PostgresConfig, psycopg.Conn
                 cls._pool = None
 
         return instance
+
+    @property
+    def param_style(self) -> str:
+        """PostgreSQL uses %s positional parameter style"""
+        return 'positional'
 
     def _create_pool(self) -> ConnectionPool:
         """Create a new connection pool"""
@@ -224,52 +233,97 @@ class PostgresConnection(AbstractDatabaseConnection[PostgresConfig, psycopg.Conn
         """Alias for close_pool() to conform to AbstractDatabaseConnection interface"""
         self.close_pool()
 
-    def execute_query(
+    def _execute_raw(
         self,
         query: str,
-        params: Optional[Tuple[Any, ...]] = None,
-        fetch_results: bool = True
-    ) -> List[Tuple[Any, ...]]:
+        params: Optional[Tuple[Any, ...]] = None
+    ) -> Tuple[List[Tuple[Any, ...]], List[ColumnMetadata]]:
         """
-        Execute a query and optionally return results.
+        Execute query without validation (internal use).
 
         Args:
-            query: SQL query string (use %s for parameters)
-            params: Query parameters as tuple
-            fetch_results: If True, fetch and return results (for SELECT queries)
+            query: SQL query string
+            params: Query parameters (tuple with %s style)
 
         Returns:
-            List of result tuples for SELECT queries, empty list otherwise
+            Tuple of (rows, column_metadata)
         """
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(query, params)
+                results = cursor.fetchall()
 
-                if fetch_results:
-                    return cursor.fetchall()
-                else:
-                    conn.commit()
-                    return []
+                # Convert cursor.description to ColumnMetadata
+                columns = []
+                if cursor.description:
+                    for desc in cursor.description:
+                        columns.append(ColumnMetadata(
+                            name=desc.name,
+                            type_code=desc.type_code,
+                        ))
 
-    def execute_query_dict(
+                return results, columns
+
+    def _execute_ddl(
         self,
         query: str,
         params: Optional[Tuple[Any, ...]] = None
-    ) -> List[Dict[str, Any]]:
+    ) -> int:
         """
-        Execute a query and return results as list of dictionaries.
+        Execute DDL/DML query (CREATE, INSERT, UPDATE, DELETE, etc.) with commit.
+
+        This bypasses security validation - use only for internal DDL operations.
 
         Args:
-            query: SQL query string (use %s for parameters)
-            params: Query parameters as tuple
+            query: SQL query string
+            params: Query parameters
 
         Returns:
-            List of result dictionaries
+            Number of rows affected
         """
         with self.get_connection() as conn:
-            with conn.cursor(row_factory=dict_row) as cursor:
+            with conn.cursor() as cursor:
                 cursor.execute(query, params)
-                return cursor.fetchall()
+                row_count = cursor.rowcount
+                conn.commit()
+                return row_count
+
+    def get_database_version(self) -> Dict[str, Any]:
+        """
+        Get PostgreSQL database version information.
+
+        Returns:
+            Dictionary with version details
+        """
+        version_info = {}
+
+        try:
+            # Get PostgreSQL version
+            result = self.execute_query("SELECT version()")
+            if result.is_success and result.rows:
+                version_info['version'] = result.rows[0][0]
+
+            # Get current database name
+            result = self.execute_query("SELECT current_database()")
+            if result.is_success and result.rows:
+                version_info['database'] = result.rows[0][0]
+
+            # Get current user
+            result = self.execute_query("SELECT current_user")
+            if result.is_success and result.rows:
+                version_info['user'] = result.rows[0][0]
+
+            version_info['connection_status'] = 'Connected successfully'
+
+        except Exception as e:
+            version_info['error'] = str(e)
+            version_info['connection_status'] = 'Connection failed'
+
+        return version_info
+
+    # ========================================================================
+    # DDL (Schema Management) Methods - These bypass security validation
+    # ========================================================================
 
     def create_table(
         self,
@@ -299,7 +353,7 @@ class PostgresConnection(AbstractDatabaseConnection[PostgresConfig, psycopg.Conn
         columns_def = ", ".join([f"{col} {dtype}" for col, dtype in columns.items()])
         query = f"CREATE TABLE {if_not_exists_clause}{table_name} ({columns_def})"
 
-        self.execute_query(query, fetch_results=False)
+        self._execute_ddl(query)
 
     def insert_data(
         self,
@@ -334,10 +388,14 @@ class PostgresConnection(AbstractDatabaseConnection[PostgresConfig, psycopg.Conn
             query += f" RETURNING {returning}"
 
         if returning:
-            results = self.execute_query(query, values, fetch_results=True)
-            return results[0][0] if results else None
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(query, values)
+                    result = cursor.fetchone()
+                    conn.commit()
+                    return result[0] if result else None
         else:
-            self.execute_query(query, values, fetch_results=False)
+            self._execute_ddl(query, values)
             return None
 
     def insert_many(
@@ -393,44 +451,7 @@ class PostgresConnection(AbstractDatabaseConnection[PostgresConfig, psycopg.Conn
             )
         """
         result = self.execute_query(query, (table_name,))
-        return result[0][0] if result else False
-
-    def get_database_version(self) -> Dict[str, Any]:
-        """
-        Get PostgreSQL database version information.
-
-        Returns:
-            Dictionary with version details
-        """
-        version_info = {}
-
-        try:
-            # Get PostgreSQL version
-            result = self.execute_query("SELECT version()")
-            if result:
-                version_info['version'] = result[0][0]
-
-            # Get current database name
-            result = self.execute_query("SELECT current_database()")
-            if result:
-                version_info['database'] = result[0][0]
-
-            # Get current user
-            result = self.execute_query("SELECT current_user")
-            if result:
-                version_info['user'] = result[0][0]
-
-            version_info['connection_status'] = 'Connected successfully'
-
-        except Exception as e:
-            version_info['error'] = str(e)
-            version_info['connection_status'] = 'Connection failed'
-
-        return version_info
-
-    # ========================================================================
-    # DDL (Schema Management) Methods
-    # ========================================================================
+        return result.scalar() or False
 
     def drop_table(
         self,
@@ -453,7 +474,7 @@ class PostgresConnection(AbstractDatabaseConnection[PostgresConfig, psycopg.Conn
         if_exists_clause = "IF EXISTS " if if_exists else ""
         cascade_clause = " CASCADE" if cascade else ""
         query = f"DROP TABLE {if_exists_clause}{table_name}{cascade_clause}"
-        self.execute_query(query, fetch_results=False)
+        self._execute_ddl(query)
 
     def add_column(
         self,
@@ -477,7 +498,7 @@ class PostgresConnection(AbstractDatabaseConnection[PostgresConfig, psycopg.Conn
         """
         if_not_exists_clause = "IF NOT EXISTS " if if_not_exists else ""
         query = f"ALTER TABLE {table_name} ADD COLUMN {if_not_exists_clause}{column_name} {column_type}"
-        self.execute_query(query, fetch_results=False)
+        self._execute_ddl(query)
 
     def drop_column(
         self,
@@ -502,7 +523,7 @@ class PostgresConnection(AbstractDatabaseConnection[PostgresConfig, psycopg.Conn
         if_exists_clause = "IF EXISTS " if if_exists else ""
         cascade_clause = " CASCADE" if cascade else ""
         query = f"ALTER TABLE {table_name} DROP COLUMN {if_exists_clause}{column_name}{cascade_clause}"
-        self.execute_query(query, fetch_results=False)
+        self._execute_ddl(query)
 
     def create_index(
         self,
@@ -542,7 +563,7 @@ class PostgresConnection(AbstractDatabaseConnection[PostgresConfig, psycopg.Conn
         unique_clause = "UNIQUE " if unique else ""
         using_clause = f" USING {method}" if method else ""
         query = f"CREATE {unique_clause}INDEX {index_name} ON {table_name}{using_clause} ({columns})"
-        self.execute_query(query, fetch_results=False)
+        self._execute_ddl(query)
 
     def drop_index(
         self,
@@ -565,7 +586,7 @@ class PostgresConnection(AbstractDatabaseConnection[PostgresConfig, psycopg.Conn
         if_exists_clause = "IF EXISTS " if if_exists else ""
         cascade_clause = " CASCADE" if cascade else ""
         query = f"DROP INDEX {if_exists_clause}{index_name}{cascade_clause}"
-        self.execute_query(query, fetch_results=False)
+        self._execute_ddl(query)
 
     def truncate_table(
         self,
@@ -588,7 +609,7 @@ class PostgresConnection(AbstractDatabaseConnection[PostgresConfig, psycopg.Conn
         restart_clause = " RESTART IDENTITY" if restart_identity else ""
         cascade_clause = " CASCADE" if cascade else ""
         query = f"TRUNCATE TABLE {table_name}{restart_clause}{cascade_clause}"
-        self.execute_query(query, fetch_results=False)
+        self._execute_ddl(query)
 
     def enable_extension(self, extension_name: str) -> None:
         """
@@ -602,7 +623,7 @@ class PostgresConnection(AbstractDatabaseConnection[PostgresConfig, psycopg.Conn
             enable_extension("uuid-ossp")  # Enable UUID generation
         """
         query = f"CREATE EXTENSION IF NOT EXISTS {extension_name}"
-        self.execute_query(query, fetch_results=False)
+        self._execute_ddl(query)
 
     def update_data(
         self,
@@ -637,13 +658,7 @@ class PostgresConnection(AbstractDatabaseConnection[PostgresConfig, psycopg.Conn
             values.extend(where_params)
 
         query = f"UPDATE {table_name} SET {set_clause} WHERE {where_clause}"
-
-        with self.get_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(query, tuple(values))
-                row_count = cursor.rowcount
-                conn.commit()
-                return row_count
+        return self._execute_ddl(query, tuple(values))
 
     def delete_data(
         self,
@@ -670,13 +685,7 @@ class PostgresConnection(AbstractDatabaseConnection[PostgresConfig, psycopg.Conn
             count = delete_data("logs", "created_at < %s", (cutoff_date,))
         """
         query = f"DELETE FROM {table_name} WHERE {where_clause}"
-
-        with self.get_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(query, where_params)
-                row_count = cursor.rowcount
-                conn.commit()
-                return row_count
+        return self._execute_ddl(query, where_params)
 
     def column_exists(self, table_name: str, column_name: str) -> bool:
         """
@@ -702,7 +711,7 @@ class PostgresConnection(AbstractDatabaseConnection[PostgresConfig, psycopg.Conn
             )
         """
         result = self.execute_query(query, (table_name, column_name))
-        return result[0][0] if result else False
+        return result.scalar() or False
 
     def index_exists(self, index_name: str) -> bool:
         """
@@ -726,77 +735,22 @@ class PostgresConnection(AbstractDatabaseConnection[PostgresConfig, psycopg.Conn
             )
         """
         result = self.execute_query(query, (index_name,))
-        return result[0][0] if result else False
+        return result.scalar() or False
 
 
 # Convenience function for quick access
-def get_postgres_connection(config: Optional[PostgresConfig] = None) -> PostgresConnection:
+def get_postgres_connection(
+    config: Optional[PostgresConfig] = None,
+    security_mode: SecurityMode = SecurityMode.READ_ONLY
+) -> PostgresConnection:
     """
     Convenience function to get PostgreSQL connection singleton.
 
     Args:
         config: Optional PostgreSQL configuration
+        security_mode: Security mode (default: READ_ONLY)
 
     Returns:
         PostgresConnection instance
     """
-    return PostgresConnection.get_instance(config)
-
-
-if __name__ == "__main__":
-    # Example usage - test connection and list tables
-    try:
-        # Test connection using environment variables
-        pg_conn = get_postgres_connection()
-
-        # Test connection and get database info
-        print("=== PostgreSQL Connection Test ===")
-        version_info = pg_conn.get_database_version()
-        for key, value in version_info.items():
-            print(f"{key.replace('_', ' ').title()}: {value}")
-
-        # List all tables in the database
-        print("\n=== Listing All Tables in Database ===")
-        query = """
-            SELECT
-                table_schema,
-                table_name,
-                table_type
-            FROM information_schema.tables
-            WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
-            ORDER BY table_schema, table_name
-        """
-        tables = pg_conn.execute_query_dict(query)
-
-        if tables:
-            print(f"\nFound {len(tables)} tables/views:")
-            for table in tables:
-                schema = table.get('table_schema', 'N/A')
-                name = table.get('table_name', 'N/A')
-                type_ = table.get('table_type', 'N/A')
-                print(f"  - {schema}.{name} ({type_})")
-        else:
-            print("No tables found in the database.")
-
-        # Count rows in each table (if any tables exist)
-        if tables:
-            print("\n=== Row Counts for Each Table ===")
-            for table in tables:
-                schema = table.get('table_schema')
-                name = table.get('table_name')
-                try:
-                    count_query = f'SELECT COUNT(*) FROM "{schema}"."{name}"'
-                    result = pg_conn.execute_query(count_query)
-                    count = result[0][0] if result else 0
-                    print(f"  - {schema}.{name}: {count} rows")
-                except Exception as e:
-                    print(f"  - {schema}.{name}: Error counting rows ({str(e)[:50]})")
-
-    except Exception as e:
-        print(f"Connection test failed: {e}")
-        print("\nMake sure to set environment variables:")
-        print("- POSTGRES_HOST")
-        print("- POSTGRES_PORT (optional, default: 5432)")
-        print("- POSTGRES_DB")
-        print("- POSTGRES_USER")
-        print("- POSTGRES_PASSWORD")
+    return PostgresConnection.get_instance(config, security_mode=security_mode)
