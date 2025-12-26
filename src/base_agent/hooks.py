@@ -1,5 +1,5 @@
 """
-Sistema Middleware per BaseAgent.
+Sistema Hook per BaseAgent.
 
 Fornisce un'API fluente per intercettare eventi del ciclo di vita dell'agent,
 iniettare messaggi nella conversation history e trasformare risultati.
@@ -62,9 +62,9 @@ class AgentEvent(str, Enum):
 
 
 @dataclass
-class MiddlewareContext:
+class HookContext:
     """
-    Contesto ricco passato ai middleware.
+    Contesto ricco passato ai hook.
 
     Contiene informazioni sullo stato corrente dell'agent
     e permette l'accesso alla conversation history.
@@ -83,9 +83,9 @@ class MiddlewareContext:
         return self.agent.conversation_history
 
 
-class Middleware:
+class Hook:
     """
-    Middleware con API fluente per intercettare eventi dell'agent.
+    Hook con API fluente per intercettare eventi dell'agent.
 
     Supporta:
     - Condizioni di attivazione (.when())
@@ -101,16 +101,16 @@ class Middleware:
 
     def __init__(self, event: AgentEvent):
         self.event = event
-        self._condition: Optional[Callable[[MiddlewareContext], bool]] = None
+        self._condition: Optional[Callable[[HookContext], bool]] = None
         self._actions: List[Callable] = []
-        logger.debug(f"Middleware creato per evento: {event.value}")
+        logger.debug(f"Hook creato per evento: {event.value}")
 
-    def when(self, condition: Callable[[MiddlewareContext], bool]) -> 'Middleware':
+    def when(self, condition: Callable[[HookContext], bool]) -> 'Hook':
         """
-        Imposta la condizione per attivare il middleware.
+        Imposta la condizione per attivare l'hook.
 
         Args:
-            condition: Funzione che riceve MiddlewareContext e ritorna bool.
+            condition: Funzione che riceve HookContext e ritorna bool.
                       Può essere sync o async.
 
         Returns:
@@ -118,29 +118,29 @@ class Middleware:
         """
         self._condition = condition
         condition_name = getattr(condition, '__name__', str(condition))
-        logger.debug(f"Middleware [{self.event.value}] - condizione impostata: {condition_name}")
+        logger.debug(f"Hook [{self.event.value}] - condizione impostata: {condition_name}")
         return self
 
     def inject(
         self,
-        message_factory: Callable[[MiddlewareContext], 'StandardMessage']
-    ) -> 'Middleware':
+        message_factory: Callable[[HookContext], 'StandardMessage']
+    ) -> 'Hook':
         """
         Inietta un messaggio alla fine della conversation history (append).
 
         Args:
-            message_factory: Funzione che riceve MiddlewareContext e ritorna
+            message_factory: Funzione che riceve HookContext e ritorna
                            il messaggio da iniettare
 
         Returns:
             self per method chaining
         """
         factory_name = getattr(message_factory, '__name__', str(message_factory))
-        logger.debug(f"Middleware [{self.event.value}] - registrata inject action: {factory_name}")
+        logger.debug(f"Hook [{self.event.value}] - registrata inject action: {factory_name}")
 
-        def action(ctx: MiddlewareContext, current: Any) -> Any:
+        def action(ctx: HookContext, current: Any) -> Any:
             message = message_factory(ctx)
-            logger.debug(f"Middleware [{ctx.event.value}] - inject eseguita, messaggio tipo: {type(message).__name__}")
+            logger.debug(f"Hook [{ctx.event.value}] - inject eseguita, messaggio tipo: {type(message).__name__}")
             ctx.agent.conversation_history.append(message)
             return current
 
@@ -149,9 +149,9 @@ class Middleware:
 
     def inject_at(
         self,
-        position: Union[int, Callable[[MiddlewareContext], int]],
-        message_factory: Callable[[MiddlewareContext], 'StandardMessage']
-    ) -> 'Middleware':
+        position: Union[int, Callable[[HookContext], int]],
+        message_factory: Callable[[HookContext], 'StandardMessage']
+    ) -> 'Hook':
         """
         Inietta un messaggio a una posizione specifica nella conversation history.
 
@@ -165,35 +165,35 @@ class Middleware:
         """
         factory_name = getattr(message_factory, '__name__', str(message_factory))
         pos_desc = position if isinstance(position, int) else getattr(position, '__name__', 'dynamic')
-        logger.debug(f"Middleware [{self.event.value}] - registrata inject_at action: {factory_name} @ pos={pos_desc}")
+        logger.debug(f"Hook [{self.event.value}] - registrata inject_at action: {factory_name} @ pos={pos_desc}")
 
-        def action(ctx: MiddlewareContext, current: Any) -> Any:
+        def action(ctx: HookContext, current: Any) -> Any:
             message = message_factory(ctx)
             pos = position(ctx) if callable(position) else position
-            logger.debug(f"Middleware [{ctx.event.value}] - inject_at eseguita @ pos={pos}, messaggio tipo: {type(message).__name__}")
+            logger.debug(f"Hook [{ctx.event.value}] - inject_at eseguita @ pos={pos}, messaggio tipo: {type(message).__name__}")
             ctx.agent.conversation_history.insert(pos, message)
             return current
 
         self._actions.append(action)
         return self
 
-    def do(self, action: Callable[[MiddlewareContext], Any]) -> 'Middleware':
+    def do(self, action: Callable[[HookContext], Any]) -> 'Hook':
         """
         Esegue un'azione generica (logging, side effects, etc.).
 
         L'azione non modifica il valore corrente del chain.
 
         Args:
-            action: Funzione che riceve MiddlewareContext. Può essere sync o async.
+            action: Funzione che riceve HookContext. Può essere sync o async.
 
         Returns:
             self per method chaining
         """
         action_name = getattr(action, '__name__', str(action))
-        logger.debug(f"Middleware [{self.event.value}] - registrata do action: {action_name}")
+        logger.debug(f"Hook [{self.event.value}] - registrata do action: {action_name}")
 
-        def wrapped(ctx: MiddlewareContext, current: Any) -> Any:
-            logger.debug(f"Middleware [{ctx.event.value}] - do action eseguita: {action_name}")
+        def wrapped(ctx: HookContext, current: Any) -> Any:
+            logger.debug(f"Hook [{ctx.event.value}] - do action eseguita: {action_name}")
             action(ctx)
             return current
 
@@ -202,8 +202,8 @@ class Middleware:
 
     def transform(
         self,
-        transformer: Callable[[Any, MiddlewareContext], Any]
-    ) -> 'Middleware':
+        transformer: Callable[[Any, HookContext], Any]
+    ) -> 'Hook':
         """
         Trasforma il valore corrente (ToolResult, AssistantMessage, ToolCall).
 
@@ -217,53 +217,53 @@ class Middleware:
             self per method chaining
         """
         transformer_name = getattr(transformer, '__name__', str(transformer))
-        logger.debug(f"Middleware [{self.event.value}] - registrata transform action: {transformer_name}")
+        logger.debug(f"Hook [{self.event.value}] - registrata transform action: {transformer_name}")
 
-        def action(ctx: MiddlewareContext, current: Any) -> Any:
-            logger.debug(f"Middleware [{ctx.event.value}] - transform eseguita: {transformer_name}, input tipo: {type(current).__name__}")
+        def action(ctx: HookContext, current: Any) -> Any:
+            logger.debug(f"Hook [{ctx.event.value}] - transform eseguita: {transformer_name}, input tipo: {type(current).__name__}")
             result = transformer(current, ctx)
-            logger.debug(f"Middleware [{ctx.event.value}] - transform completata, output tipo: {type(result).__name__}")
+            logger.debug(f"Hook [{ctx.event.value}] - transform completata, output tipo: {type(result).__name__}")
             return result
 
         self._actions.append(action)
         return self
 
-    async def execute(self, ctx: MiddlewareContext, current_value: Any = None) -> Any:
+    async def execute(self, ctx: HookContext, current_value: Any = None) -> Any:
         """
-        Esegue il middleware se la condizione è soddisfatta.
+        Esegue l'hook se la condizione è soddisfatta.
 
         Args:
-            ctx: Contesto del middleware
+            ctx: Contesto del hook
             current_value: Valore corrente da passare alle trasformazioni
 
         Returns:
             Valore trasformato o current_value se nessuna trasformazione
         """
-        logger.debug(f"Middleware [{self.event.value}] - execute invocato, iterazione={ctx.iteration}")
+        logger.debug(f"Hook [{self.event.value}] - execute invocato, iterazione={ctx.iteration}")
 
         # Check condizione
         if self._condition is not None:
             condition_name = getattr(self._condition, '__name__', 'anonymous')
-            logger.debug(f"Middleware [{self.event.value}] - valutazione condizione: {condition_name}")
+            logger.debug(f"Hook [{self.event.value}] - valutazione condizione: {condition_name}")
             cond_result = self._condition(ctx)
             if asyncio.iscoroutine(cond_result):
                 cond_result = await cond_result
             if not cond_result:
-                logger.debug(f"Middleware [{self.event.value}] - condizione NON soddisfatta, skip")
+                logger.debug(f"Hook [{self.event.value}] - condizione NON soddisfatta, skip")
                 return current_value
-            logger.debug(f"Middleware [{self.event.value}] - condizione SODDISFATTA, eseguo {len(self._actions)} azioni")
+            logger.debug(f"Hook [{self.event.value}] - condizione SODDISFATTA, eseguo {len(self._actions)} azioni")
         else:
-            logger.debug(f"Middleware [{self.event.value}] - nessuna condizione, eseguo {len(self._actions)} azioni")
+            logger.debug(f"Hook [{self.event.value}] - nessuna condizione, eseguo {len(self._actions)} azioni")
 
         # Esegue tutte le azioni in sequenza
         result = current_value
         for i, action in enumerate(self._actions):
-            logger.debug(f"Middleware [{self.event.value}] - esecuzione azione {i+1}/{len(self._actions)}")
+            logger.debug(f"Hook [{self.event.value}] - esecuzione azione {i+1}/{len(self._actions)}")
             action_result = action(ctx, result)
             if asyncio.iscoroutine(action_result):
                 action_result = await action_result
             if action_result is not None:
                 result = action_result
 
-        logger.debug(f"Middleware [{self.event.value}] - execute completato")
+        logger.debug(f"Hook [{self.event.value}] - execute completato")
         return result

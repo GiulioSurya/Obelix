@@ -11,7 +11,7 @@ setup(
     name="obelix",
     version="0.1.0",
     author="Obelix Contributors",
-    description="A multi-provider LLM agent framework with tool support and middleware system",
+    description="A multi-provider LLM agent framework with tool support and hooks system",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/obelix/obelix",

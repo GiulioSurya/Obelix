@@ -7,7 +7,7 @@ from src.base_agent.base_agent import BaseAgent
 from src.tools.sql_query_executor_tool import SqlQueryExecutorTool
 from src.connections.db_connection import get_oracle_connection
 from src.messages import HumanMessage, ToolResult, ToolStatus, AssistantMessage
-from src.base_agent.middleware import AgentEvent, MiddlewareContext
+from src.base_agent.hooks import AgentEvent, HookContext
 from src.k8s_config import YamlConfig
 import os
 
@@ -54,12 +54,12 @@ class SQLGeneratorAgent(BaseAgent):
         #injection del plan per la query sql datto dal precedente agent
         self.on(AgentEvent.ON_QUERY_START).inject_at(2, lambda ctx: AssistantMessage(content=self.plan))
 
-        # Middleware 1: Arricchisce errori Oracle con documentazione ufficiale
+        # Hook 1: Arricchisce errori Oracle con documentazione ufficiale
         self.on(AgentEvent.AFTER_TOOL_EXECUTION) \
             .when(self._is_oracle_error_with_docs) \
             .transform(self._enrich_with_oracle_docs)
 
-        # Middleware 2: Inietta schema database su errori "invalid identifier"
+        # Hook 2: Inietta schema database su errori "invalid identifier"
         self.on(AgentEvent.ON_TOOL_ERROR) \
             .when(self._is_invalid_identifier_error) \
             .inject(self._create_schema_injection_message)
@@ -136,12 +136,12 @@ class SQLGeneratorAgent(BaseAgent):
             print(f"Failed to fetch Oracle error docs: {e}")
             return None
 
-    def _is_oracle_error_with_docs(self, ctx: MiddlewareContext) -> bool:
+    def _is_oracle_error_with_docs(self, ctx: HookContext) -> bool:
         """
-        Condizione middleware: verifica se l'errore Oracle contiene URL documentazione.
+        Condizione hook: verifica se l'errore Oracle contiene URL documentazione.
 
         Args:
-            ctx: Contesto middleware con tool_result
+            ctx: Contesto hook con tool_result
 
         Returns:
             True se l'errore contiene URL docs.oracle.com
@@ -155,13 +155,13 @@ class SQLGeneratorAgent(BaseAgent):
             "https://docs.oracle.com" in result.error
         )
 
-    async def _enrich_with_oracle_docs(self, result: ToolResult, ctx: MiddlewareContext) -> ToolResult:
+    async def _enrich_with_oracle_docs(self, result: ToolResult, ctx: HookContext) -> ToolResult:
         """
-        Trasformazione middleware: arricchisce errore con documentazione Oracle.
+        Trasformazione hook: arricchisce errore con documentazione Oracle.
 
         Args:
             result: ToolResult da arricchire
-            ctx: Contesto middleware
+            ctx: Contesto hook
 
         Returns:
             ToolResult con errore arricchito o originale
@@ -177,12 +177,12 @@ class SQLGeneratorAgent(BaseAgent):
 
         return result
 
-    def _is_invalid_identifier_error(self, ctx: MiddlewareContext) -> bool:
+    def _is_invalid_identifier_error(self, ctx: HookContext) -> bool:
         """
-        Condizione middleware: verifica se l'errore è "invalid identifier".
+        Condizione hook: verifica se l'errore è "invalid identifier".
 
         Args:
-            ctx: Contesto middleware con error
+            ctx: Contesto hook con error
 
         Returns:
             True se l'errore indica colonne/tabelle inesistenti e non già iniettato
@@ -194,15 +194,15 @@ class SQLGeneratorAgent(BaseAgent):
             not self._schema_injected_in_session
         )
 
-    def _create_schema_injection_message(self, ctx: MiddlewareContext) -> HumanMessage:
+    def _create_schema_injection_message(self, ctx: HookContext) -> HumanMessage:
         """
-        Factory middleware: crea messaggio con schema database.
+        Factory hook: crea messaggio con schema database.
 
         Chiamato quando Oracle ritorna errore "invalid identifier".
         Marca la sessione per evitare iniezioni multiple.
 
         Args:
-            ctx: Contesto middleware
+            ctx: Contesto hook
 
         Returns:
             HumanMessage con schema database

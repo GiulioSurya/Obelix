@@ -3,13 +3,13 @@
 ![Python](https://img.shields.io/badge/python-3.13+-blue.svg)
 ![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)
 
-A multi-provider LLM agent framework with tool support, middleware system, and seamless integration with major AI providers.
+A multi-provider LLM agent framework with tool support, hooks system, and seamless integration with major AI providers.
 
 ## Features
 
 - **Multi-Provider Support**: Anthropic, Oracle Cloud (OCI), IBM Watson, Ollama, vLLM
 - **Tool System**: Declarative tool creation with automatic validation
-- **Middleware System**: Intercept and modify agent behavior at runtime
+- **Hooks System**: Intercept and modify agent behavior at runtime
 - **Async/Sync Execution**: Support for both synchronous and asynchronous workflows
 - **Loguru Logging**: Structured logging with rotation and color output
 
@@ -197,13 +197,13 @@ class ToolEquippedAgent(BaseAgent):
         self.register_tool(CalculatorTool())
 ```
 
-### Agent with Middleware
+### Agent with Hooks
 
-Middleware allows intercepting events during the agent lifecycle:
+Hooks allow intercepting events during the agent lifecycle:
 
 ```python
 from src.base_agent.base_agent import BaseAgent
-from src.base_agent.middleware import AgentEvent
+from src.base_agent.hooks import AgentEvent
 from src.messages.human_message import HumanMessage
 
 class SmartAgent(BaseAgent):
@@ -342,7 +342,7 @@ obelix/
 ├── src/
 │   ├── base_agent/           # Agent infrastructure
 │   │   ├── base_agent.py     # BaseAgent class
-│   │   ├── middleware.py     # Middleware system
+│   │   ├── hooks.py          # Hooks system
 │   │   └── agents/           # Concrete agent implementations
 │   ├── tools/                # Tool implementations
 │   │   ├── tool_base.py      # Abstract ToolBase

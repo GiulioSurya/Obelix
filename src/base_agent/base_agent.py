@@ -7,7 +7,7 @@ from src.messages.system_message import SystemMessage
 from src.messages.human_message import HumanMessage
 from src.messages.assistant_message import AssistantMessage
 from src.messages.tool_message import ToolMessage, ToolCall, ToolResult, ToolStatus
-from src.base_agent.middleware import AgentEvent, Middleware, MiddlewareContext
+from src.base_agent.hooks import AgentEvent, Hook, HookContext
 from src.messages.standard_message import StandardMessage
 from src.messages.assistant_message import AssistantResponse
 from src.messages.usage import AgentUsage
@@ -35,8 +35,8 @@ class BaseAgent:
         self.conversation_history: List[StandardMessage] = [self.system_message]
         self.agent_usage = AgentUsage(model_id=self.provider.model_id)
 
-        # Middleware system
-        self._middlewares: Dict[AgentEvent, List[Middleware]] = {
+        # Hook system
+        self._hooks: Dict[AgentEvent, List[Hook]] = {
             event: [] for event in AgentEvent
         }
 
@@ -72,50 +72,50 @@ class BaseAgent:
             tool_name = getattr(tool, 'tool_name', None) or tool.__class__.__name__
             logger.info(f"Agent {self.agent_name}: tool '{tool_name}' registrato")
 
-    def on(self, event: AgentEvent) -> Middleware:
+    def on(self, event: AgentEvent) -> Hook:
         """
-        API fluente per registrare middleware.
+        API fluente per registrare hook.
 
         Esempi:
             agent.on(AgentEvent.ON_TOOL_ERROR).when(...).inject(...)
             agent.on(AgentEvent.AFTER_LLM_CALL).transform(...)
 
         Args:
-            event: L'evento su cui registrare il middleware
+            event: L'evento su cui registrare l'hook
 
         Returns:
-            Middleware: Oggetto middleware per method chaining
+            Hook: Oggetto hook per method chaining
         """
-        middleware = Middleware(event)
-        self._middlewares[event].append(middleware)
-        return middleware
+        hook = Hook(event)
+        self._hooks[event].append(hook)
+        return hook
 
-    async def _trigger_middleware(
+    async def _trigger_hooks(
         self,
         event: AgentEvent,
         current_value: Any = None,
         **ctx_kwargs
     ) -> Any:
         """
-        Esegue tutti i middleware registrati per un evento.
+        Esegue tutti gli hook registrati per un evento.
 
         Args:
             event: L'evento da triggerare
-            current_value: Valore corrente da passare ai middleware
-            **ctx_kwargs: Parametri aggiuntivi per MiddlewareContext
+            current_value: Valore corrente da passare agli hook
+            **ctx_kwargs: Parametri aggiuntivi per HookContext
 
         Returns:
-            Valore trasformato dai middleware
+            Valore trasformato dagli hook
         """
-        ctx = MiddlewareContext(
+        ctx = HookContext(
             event=event,
             agent=self,
             **ctx_kwargs
         )
 
         result = current_value
-        for middleware in self._middlewares[event]:
-            result = await middleware.execute(ctx, result)
+        for hook in self._hooks[event]:
+            result = await hook.execute(ctx, result)
 
         return result
 
@@ -339,18 +339,18 @@ class BaseAgent:
                 f"ricevuto {type(query).__name__}"
             )
 
-        # >>> MIDDLEWARE: ON_QUERY_START <<<
-        await self._trigger_middleware(AgentEvent.ON_QUERY_START, iteration=0)
+        # >>> HOOKS: ON_QUERY_START <<<
+        await self._trigger_hooks(AgentEvent.ON_QUERY_START, iteration=0)
 
         # Loop multi-turn per gestire tool calls
         for iteration in range(1, max_iterations + 1):
-            # >>> MIDDLEWARE: BEFORE_LLM_CALL <<<
-            await self._trigger_middleware(AgentEvent.BEFORE_LLM_CALL, iteration=iteration)
+            # >>> HOOKS: BEFORE_LLM_CALL <<<
+            await self._trigger_hooks(AgentEvent.BEFORE_LLM_CALL, iteration=iteration)
 
             assistant_msg = self.provider.invoke(self.conversation_history, self.registered_tools)
 
-            # >>> MIDDLEWARE: AFTER_LLM_CALL <<< (può trasformare assistant_msg)
-            assistant_msg = await self._trigger_middleware(
+            # >>> HOOKS: AFTER_LLM_CALL <<< (può trasformare assistant_msg)
+            assistant_msg = await self._trigger_hooks(
                 AgentEvent.AFTER_LLM_CALL,
                 current_value=assistant_msg,
                 iteration=iteration,
@@ -372,8 +372,8 @@ class BaseAgent:
                     collected_tool_results,
                     execution_error
                 )
-                # >>> MIDDLEWARE: ON_QUERY_END <<<
-                await self._trigger_middleware(AgentEvent.ON_QUERY_END, iteration=iteration)
+                # >>> HOOKS: ON_QUERY_END <<<
+                await self._trigger_hooks(AgentEvent.ON_QUERY_END, iteration=iteration)
                 return response
 
             # Caso 2: Tool calls → elabora
@@ -387,7 +387,7 @@ class BaseAgent:
                     response = self._build_final_response(
                         assistant_msg, collected_tool_results, execution_error
                     )
-                    await self._trigger_middleware(AgentEvent.ON_QUERY_END, iteration=iteration)
+                    await self._trigger_hooks(AgentEvent.ON_QUERY_END, iteration=iteration)
                     return response
 
                 continue
@@ -396,11 +396,11 @@ class BaseAgent:
             response = self._build_final_response(
                 assistant_msg, collected_tool_results, execution_error
             )
-            await self._trigger_middleware(AgentEvent.ON_QUERY_END, iteration=iteration)
+            await self._trigger_hooks(AgentEvent.ON_QUERY_END, iteration=iteration)
             return response
 
-        # >>> MIDDLEWARE: ON_MAX_ITERATIONS <<<
-        await self._trigger_middleware(AgentEvent.ON_MAX_ITERATIONS, iteration=max_iterations)
+        # >>> HOOKS: ON_MAX_ITERATIONS <<<
+        await self._trigger_hooks(AgentEvent.ON_MAX_ITERATIONS, iteration=max_iterations)
         return self._build_timeout_response(
             max_iterations, collected_tool_results, execution_error
         )
@@ -415,7 +415,7 @@ class BaseAgent:
         """
         Elabora le tool calls dell'assistant.
 
-        Integra il sistema middleware per permettere estensioni senza override:
+        Integra il sistema hook per permettere estensioni senza override:
         - BEFORE_TOOL_EXECUTION: prima di execute(), può modificare ToolCall
         - AFTER_TOOL_EXECUTION: dopo execute(), può modificare ToolResult
         - ON_TOOL_ERROR: quando un tool ritorna errore
@@ -440,8 +440,8 @@ class BaseAgent:
         tool_results = []
 
         for call in assistant_msg.tool_calls:
-            # >>> MIDDLEWARE: BEFORE_TOOL_EXECUTION <<< (può trasformare call)
-            call = await self._trigger_middleware(
+            # >>> HOOKS: BEFORE_TOOL_EXECUTION <<< (può trasformare call)
+            call = await self._trigger_hooks(
                 AgentEvent.BEFORE_TOOL_EXECUTION,
                 current_value=call,
                 iteration=iteration,
@@ -460,17 +460,17 @@ class BaseAgent:
                     error=f"Tool {call.name} not found or not executable"
                 )
 
-            # >>> MIDDLEWARE: AFTER_TOOL_EXECUTION <<< (può trasformare result)
-            result = await self._trigger_middleware(
+            # >>> HOOKS: AFTER_TOOL_EXECUTION <<< (può trasformare result)
+            result = await self._trigger_hooks(
                 AgentEvent.AFTER_TOOL_EXECUTION,
                 current_value=result,
                 iteration=iteration,
                 tool_result=result
             )
 
-            # >>> MIDDLEWARE: ON_TOOL_ERROR <<< (solo se errore)
+            # >>> HOOKS: ON_TOOL_ERROR <<< (solo se errore)
             if result.status == ToolStatus.ERROR:
-                await self._trigger_middleware(
+                await self._trigger_hooks(
                     AgentEvent.ON_TOOL_ERROR,
                     iteration=iteration,
                     tool_result=result,
@@ -492,8 +492,8 @@ class BaseAgent:
             if result.error and not execution_error:
                 execution_error = f"Errore in {result.tool_name}: {result.error}"
 
-            # >>> MIDDLEWARE: BEFORE_HISTORY_UPDATE <<<
-            await self._trigger_middleware(
+            # >>> HOOKS: BEFORE_HISTORY_UPDATE <<<
+            await self._trigger_hooks(
                 AgentEvent.BEFORE_HISTORY_UPDATE,
                 iteration=iteration,
                 tool_result=result
