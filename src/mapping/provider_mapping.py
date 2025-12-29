@@ -1,6 +1,6 @@
 import json
 from src.providers import Providers, ProviderRegistry
-from src.messages.tool_message import ToolCall
+
 
 from oci.generative_ai_inference.models import (
     UserMessage, SystemMessage, AssistantMessage, ToolMessage as OCIToolMessage,
@@ -62,7 +62,7 @@ ANTHROPIC = {
             ],
         },
 
-        "tool_message": lambda msg: {
+        "tool_message": lambda msg: [{
             "role": "user",
             "content": [
                 {
@@ -72,7 +72,7 @@ ANTHROPIC = {
                 }
                 for result in msg.tool_results
             ]
-        }
+        }]
     },
 }
 

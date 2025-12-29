@@ -50,9 +50,6 @@ class AgentEvent(str, Enum):
     AFTER_TOOL_EXECUTION = "after_tool_execution"
     """Dopo l'esecuzione del tool (può trasformare ToolResult)"""
 
-    BEFORE_HISTORY_UPDATE = "before_history_update"
-    """Prima di aggiungere tool result alla conversation history"""
-
     # === Condizionali ===
     ON_TOOL_ERROR = "on_tool_error"
     """Quando un tool ritorna errore (status == ERROR)"""

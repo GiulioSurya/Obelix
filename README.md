@@ -9,6 +9,7 @@ A multi-provider LLM agent framework with tool support, hooks system, and seamle
 
 - **Multi-Provider Support**: Anthropic, Oracle Cloud (OCI), IBM Watson, Ollama, vLLM
 - **Tool System**: Declarative tool creation with automatic validation
+- **Parallel Tool Calls**: Execute multiple tools concurrently for improved performance
 - **Hooks System**: Intercept and modify agent behavior at runtime
 - **Async/Sync Execution**: Support for both synchronous and asynchronous workflows
 - **Loguru Logging**: Structured logging with rotation and color output
@@ -38,21 +39,11 @@ pip install -e ".[oci]"                # Oracle Cloud Infrastructure
 pip install -e ".[ibm]"                # IBM Watson X
 pip install -e ".[ollama]"             # Ollama (local models)
 
-# Install with database support
-pip install -e ".[oracle]"             # Oracle Database
-pip install -e ".[postgres]"           # PostgreSQL
-
-# Install multiple extras
-pip install -e ".[anthropic,oracle]"
+# Install multiple providers
+pip install -e ".[anthropic,oci]"
 
 # Install all LLM providers
 pip install -e ".[all-llm]"
-
-# Install all databases
-pip install -e ".[all-db]"
-
-# Install everything
-pip install -e ".[all]"
 
 # Install with development tools
 pip install -e ".[dev]"
@@ -66,11 +57,7 @@ pip install -e ".[dev]"
 | `oci` | Oracle Cloud Infrastructure Generative AI |
 | `ibm` | IBM Watson X AI |
 | `ollama` | Ollama local models |
-| `oracle` | Oracle Database connection |
-| `postgres` | PostgreSQL connection |
 | `all-llm` | All LLM providers |
-| `all-db` | All database connections |
-| `all` | Everything |
 | `dev` | Development tools (pytest, coverage) |
 
 ## Quick Start
@@ -97,7 +84,7 @@ print(response.content)
 
 ## Creating Tools
 
-Tools allow agents to perform concrete actions like executing SQL queries, creating charts, or calling external APIs.
+Tools allow agents to perform concrete actions like fetching data, creating charts, or calling external APIs.
 
 ### Basic Tool Structure
 
@@ -136,19 +123,19 @@ class CalculatorTool(ToolBase):
 Tools can have dependencies injected via constructor:
 
 ```python
-@tool(name="sql_executor", description="Executes SQL queries on the database")
-class SqlExecutorTool(ToolBase):
-    sql_query: str = Field(..., description="Valid SQL query to execute")
+@tool(name="weather_fetcher", description="Fetches current weather for a city")
+class WeatherTool(ToolBase):
+    city: str = Field(..., description="City name to get weather for")
 
-    def __init__(self, db_connection):
-        self.db_connection = db_connection
+    def __init__(self, api_client):
+        self.api_client = api_client
 
     async def execute(self) -> dict:
-        result = self.db_connection.execute_query(self.sql_query)
+        data = self.api_client.get_weather(self.city)
         return {
-            "columns": result.columns,
-            "data": result.data,
-            "row_count": len(result.data)
+            "city": self.city,
+            "temperature": data["temp"],
+            "conditions": data["conditions"]
         }
 ```
 
@@ -199,7 +186,7 @@ class ToolEquippedAgent(BaseAgent):
 
 ### Agent with Hooks
 
-Hooks allow intercepting events during the agent lifecycle:
+Hooks allow intercepting events during the agent lifecycle. Each hook receives a `HookContext` with relevant information.
 
 ```python
 from src.base_agent.base_agent import BaseAgent
@@ -220,6 +207,8 @@ class SmartAgent(BaseAgent):
             .inject(self._create_schema_message)
 
     def _is_invalid_identifier(self, ctx) -> bool:
+        # ctx.error contains the error message from the tool
+        # ctx.tool_result contains the full ToolResult object
         return (
             ctx.error is not None and
             "invalid identifier" in ctx.error and
@@ -228,8 +217,37 @@ class SmartAgent(BaseAgent):
 
     def _create_schema_message(self, ctx) -> HumanMessage:
         self._schema_injected = True
+        # ctx.agent gives access to the agent instance
+        # ctx.conversation_history gives access to the full history
         return HumanMessage(content="Database schema: ... Please correct the query.")
 ```
+
+### HookContext
+
+The `HookContext` object provides access to the current state. Available fields depend on the event:
+
+| Event | `iteration` | `tool_call` | `tool_result` | `assistant_message` | `error` |
+|-------|:-----------:|:-----------:|:-------------:|:-------------------:|:-------:|
+| `ON_QUERY_START` | 0 | - | - | - | - |
+| `BEFORE_LLM_CALL` | ✓ | - | - | - | - |
+| `AFTER_LLM_CALL` | ✓ | - | - | ✓ | - |
+| `BEFORE_TOOL_EXECUTION` | ✓ | ✓ | - | - | - |
+| `AFTER_TOOL_EXECUTION` | ✓ | - | ✓ | - | - |
+| `ON_TOOL_ERROR` | ✓ | - | ✓ | - | ✓ |
+| `ON_QUERY_END` | ✓ | - | - | - | - |
+| `ON_MAX_ITERATIONS` | ✓ | - | - | - | - |
+
+**Always available**: `ctx.agent` (the agent instance), `ctx.conversation_history` (list of messages)
+
+### Hook Methods
+
+| Method | Description |
+|--------|-------------|
+| `.when(fn)` | Condition to trigger the hook: `fn(ctx) -> bool` |
+| `.inject(fn)` | Append a message to history: `fn(ctx) -> Message` |
+| `.inject_at(pos, fn)` | Insert message at position: `fn(ctx) -> Message` |
+| `.transform(fn)` | Transform the current value: `fn(value, ctx) -> new_value` |
+| `.do(fn)` | Execute side effect: `fn(ctx)` |
 
 ### Constructor Parameters
 
@@ -255,6 +273,83 @@ print(response.content)       # Text response
 print(response.tool_results)  # Tool execution results
 print(response.error)         # Error message if any
 ```
+
+---
+
+## Connections and Providers
+
+Obelix uses a layered architecture: **Connection → Provider → Agent**.
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         Agent                               │
+│  (orchestrates conversation, executes tools)                │
+├─────────────────────────────────────────────────────────────┤
+│                        Provider                             │
+│  (model parameters, invoke(), message formatting)           │
+├─────────────────────────────────────────────────────────────┤
+│                       Connection                            │
+│  (credentials, singleton client, thread-safe)               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Creating a Provider
+
+1. **Connection**: Manages credentials and the API client (singleton, thread-safe)
+2. **Provider**: Uses the connection and defines model parameters
+
+```python
+from src.connections.llm_connection import AnthropicConnection
+from src.llm_providers.anthropic_provider import AnthropicProvider
+from src.base_agent.base_agent import BaseAgent
+
+# 1. Create connection (reads ANTHROPIC_API_KEY from env)
+connection = AnthropicConnection()
+
+# 2. Create provider with connection and model parameters
+provider = AnthropicProvider(
+    connection=connection,
+    model_id="claude-sonnet-4-20250514",
+    max_tokens=4000,
+    temperature=0.2
+)
+
+# 3. Pass provider to agent
+agent = BaseAgent(
+    system_message="You are a helpful assistant.",
+    provider=provider,
+    agent_name="MyAgent"
+)
+```
+
+### Using GlobalConfig (Alternative)
+
+Instead of manually creating connections and providers, you can use `GlobalConfig`:
+
+```python
+from src.config import GlobalConfig
+from src.base_agent.base_agent import BaseAgent
+
+# Set up global provider (done once at startup)
+GlobalConfig.set_default_provider(provider)
+
+# Agent will use GlobalConfig if no provider is passed
+agent = BaseAgent(
+    system_message="You are a helpful assistant.",
+    agent_name="MyAgent"
+    # provider=None → uses GlobalConfig
+)
+```
+
+### Available Connections
+
+| Connection | Provider | Environment Variable |
+|------------|----------|---------------------|
+| `AnthropicConnection` | `AnthropicProvider` | `ANTHROPIC_API_KEY` |
+| `OCIConnection` | `OCIProvider` | OCI config file |
+| `IBMConnection` | `IBMProvider` | `IBM_API_KEY`, `IBM_PROJECT_ID` |
 
 ---
 
@@ -352,7 +447,7 @@ obelix/
 │   │   ├── oci_provider.py
 │   │   ├── ibm_provider.py
 │   │   └── ollama_provider.py
-│   ├── connections/          # Database and LLM connections
+│   ├── connections/          # LLM connections (singleton clients)
 │   ├── messages/             # Message types
 │   ├── logging_config.py     # Loguru configuration
 │   └── config.py             # Global configuration

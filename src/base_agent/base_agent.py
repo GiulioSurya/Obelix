@@ -1,5 +1,6 @@
 # src/agents/base_agent.py
 import asyncio
+import time
 from typing import List, Optional, Dict, Any, Union, Callable
 from src.logging_config import get_logger
 from src.base_agent.agent_schema import AgentSchema, ToolDescription
@@ -413,100 +414,80 @@ class BaseAgent:
         iteration: int
     ) -> Optional[str]:
         """
-        Elabora le tool calls dell'assistant.
+        Elabora le tool calls dell'assistant con esecuzione parallela.
 
-        Integra il sistema hook per permettere estensioni senza override:
-        - BEFORE_TOOL_EXECUTION: prima di execute(), può modificare ToolCall
-        - AFTER_TOOL_EXECUTION: dopo execute(), può modificare ToolResult
-        - ON_TOOL_ERROR: quando un tool ritorna errore
-        - BEFORE_HISTORY_UPDATE: prima di aggiungere a history
+        Flusso:
+        1. Esegue tutti i tool in parallelo con asyncio.gather()
+           (se N=1, gather esegue comunque correttamente)
+        2. Raccoglie risultati e crea summary per risposta finale
+        3. Traccia TUTTI gli errori dell'iterazione corrente (con tool_call_id)
+        4. Aggiunge AssistantMessage + ToolMessage alla conversation history
+        5. Ritorna execution_error (None se tutti success, stringa con errori altrimenti)
 
         Args:
             assistant_msg: Messaggio dell'assistant con le tool calls
             collected_tool_results: Lista per raccogliere i risultati
-            execution_error: Errore di esecuzione corrente (se presente)
+                                    (accumulata tra iterazioni per risposta finale)
+            execution_error: Errore di esecuzione precedente (ignorato,
+                             execution_error viene sovrascritto con errori dell'iterazione corrente)
             iteration: Numero iterazione corrente
 
         Returns:
-            Optional[str]: Errore di esecuzione aggiornato (se presente)
+            Optional[str]: Stringa con TUTTI gli errori dell'iterazione corrente,
+                          formato: "Errore in tool_name (ID: call_id): messaggio; ..."
+                          oppure None se tutti i tool hanno avuto successo.
+
+        Note:
+            - asyncio.gather() esegue i tool in parallelo automaticamente
+            - Se N=1, gather esegue comunque correttamente (non serve branch)
+            - execution_error viene SOVRASCRITTO con gli errori dell'iterazione corrente
+            - Non tiene traccia di errori tra iterazioni diverse (limitazione nota)
+            - Se un tool ha successo in iterazione 2, l'errore dell'iterazione 1 viene perso
+              (questo è intenzionale: se LLM risponde, significa che ha gestito l'errore)
         """
-        # print("\n[DEBUG] Tool calls ricevute dall'LLM:")
-        # from pprint import pprint
-        # pprint(assistant_msg.tool_calls[0].arguments, indent=2)
-        # DEBUG: dettagli utili durante sviluppo
-        logger.debug(f"Tool calls ricevute: {[tc.name for tc in assistant_msg.tool_calls]}")
-        logger.debug(f"Primo tool arguments: {assistant_msg.tool_calls[0].arguments}")
 
-        tool_results = []
+        logger.debug(f"Processing {len(assistant_msg.tool_calls)} tool call(s)")
+        logger.debug(f"Tool names: {[tc.name for tc in assistant_msg.tool_calls]}")
 
-        for call in assistant_msg.tool_calls:
-            # >>> HOOKS: BEFORE_TOOL_EXECUTION <<< (può trasformare call)
-            call = await self._trigger_hooks(
-                AgentEvent.BEFORE_TOOL_EXECUTION,
-                current_value=call,
-                iteration=iteration,
-                tool_call=call
-            )
+        # === DEBUG PARALLELISMO ===
+        batch_start_time = time.perf_counter()
+        logger.debug(f"START ELABORATING TOOLS: n {len(assistant_msg.tool_calls)} tools @ t=0.000s")
 
-            # Esecuzione tool
-            result = await self._async_execute_tool(call)
-            if not result:
-                # Crea un ToolResult di fallback per evitare errori OCI
-                result = ToolResult(
-                    tool_name=call.name,
-                    tool_call_id=call.id,
-                    result=None,
-                    status=ToolStatus.ERROR,
-                    error=f"Tool {call.name} not found or not executable"
-                )
+        tasks = [
+            self._execute_single_tool_with_hooks(call, iteration, batch_start_time)
+            for call in assistant_msg.tool_calls
+        ]
+        tool_results = await asyncio.gather(*tasks)
 
-            # >>> HOOKS: AFTER_TOOL_EXECUTION <<< (può trasformare result)
-            result = await self._trigger_hooks(
-                AgentEvent.AFTER_TOOL_EXECUTION,
-                current_value=result,
-                iteration=iteration,
-                tool_result=result
-            )
+        batch_duration = time.perf_counter() - batch_start_time
+        logger.debug(f"PARALLEL END: {len(tool_results)} tools completed in {batch_duration:.3f}s")
 
-            # >>> HOOKS: ON_TOOL_ERROR <<< (solo se errore)
-            if result.status == ToolStatus.ERROR:
-                await self._trigger_hooks(
-                    AgentEvent.ON_TOOL_ERROR,
-                    iteration=iteration,
-                    tool_result=result,
-                    error=result.error
-                )
 
-            # Log tool execution result
-            #print(f"Executed {call.name}, result: {result.model_dump_json(indent=2)}")
-            # DEBUG: risultato esecuzione tool (dettaglio sviluppo)
-            logger.debug(f"Executed {call.name}, status={result.status}")
-
-            tool_results.append(result)
-
-            # Raccogli dati per la risposta finale
+        for result in tool_results:
             tool_summary = self._create_tool_summary(result)
             collected_tool_results.append(tool_summary)
 
-            # Traccia il primo errore
-            if result.error and not execution_error:
-                execution_error = f"Errore in {result.tool_name}: {result.error}"
 
-            # >>> HOOKS: BEFORE_HISTORY_UPDATE <<<
-            await self._trigger_hooks(
-                AgentEvent.BEFORE_HISTORY_UPDATE,
-                iteration=iteration,
-                tool_result=result
-            )
+        current_iteration_errors = [
+            f"Errore in {r.tool_name} (ID: {r.tool_call_id}): {r.error}"
+            for r in tool_results
+            if r.error  # Filtra solo i tool con errore
+        ]
 
-        # Aggiungi messaggi alla conversazione
+        if current_iteration_errors:
+            # Combina tutti gli errori in una stringa separata da "; "
+            execution_error = "; ".join(current_iteration_errors)
+            logger.warning(f"Tool execution errors: {execution_error}")
+        else:
+            # Tutti i tool hanno avuto successo → resetta execution_error
+            execution_error = None
+            logger.debug("All tools executed successfully")
+
+
         tool_message = ToolMessage(tool_results=tool_results)
         self.conversation_history.extend([assistant_msg, tool_message])
 
-        # Se l'ultimo tool ha successo, resetta l'errore precedente
-        # Permette uscita corretta con agent_comment=False dopo un retry riuscito
-        if tool_results and tool_results[-1].status == ToolStatus.SUCCESS:
-            execution_error = None
+        logger.debug(f"Added {len(tool_results)} tool result(s) to conversation history")
 
         return execution_error
 
@@ -522,8 +503,9 @@ class BaseAgent:
         """
         tool_summary = {"tool_name": result.tool_name}
 
-        if result.status == "success" and result.result is not None:
+        if result.status == ToolStatus.SUCCESS and result.result is not None:
             tool_summary["result"] = result.result
+            logger.debug(f"Tool summary created for {result.tool_name}: result keys={list(result.result.keys()) if isinstance(result.result, dict) else type(result.result)}")
 
         if result.error:
             tool_summary["error"] = result.error
@@ -550,9 +532,9 @@ class BaseAgent:
         # Fallback per content vuoto
         final_content = assistant_msg.content if assistant_msg.content else "Esecuzione completata."
 
-        #print(f"Assistant response: {final_content}")
         # INFO: operazione di business completata
         logger.info(f"Assistant response generata per agent {self.agent_name}")
+        logger.debug(f"Final response: tool_results count={len(collected_tool_results) if collected_tool_results else 0}")
         self.conversation_history.append(assistant_msg)
 
         return AssistantResponse(
@@ -590,6 +572,101 @@ class BaseAgent:
             tool_results=collected_tool_results if collected_tool_results else None,
             error=execution_error or warning_msg
         )
+
+    async def _execute_single_tool_with_hooks(
+        self,
+        call: ToolCall,
+        iteration: int,
+        batch_start_time: float = None
+    ) -> ToolResult:
+        """
+        Esegue un singolo tool con tutti i suoi hook.
+
+        Gestisce il ciclo completo di esecuzione per un tool:
+        1. BEFORE_TOOL_EXECUTION hook (può trasformare ToolCall)
+        2. Esecuzione effettiva del tool
+        3. AFTER_TOOL_EXECUTION hook (può trasformare ToolResult)
+        4. ON_TOOL_ERROR hook (solo se errore)
+
+        Args:
+            call: ToolCall da eseguire (contiene id, name, arguments)
+            iteration: Numero iterazione corrente del loop agent
+            batch_start_time: Timestamp di inizio batch per debug parallelismo
+
+        Returns:
+            ToolResult: Risultato dell'esecuzione con:
+                - tool_name: nome del tool
+                - tool_call_id: ID fornito dal provider (per tracking)
+                - result: risultato del tool (se success)
+                - status: SUCCESS o ERROR
+                - error: messaggio di errore (se ERROR)
+
+        Note:
+            - Questa funzione è async-safe e può essere eseguita in parallelo
+            - Gli hook vengono eseguiti sequenzialmente per ogni tool
+            - Se il tool non viene trovato, ritorna ToolResult con status ERROR
+        """
+        # === DEBUG PARALLELISMO: log inizio tool ===
+        tool_start_time = time.perf_counter()
+        if batch_start_time:
+            relative_start = tool_start_time - batch_start_time
+            logger.debug(f"TOOL START: {call.name} (ID: {call.id[-12:]}) @ t={relative_start:.3f}s")
+
+        call = await self._trigger_hooks(
+            AgentEvent.BEFORE_TOOL_EXECUTION,
+            current_value=call,
+            iteration=iteration,
+            tool_call=call
+        )
+
+
+        result = await self._async_execute_tool(call)
+
+        # Fallback: se tool non trovato, crea ToolResult di errore
+        if not result:
+            result = ToolResult(
+                tool_name=call.name,
+                tool_call_id=call.id,
+                result=None,
+                status=ToolStatus.ERROR,
+                error=f"Tool {call.name} not found or not executable"
+            )
+
+        result = await self._trigger_hooks(
+            AgentEvent.AFTER_TOOL_EXECUTION,
+            current_value=result,
+            iteration=iteration,
+            tool_result=result
+        )
+
+        # ┌─────────────────────────────────────────────────────────┐
+        # │ HOOK: ON_TOOL_ERROR                                     │
+        # │ Eseguito SOLO se il tool ha restituito un errore        │
+        # │ Casi d'uso: retry logic, notifiche, fallback           │
+        # └─────────────────────────────────────────────────────────┘
+        if result.status == ToolStatus.ERROR:
+            await self._trigger_hooks(
+                AgentEvent.ON_TOOL_ERROR,
+                iteration=iteration,
+                tool_result=result,
+                error=result.error
+            )
+
+        # === DEBUG PARALLELISMO: log fine tool ===
+        if batch_start_time:
+            tool_duration = time.perf_counter() - tool_start_time
+            relative_end = time.perf_counter() - batch_start_time
+            logger.debug(
+                f"TOOL END: {result.tool_name} (ID: {result.tool_call_id[-12:]}) "
+                f"@ t={relative_end:.3f}s (duration: {tool_duration:.3f}s) status={result.status}"
+            )
+        else:
+            logger.debug(
+                f"Tool executed: {result.tool_name} "
+                f"(ID: {result.tool_call_id}), status={result.status}"
+            )
+
+        return result
 
     async def _async_execute_tool(self, tool_call: ToolCall) -> Optional[ToolResult]:
         """

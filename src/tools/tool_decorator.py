@@ -14,6 +14,7 @@ Esempio d'uso:
             # self.sql_query già popolato!
             return self.oracle_conn.execute_query(self.sql_query)
 """
+import copy
 import time
 from typing import Type, Any, get_type_hints
 
@@ -64,13 +65,16 @@ def tool(name: str = None, description: str = None):
             """Execute wrappato che gestisce validazione e errori automaticamente"""
             start_time = time.time()
             try:
-                # Valida argomenti e popola attributi sull'istanza
-                validated = self._input_schema(**tool_call.arguments)
-                for field_name in validated.model_fields:
-                    setattr(self, field_name, getattr(validated, field_name))
+                # Crea copia isolata per esecuzione parallela thread-safe
+                instance = copy.copy(self)
 
-                # Chiama execute originale (senza parametri, attributi già popolati)
-                result = await original_execute(self)
+                # Valida argomenti e popola attributi sulla COPIA
+                validated = instance._input_schema(**tool_call.arguments)
+                for field_name in validated.model_fields:
+                    setattr(instance, field_name, getattr(validated, field_name))
+
+                # Chiama execute originale sulla COPIA (isolata)
+                result = await original_execute(instance)
 
                 return ToolResult(
                     tool_name=tool_call.name,
