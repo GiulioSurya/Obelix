@@ -1,12 +1,12 @@
 # src/tools/tool_base.py
 """
-Classe base per i tool - versione semplificata.
+Base class for tools - simplified version.
 
-Usare insieme al decoratore @tool:
+Use together with @tool decorator:
     from src.tools.tool_decorator import tool
     from src.tools.tool_base import ToolBase
 
-    @tool(name="my_tool", description="Descrizione")
+    @tool(name="my_tool", description="Description")
     class MyTool(ToolBase):
         param: str = Field(...)
 
@@ -19,49 +19,49 @@ from typing import Any
 
 class ToolBase(ABC):
     """
-    Classe base astratta per tutti i tool.
+    Abstract base class for all tools.
 
-    Attributi popolati dal decoratore @tool:
-    - tool_name: str - Nome univoco del tool
-    - tool_description: str - Descrizione per LLM
-    - _input_schema: Type[BaseModel] - Schema Pydantic per validazione
+    Attributes populated by @tool decorator:
+    - tool_name: str - Unique name of the tool
+    - tool_description: str - Description for LLM
+    - _input_schema: Type[BaseModel] - Pydantic schema for validation
 
-    Il decoratore @tool si occupa di:
-    - Validare name/description obbligatori
-    - Creare lo schema Pydantic dai Field
-    - Wrappare execute() per gestione automatica errori
-    - Popolare gli attributi prima di execute()
+    The @tool decorator handles:
+    - Validating required name/description
+    - Creating Pydantic schema from Fields
+    - Wrapping execute() for automatic error handling
+    - Populating attributes before execute()
     """
 
-    # Attributi popolati dal decoratore @tool
+    # Attributes populated by @tool decorator
     tool_name: str = None
     tool_description: str = None
 
     @classmethod
     def create_schema(cls):
         """
-        Genera schema MCP per il tool.
+        Generate MCP schema for the tool.
 
-        Questo metodo viene sovrascritto dal decoratore @tool.
-        Se chiamato senza decoratore, solleva errore.
+        This method is overridden by the @tool decorator.
+        If called without decorator, raises an error.
         """
         raise NotImplementedError(
-            f"Classe {cls.__name__} deve usare il decoratore @tool. "
-            f"Esempio: @tool(name='...', description='...')"
+            f"Class {cls.__name__} must use @tool decorator. "
+            f"Example: @tool(name='...', description='...')"
         )
 
     @abstractmethod
     async def execute(self) -> Any:
         """
-        Esegue la logica del tool.
+        Execute the tool logic.
 
-        Gli attributi Field sono già popolati dal decoratore prima della chiamata.
-        Non è necessario gestire ToolCall o ToolResult - il decoratore wrappa tutto.
+        Field attributes are already populated by the decorator before calling.
+        No need to handle ToolCall or ToolResult - the decorator wraps everything.
 
         Returns:
-            Any: Risultato dell'esecuzione (wrappato automaticamente in ToolResult)
+            Any: Result of execution (automatically wrapped in ToolResult)
 
         Raises:
-            Exception: Qualsiasi eccezione viene catturata e convertita in ToolResult con status=ERROR
+            Exception: Any exception is caught and converted to ToolResult with status=ERROR
         """
         pass

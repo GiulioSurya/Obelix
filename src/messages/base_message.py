@@ -6,7 +6,7 @@ from datetime import datetime
 
 
 class MessageRole(str, Enum):
-    """Ruoli dei messaggi standardizzati"""
+    """Roles of standardized messages"""
     SYSTEM = "system"
     HUMAN = "human"
     ASSISTANT = "assistant"
@@ -14,12 +14,12 @@ class MessageRole(str, Enum):
 
 
 class BaseMessage(BaseModel):
-    """Classe base per tutti i messaggi standardizzati"""
-    role: MessageRole = Field(..., description="Ruolo del messaggio")
-    content: str = Field(default="", description="Contenuto testuale del messaggio")
-    timestamp: datetime = Field(default_factory=datetime.now, description="Timestamp di creazione")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Metadati aggiuntivi")
+    """Base class for all standardized messages"""
+    role: MessageRole = Field(..., description="Message role")
+    content: str = Field(default="", description="Textual content of the message")
+    timestamp: datetime = Field(default_factory=datetime.now, description="Creation timestamp")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
 
     class Config:
-        # Validazione strict per assignment
+        # Strict validation for assignment
         validate_assignment = True

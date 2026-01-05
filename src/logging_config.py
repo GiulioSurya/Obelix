@@ -1,122 +1,122 @@
 # src/logging_config.py
 """
-Modulo di configurazione logging per SophIA.
+Logging configuration module for SophIA.
 
-Usa Loguru come backend. Questo modulo fornisce due funzioni principali:
-- setup_logging(): configura il logger all'avvio dell'applicazione
-- get_logger(name): ottiene un logger "bindato" con il nome del modulo
+Uses Loguru as backend. This module provides two main functions:
+- setup_logging(): configures the logger at application startup
+- get_logger(name): gets a logger "bound" with the module name
 
 =============================================================================
-LOGURU - CONCETTI BASE
+LOGURU - BASIC CONCEPTS
 =============================================================================
 
-Loguru ha un UNICO logger globale chiamato `logger`. Non crei istanze multiple
-come con il logging standard. Invece, usi `bind()` per aggiungere contesto.
+Loguru has ONE single global logger called `logger`. You don't create multiple
+instances like with standard logging. Instead, you use `bind()` to add context.
 
-Esempio concettuale:
+Conceptual example:
     from loguru import logger
 
-    # Questo e' SEMPRE lo stesso logger globale
-    logger.info("messaggio")
+    # This is ALWAYS the same global logger
+    logger.info("message")
 
-    # bind() aggiunge "extra" al contesto, ma e' ancora lo stesso logger
-    logger_modulo = logger.bind(name="mio_modulo")
-    logger_modulo.info("messaggio")  # Ora include name="mio_modulo"
-
-=============================================================================
-LIVELLI DI LOG (dal meno al piu' grave)
-=============================================================================
-
-1. TRACE (5)    - Dettagli estremi, per debug profondo
-                  Esempio: "Entrando in funzione X con param Y"
-
-2. DEBUG (10)   - Info utili durante sviluppo
-                  Esempio: "Query SQL generata: SELECT..."
-
-3. INFO (20)    - Eventi normali dell'applicazione
-                  Esempio: "Agent SQLGenerator inizializzato"
-
-4. SUCCESS (25) - Operazioni completate con successo (specifico Loguru)
-                  Esempio: "Query eseguita, 150 righe restituite"
-
-5. WARNING (30) - Situazioni anomale ma gestite
-                  Esempio: "Timeout LLM, riprovo..."
-
-6. ERROR (40)   - Errori che impediscono un'operazione
-                  Esempio: "Impossibile connettersi al DB"
-
-7. CRITICAL (50)- Errori fatali, applicazione non puo' continuare
-                  Esempio: "File configurazione mancante"
+    # bind() adds "extra" to context, but it's still the same logger
+    logger_module = logger.bind(name="my_module")
+    logger_module.info("message")  # Now includes name="my_module"
 
 =============================================================================
-QUANDO USARE OGNI LIVELLO
+LOG LEVELS (from least to most severe)
+=============================================================================
+
+1. TRACE (5)    - Extreme details, for deep debugging
+                  Example: "Entering function X with param Y"
+
+2. DEBUG (10)   - Useful info during development
+                  Example: "Generated SQL query: SELECT..."
+
+3. INFO (20)    - Normal application events
+                  Example: "SQLGenerator Agent initialized"
+
+4. SUCCESS (25) - Operations completed successfully (Loguru specific)
+                  Example: "Query executed, 150 rows returned"
+
+5. WARNING (30) - Anomalous but handled situations
+                  Example: "LLM timeout, retrying..."
+
+6. ERROR (40)   - Errors that prevent an operation
+                  Example: "Unable to connect to DB"
+
+7. CRITICAL (50)- Fatal errors, application cannot continue
+                  Example: "Configuration file missing"
+
+=============================================================================
+WHEN TO USE EACH LEVEL
 =============================================================================
 
 DEBUG:
-    - Valori di variabili durante esecuzione
-    - Query SQL prima dell'esecuzione
-    - Payload di richieste/risposte API
-    - Stato interno degli oggetti
+    - Variable values during execution
+    - SQL queries before execution
+    - API request/response payloads
+    - Internal object state
 
-    logger.debug(f"Tool call ricevuta: {tool_call.name}")
-    logger.debug(f"Parametri: {tool_call.arguments}")
+    logger.debug(f"Tool call received: {tool_call.name}")
+    logger.debug(f"Parameters: {tool_call.arguments}")
 
 INFO:
-    - Avvio/stop di componenti
-    - Operazioni di business completate
-    - Cambi di stato significativi
+    - Component startup/shutdown
+    - Completed business operations
+    - Significant state changes
 
-    logger.info(f"Agent {self.agent_name} inizializzato")
-    logger.info("Pipeline esecuzione avviata")
+    logger.info(f"Agent {self.agent_name} initialized")
+    logger.info("Execution pipeline started")
 
 WARNING:
-    - Retry automatici
-    - Configurazioni mancanti con default usato
-    - Rate limiting applicato
+    - Automatic retries
+    - Missing configuration with default used
+    - Rate limiting applied
     - Deprecation notices
 
-    logger.warning(f"Tentativo {attempt}/3 fallito, riprovo...")
-    logger.warning("Parametro X non specificato, uso default Y")
+    logger.warning(f"Attempt {attempt}/3 failed, retrying...")
+    logger.warning("Parameter X not specified, using default Y")
 
 ERROR:
-    - Eccezioni catturate e gestite
-    - Operazioni fallite (ma app continua)
-    - Risorse non disponibili
+    - Caught and handled exceptions
+    - Failed operations (but app continues)
+    - Unavailable resources
 
-    logger.error(f"Tool {tool_name} non trovato: {e}")
-    logger.error("Connessione DB fallita", exc_info=True)
+    logger.error(f"Tool {tool_name} not found: {e}")
+    logger.error("DB connection failed", exc_info=True)
 
 CRITICAL:
-    - Errori che richiedono shutdown
-    - Corruzioni di stato irrecuperabili
-    - Violazioni di sicurezza
+    - Errors requiring shutdown
+    - Unrecoverable state corruption
+    - Security violations
 
-    logger.critical("Impossibile inizializzare provider LLM")
+    logger.critical("Unable to initialize LLM provider")
 
 =============================================================================
-CONFIGURAZIONE HANDLER (add)
+HANDLER CONFIGURATION (add)
 =============================================================================
 
-Loguru parte con un handler di default (stderr). Per personalizzare:
+Loguru starts with a default handler (stderr). To customize:
 
-    logger.remove()  # Rimuove handler di default
+    logger.remove()  # Remove default handler
 
-    # Aggiungi handler personalizzato
+    # Add custom handler
     logger.add(
-        sink,           # Dove scrivere: file path, sys.stderr, funzione custom
-        level,          # Livello minimo: "DEBUG", "INFO", etc.
-        format,         # Formato messaggio
-        rotation,       # Quando ruotare file: "50 MB", "1 day", "12:00"
-        retention,      # Quanto tenere vecchi file: "7 days", "1 week"
-        colorize,       # True/False per colori (solo console)
-        serialize,      # True per output JSON
-        filter,         # Funzione per filtrare messaggi
+        sink,           # Where to write: file path, sys.stderr, custom function
+        level,          # Minimum level: "DEBUG", "INFO", etc.
+        format,         # Message format
+        rotation,       # When to rotate file: "50 MB", "1 day", "12:00"
+        retention,      # How long to keep old files: "7 days", "1 week"
+        colorize,       # True/False for colors (console only)
+        serialize,      # True for JSON output
+        filter,         # Function to filter messages
     )
 
-Il metodo add() ritorna un ID che puoi usare per rimuovere l'handler:
+The add() method returns an ID you can use to remove the handler:
 
     handler_id = logger.add("file.log")
-    logger.remove(handler_id)  # Rimuove solo questo handler
+    logger.remove(handler_id)  # Remove only this handler
 
 =============================================================================
 """
@@ -126,7 +126,7 @@ from pathlib import Path
 import sys
 
 
-# Flag per evitare setup multipli
+# Flag to prevent multiple setups
 _is_configured = False
 
 
@@ -137,51 +137,51 @@ def setup_logging(
     log_filename: str = "sophia.log"
 ) -> None:
     """
-    Configura il logging per l'applicazione.
+    Configure logging for the application.
 
-    Chiama questa funzione UNA VOLTA all'avvio dell'app (es. in main.py).
-    Chiamate successive vengono ignorate.
+    Call this function ONCE at app startup (e.g. in main.py).
+    Subsequent calls are ignored.
 
     Args:
-        level: Livello minimo per FILE. Default: "DEBUG" (cattura tutto)
-        console_level: Livello minimo per CONSOLE. Default: "INFO"
-                       Valori: "TRACE", "DEBUG", "INFO", "SUCCESS",
+        level: Minimum level for FILE. Default: "DEBUG" (captures everything)
+        console_level: Minimum level for CONSOLE. Default: "INFO"
+                       Values: "TRACE", "DEBUG", "INFO", "SUCCESS",
                        "WARNING", "ERROR", "CRITICAL"
-        log_dir: Directory per i file di log. Viene creata se non esiste.
+        log_dir: Directory for log files. Created if it doesn't exist.
                  Default: "logs"
-        log_filename: Nome del file di log. Default: "sophia.log"
+        log_filename: Name of log file. Default: "sophia.log"
 
-    Esempio:
+    Example:
         # In main.py
         from src.logging_config import setup_logging
 
         setup_logging()  # Default: file=DEBUG, console=INFO
 
-        # Solo errori in console, tutto su file
+        # Only errors on console, everything to file
         setup_logging(console_level="WARNING")
 
-        # Debug anche in console
+        # Debug also on console
         setup_logging(console_level="DEBUG")
 
-    Comportamento:
-        - Rimuove handler di default di Loguru
-        - Aggiunge handler FILE (level=DEBUG, con rotazione 50 MB)
-        - Aggiunge handler CONSOLE (level=INFO, con colori)
+    Behavior:
+        - Removes Loguru's default handler
+        - Adds FILE handler (level=DEBUG, with 50 MB rotation)
+        - Adds CONSOLE handler (level=INFO, with colors)
     """
     global _is_configured
 
     if _is_configured:
         return
 
-    # Crea directory log se non esiste
+    # Create log directory if it doesn't exist
     log_path = Path(log_dir)
     log_path.mkdir(parents=True, exist_ok=True)
 
-    # Rimuovi handler di default (stderr)
+    # Remove default handler (stderr)
     logger.remove()
 
-    # Formato log: timestamp | livello | modulo:funzione:linea | messaggio
-    # {name} viene dal bind() che facciamo in get_logger()
+    # Log format: timestamp | level | module:function:line | message
+    # {name} comes from bind() that we do in get_logger()
     log_format = (
         "{time:YYYY-MM-DD HH:mm:ss.SSS} | "
         "{level:<8} | "
@@ -189,110 +189,109 @@ def setup_logging(
         "{message}"
     )
 
-    # Handler file con rotazione
+    # File handler with rotation
     logger.add(
-        sink=log_path / log_filename,  # Path del file
-        level=level,                    # Livello minimo (DEBUG)
-        format=log_format,              # Formato definito sopra
-        rotation="50 MB",               # Ruota quando file supera 50 MB
-        retention="7 days",             # Mantieni file per 7 giorni
-        encoding="utf-8",               # Encoding file
+        sink=log_path / log_filename,  # Path to file
+        level=level,                    # Minimum level (DEBUG)
+        format=log_format,              # Format defined above
+        rotation="50 MB",               # Rotate when file exceeds 50 MB
+        retention="7 days",             # Keep files for 7 days
+        encoding="utf-8",               # File encoding
     )
 
-    # Formato console: piu' compatto, senza timestamp completo
+    # Console format: more compact, no full timestamp
     console_format = (
         "<level>{level:<8}</level> | "
         "<cyan>{extra[name]}</cyan>:<cyan>{function}</cyan> | "
         "{message}"
     )
 
-    # Handler console con colori
+    # Console handler with colors
     logger.add(
         sink=sys.stderr,                # Output: console (stderr)
-        level=console_level,            # Livello minimo (INFO di default)
-        format=console_format,          # Formato compatto
-        colorize=True,                  # Colori attivi
+        level=console_level,            # Minimum level (INFO by default)
+        format=console_format,          # Compact format
+        colorize=True,                  # Colors active
     )
 
     _is_configured = True
 
-    # Log iniziale per confermare setup
+    # Initial log to confirm setup
     logger.bind(name="logging_config").info(
-        f"Logging configurato - file={level}, console={console_level}, path={log_path / log_filename}"
+        f"Logging configured - file={level}, console={console_level}, path={log_path / log_filename}"
     )
 
 
 def get_logger(name: str):
     """
-    Ottiene un logger con il nome del modulo bindato.
+    Get a logger with the module name bound.
 
-    Il nome viene incluso in ogni messaggio di log, permettendo di
-    identificare da quale modulo proviene il log.
+    The name is included in every log message, allowing identification of
+    which module the log came from.
 
     Args:
-        name: Nome del modulo. Usa sempre __name__ per coerenza.
+        name: Module name. Always use __name__ for consistency.
 
     Returns:
-        Logger Loguru con il nome bindato.
+        Loguru logger with bound name.
 
-    Esempio:
-        # All'inizio del modulo
+    Example:
+        # At the beginning of the module
         from src.logging_config import get_logger
 
         logger = get_logger(__name__)
 
-        # Poi nel codice
-        logger.debug("Questo e' un messaggio debug")
-        logger.info("Operazione completata")
-        logger.warning("Attenzione: valore inatteso")
-        logger.error("Errore durante esecuzione")
+        # Then in code
+        logger.debug("This is a debug message")
+        logger.info("Operation completed")
+        logger.warning("Warning: unexpected value")
+        logger.error("Error during execution")
 
     Note:
-        - __name__ restituisce il path del modulo (es. "src.base_agent.base_agent")
-        - Il logger ritornato e' sempre lo stesso logger globale Loguru,
-          ma con contesto aggiuntivo (il nome)
-        - Se setup_logging() non e' stato chiamato, il comportamento
-          e' quello di default Loguru (stderr)
+        - __name__ returns module path (e.g. "src.base_agent.base_agent")
+        - Returned logger is always the same global Loguru logger,
+          but with additional context (the name)
+        - If setup_logging() wasn't called, behavior is Loguru's default (stderr)
     """
     return logger.bind(name=name)
 
 
 # =============================================================================
-# ESEMPI D'USO RAPIDI
+# QUICK USAGE EXAMPLES
 # =============================================================================
 #
-# --- In main.py (una volta sola) ---
+# --- In main.py (only once) ---
 #
 # from src.logging_config import setup_logging
 # setup_logging()
 #
-# --- In qualsiasi altro modulo ---
+# --- In any other module ---
 #
 # from src.logging_config import get_logger
 # logger = get_logger(__name__)
 #
-# def mia_funzione():
-#     logger.debug("Inizio funzione")
+# def my_function():
+#     logger.debug("Function start")
 #     try:
-#         # ... codice ...
-#         logger.info("Operazione completata")
+#         # ... code ...
+#         logger.info("Operation completed")
 #     except Exception as e:
-#         logger.error(f"Errore: {e}")
+#         logger.error(f"Error: {e}")
 #         raise
 #
-# --- Log con variabili (f-string o format) ---
+# --- Logging with variables (f-string or format) ---
 #
-# logger.debug(f"Valore x={x}, y={y}")
+# logger.debug(f"Value x={x}, y={y}")
 # logger.info("User {} logged in", username)  # Lazy formatting
 #
-# --- Log con eccezione (traceback completo) ---
+# --- Logging with exception (full traceback) ---
 #
 # try:
 #     risky_operation()
 # except Exception:
-#     logger.exception("Operazione fallita")  # Include traceback
+#     logger.exception("Operation failed")  # Include traceback
 #
-# --- Log con dati strutturati ---
+# --- Logging with structured data ---
 #
 # logger.info("Request received", extra={"method": "POST", "path": "/api"})
 #

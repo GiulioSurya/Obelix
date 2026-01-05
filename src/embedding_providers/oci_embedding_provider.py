@@ -12,18 +12,18 @@ from src.embedding_providers.abstract_embedding_provider import AbstractEmbeddin
 
 class OCIEmbeddingProvider(AbstractEmbeddingProvider):
     """
-    Provider per OCI Cohere Embed v4 (1024 dimensioni).
+    Provider for OCI Cohere Embed v4 (1024 dimensions).
 
-    Supporta i modelli:
-    - cohere.embed-english-v4.0: Embedding per testo inglese
-    - cohere.embed-multilingual-v4.0: Embedding multilingua
+    Supports the following models:
+    - cohere.embed-english-v4.0: Embedding for English text
+    - cohere.embed-multilingual-v4.0: Multilingual embedding
 
     Docs: https://docs.oracle.com/en-us/iaas/Content/generative-ai/cohere-embed-4.htm
     """
 
     # Cohere Embed v4 specifics
     EMBEDDING_DIM = 1024
-    MAX_BATCH_SIZE = 96  # Limite API OCI per batch embedding
+    MAX_BATCH_SIZE = 96  # OCI API limit for batch embedding
 
     def __init__(
         self,
@@ -32,41 +32,41 @@ class OCIEmbeddingProvider(AbstractEmbeddingProvider):
         truncate: Literal["NONE", "START", "END"] = "END"
     ):
         """
-        Inizializza il provider OCI Embedding.
+        Initialize the OCI Embedding provider.
 
         Args:
-            model_id: ID del modello OCI
+            model_id: OCI model ID
                 - "cohere.embed-v4.0"
-            input_type: Tipo di input per ottimizzazione embedding
-                - "search_document": per indicizzazione documenti in vector DB
-                - "search_query": per query di ricerca semantica
-                - "classification": per task di classificazione
-                - "clustering": per task di clustering
-            truncate: Strategia di troncamento per testo eccedente context window
-                - "NONE": errore se testo troppo lungo
-                - "START": tronca dall'inizio
-                - "END": tronca dalla fine (default)
+            input_type: Input type for embedding optimization
+                - "search_document": for document indexing in vector DB
+                - "search_query": for semantic search queries
+                - "classification": for classification tasks
+                - "clustering": for clustering tasks
+            truncate: Truncation strategy for text exceeding context window
+                - "NONE": error if text is too long
+                - "START": truncate from beginning
+                - "END": truncate from end (default)
         """
         self.model_id = model_id
         self.input_type = input_type
         self.truncate = truncate
 
-        # Import config per configurazione centralizzata
+        # Import config for centralized configuration
         from src.k8s_config import YamlConfig
         import os
 
-        # Leggi configurazione OCI completa da infrastructure.yaml (include private_key_content)
+        # Read complete OCI configuration from infrastructure.yaml (includes private_key_content)
         infra_config = YamlConfig(os.getenv("INFRASTRUCTURE_CONFIG_PATH"))
         oci_provider_config = infra_config.get("llm_providers.oci")
 
-        # Validazione presenza chiave privata
+        # Validate presence of private key
         if not oci_provider_config.get("private_key_content"):
             raise ValueError(
-                "Credenziale private_key_content mancante in infrastructure.yaml. "
-                "Questa chiave deve essere configurata nel ConfigMap o Secrets di Kubernetes."
+                "Credential private_key_content missing in infrastructure.yaml. "
+                "This key must be configured in the Kubernetes ConfigMap or Secrets."
             )
 
-        # Inizializza configurazione OCI
+        # Initialize OCI configuration
         oci_config = {
             'user': oci_provider_config["user_id"],
             'fingerprint': oci_provider_config["fingerprint"],
@@ -75,26 +75,26 @@ class OCIEmbeddingProvider(AbstractEmbeddingProvider):
             'region': oci_provider_config["region"],
         }
 
-        # Inizializza client OCI
+        # Initialize OCI client
         self.client = GenerativeAiInferenceClient(oci_config)
 
-        # Usa compartment_id da config
+        # Use compartment_id from config
         self.compartment_id = oci_provider_config["compartment_id"]
 
     def embed(self, texts: Union[str, List[str]]) -> Union[np.ndarray, List[np.ndarray]]:
         """
-        Genera embeddings usando Cohere Embed v4 su OCI.
+        Generates embeddings using Cohere Embed v4 on OCI.
 
         Args:
-            texts: Singolo testo (str) o lista di testi (List[str])
-                   Limite batch: max 96 testi per chiamata API
+            texts: Single text (str) or list of texts (List[str])
+                   Batch limit: max 96 texts per API call
 
         Returns:
-            - Se input è str: np.ndarray shape (1024,) dtype float32
-            - Se input è List[str]: List[np.ndarray], len = len(texts)
+            - If input is str: np.ndarray shape (1024,) dtype float32
+            - If input is List[str]: List[np.ndarray], len = len(texts)
 
         Raises:
-            ValueError: Se batch size > 96 (limite API OCI)
+            ValueError: If batch size > 96 (OCI API limit)
 
         Example:
             >>> provider = OCIEmbeddingProvider()
@@ -107,19 +107,19 @@ class OCIEmbeddingProvider(AbstractEmbeddingProvider):
             >>> len(embs)
             2
         """
-        # Normalizza input in lista
+        # Normalize input to list
         is_single = isinstance(texts, str)
         text_list = [texts] if is_single else texts
 
-        # Validazione batch size
+        # Validate batch size
         if len(text_list) > self.MAX_BATCH_SIZE:
             raise ValueError(
-                f"Batch size {len(text_list)} eccede il limite API OCI ({self.MAX_BATCH_SIZE}). "
-                f"Suddividi la richiesta in batch più piccoli."
+                f"Batch size {len(text_list)} exceeds OCI API limit ({self.MAX_BATCH_SIZE}). "
+                f"Split the request into smaller batches."
             )
 
-        # Prepara richiesta embedding
-        # OCI API richiede input_type in UPPERCASE
+        # Prepare embedding request
+        # OCI API requires input_type in UPPERCASE
         embed_details = EmbedTextDetails(
             serving_mode=OnDemandServingMode(model_id=self.model_id),
             inputs=text_list,
@@ -128,23 +128,23 @@ class OCIEmbeddingProvider(AbstractEmbeddingProvider):
             compartment_id=self.compartment_id
         )
 
-        # Chiamata API OCI
+        # OCI API call
         response = self.client.embed_text(embed_details)
 
-        # Estrai embeddings e converti in numpy array
+        # Extract embeddings and convert to numpy array
         embeddings = [
             np.array(emb, dtype=np.float32)
             for emb in response.data.embeddings
         ]
 
-        # Restituisci formato appropriato
+        # Return appropriate format
         return embeddings[0] if is_single else embeddings
 
     def get_embedding_dimension(self) -> int:
         """
-        Restituisce la dimensionalità degli embedding Cohere v4.
+        Returns the dimensionality of Cohere v4 embeddings.
 
         Returns:
-            int: 1024 (dimensione fissa per Cohere Embed v4)
+            int: 1024 (fixed size for Cohere Embed v4)
         """
         return self.EMBEDDING_DIM

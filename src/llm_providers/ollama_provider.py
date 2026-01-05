@@ -15,12 +15,12 @@ from src.tools.tool_base import ToolBase
 from src.providers import Providers
 from src.logging_config import get_logger
 
-# Logger per Ollama provider
+# Logger for Ollama provider
 logger = get_logger(__name__)
 
 
 class OllamaProvider(AbstractLLMProvider):
-    """Provider per Ollama con parametri configurabili"""
+    """Provider for Ollama with configurable parameters"""
 
     @property
     def provider_type(self) -> Providers:
@@ -37,28 +37,28 @@ class OllamaProvider(AbstractLLMProvider):
                  stop: Optional[List[str]] = None,
                  keep_alive: Optional[str] = None):
         """
-        Inizializza il provider Ollama
+        Initialize the Ollama provider
 
         Args:
-            model_id: ID del modello Ollama (default: "a-kore/Arctic-Text2SQL-R1-7B")
-            base_url: URL base del server Ollama (default: None = http://localhost:11434)
-            temperature: Temperatura per sampling (default: 0.1)
-            max_tokens: Numero massimo di token (default: None)
+            model_id: Ollama model ID (default: "a-kore/Arctic-Text2SQL-R1-7B")
+            base_url: Base URL of Ollama server (default: None = http://localhost:11434)
+            temperature: Sampling temperature (default: 0.1)
+            max_tokens: Maximum number of tokens (default: None)
             top_p: Top-p sampling (default: None)
             top_k: Top-k sampling (default: None)
-            seed: Seed per riproducibilità (default: None)
-            stop: Sequenze di stop (default: None)
+            seed: Seed for reproducibility (default: None)
+            stop: Stop sequences (default: None)
             keep_alive: Keep model in memory (default: None)
         """
         self.model_id = model_id
 
-        # Inizializza client Ollama
+        # Initialize Ollama client
         if base_url:
             self.client = Client(host=base_url)
         else:
             self.client = Client()
 
-        # Costruisci options dict solo con parametri non-None
+        # Build options dict with only non-None parameters
         self.options = {}
         if temperature is not None:
             self.options["temperature"] = temperature
@@ -77,15 +77,15 @@ class OllamaProvider(AbstractLLMProvider):
 
     def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
         """
-        Invoca il modello Ollama con messaggi e tool standardizzati
+        Call the Ollama model with standardized messages and tools
         """
         logger.debug(f"Ollama invoke: model={self.model_id}, messages={len(messages)}, tools={len(tools)}")
 
-        # 1. Converte messaggi e tool nel formato Ollama (usa metodi base class)
+        # 1. Convert messages and tools to Ollama format (use base class methods)
         ollama_messages = self._convert_messages_to_provider_format(messages)
         ollama_tools = self._convert_tools_to_provider_format(tools)
 
-        # 2. Costruisci parametri chiamata
+        # 2. Build call parameters
         chat_params = {
             "model": self.model_id,
             "messages": ollama_messages,
@@ -100,13 +100,13 @@ class OllamaProvider(AbstractLLMProvider):
         if self.keep_alive is not None:
             chat_params["keep_alive"] = self.keep_alive
 
-        # 3. Chiama Ollama
+        # 3. Call Ollama
         try:
             response = self.client.chat(**chat_params)
 
             logger.info(f"Ollama chat completed: {self.model_id}")
 
-            # Log usage se disponibile
+            # Log usage if available
             if hasattr(response, 'prompt_eval_count') and hasattr(response, 'eval_count'):
                 logger.debug(f"Ollama tokens: prompt={response.prompt_eval_count}, completion={response.eval_count}")
 
@@ -114,18 +114,18 @@ class OllamaProvider(AbstractLLMProvider):
             logger.error(f"Ollama request failed: {e}")
             raise
 
-        # 4. Converte response in AssistantMessage standardizzato
+        # 4. Convert response to standardized AssistantMessage
         assistant_message = self._convert_response_to_assistant_message(response)
         return assistant_message
 
     def _convert_response_to_assistant_message(self, response) -> AssistantMessage:
         """
-        Converte risposta Ollama in AssistantMessage standardizzato
+        Convert Ollama response to standardized AssistantMessage
         """
-        # Estrae tool_calls usando il metodo centralizzato
+        # Extract tool_calls using centralized method
         tool_calls = self._extract_tool_calls(response)
 
-        # Estrae il contenuto testuale
+        # Extract text content
         content = ""
         if hasattr(response, 'message') and hasattr(response.message, 'content'):
             content = response.message.content or ""

@@ -9,25 +9,25 @@ from src.messages.usage import Usage
 
 
 class AssistantMessage(BaseMessage):
-    """Messaggio di risposta dell'assistant LLM"""
+    """LLM assistant response message"""
     role: MessageRole = Field(default=MessageRole.ASSISTANT)
-    tool_calls: List[ToolCall] = Field(default_factory=list, description="Tool calls richiesti dall'assistant")
-    usage: Optional[Usage] = Field(default=None, description="Informazioni sull'utilizzo dei token per questa chiamata LLM")
+    tool_calls: List[ToolCall] = Field(default_factory=list, description="Tool calls requested by the assistant")
+    usage: Optional[Usage] = Field(default=None, description="Information about token usage for this LLM call")
 
 
 class AssistantResponse(BaseModel):
-    """Risposta strutturata dell'agent con informazioni complete sull'esecuzione"""
+    """Structured agent response with complete execution information"""
 
-    agent_name: str = Field(..., description="Nome dell'agent che ha generato la risposta")
-    content: str = Field(..., description="Contenuto testuale della risposta finale")
+    agent_name: str = Field(..., description="Name of the agent that generated the response")
+    content: str = Field(..., description="Textual content of the final response")
     tool_results: Optional[List[Dict[str, Any]]] = Field(
         default=None,
-        description="Risultati dei tool eseguiti durante la conversazione"
+        description="Results of tools executed during the conversation"
     )
-    error: Optional[str] = Field(default=None, description="Eventuale errore durante l'esecuzione")
+    error: Optional[str] = Field(default=None, description="Any error during execution")
 
     def __init__(self, **kwargs):
-        # Se tool_results è una lista vuota, la impostiamo a None per pulizia
+        # If tool_results is an empty list, set it to None for cleanliness
         if 'tool_results' in kwargs and not kwargs['tool_results']:
             kwargs['tool_results'] = None
         super().__init__(**kwargs)

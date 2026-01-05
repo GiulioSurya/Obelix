@@ -5,5 +5,5 @@ from src.messages.base_message import BaseMessage, MessageRole
 
 
 class SystemMessage(BaseMessage):
-    """Messaggio di sistema per istruzioni LLM"""
+    """System message for LLM instructions"""
     role: MessageRole = Field(default=MessageRole.SYSTEM)

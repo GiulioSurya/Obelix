@@ -186,7 +186,7 @@ class ToolEquippedAgent(BaseAgent):
 
 ### Agent with Hooks
 
-Hooks allow intercepting events during the agent lifecycle. Each hook receives a `HookContext` with relevant information.
+Hooks allow intercepting events during the agent lifecycle. Each hook receives an `AgentStatus` with relevant information.
 
 ```python
 from src.base_agent.base_agent import BaseAgent
@@ -206,25 +206,25 @@ class SmartAgent(BaseAgent):
             .when(self._is_invalid_identifier) \
             .inject(self._create_schema_message)
 
-    def _is_invalid_identifier(self, ctx) -> bool:
-        # ctx.error contains the error message from the tool
-        # ctx.tool_result contains the full ToolResult object
+    def _is_invalid_identifier(self, agent_status) -> bool:
+        # agent_status.error contains the error message from the tool
+        # agent_status.tool_result contains the full ToolResult object
         return (
-            ctx.error is not None and
-            "invalid identifier" in ctx.error and
+            agent_status.error is not None and
+            "invalid identifier" in agent_status.error and
             not self._schema_injected
         )
 
-    def _create_schema_message(self, ctx) -> HumanMessage:
+    def _create_schema_message(self, agent_status) -> HumanMessage:
         self._schema_injected = True
-        # ctx.agent gives access to the agent instance
-        # ctx.conversation_history gives access to the full history
+        # agent_status.agent gives access to the agent instance
+        # agent_status.conversation_history gives access to the full history
         return HumanMessage(content="Database schema: ... Please correct the query.")
 ```
 
-### HookContext
+### AgentStatus
 
-The `HookContext` object provides access to the current state. Available fields depend on the event:
+The `AgentStatus` object provides access to the current state. Available fields depend on the event:
 
 | Event | `iteration` | `tool_call` | `tool_result` | `assistant_message` | `error` |
 |-------|:-----------:|:-----------:|:-------------:|:-------------------:|:-------:|
@@ -237,17 +237,17 @@ The `HookContext` object provides access to the current state. Available fields 
 | `ON_QUERY_END` | ✓ | - | - | - | - |
 | `ON_MAX_ITERATIONS` | ✓ | - | - | - | - |
 
-**Always available**: `ctx.agent` (the agent instance), `ctx.conversation_history` (list of messages)
+**Always available**: `agent_status.agent` (the agent instance), `agent_status.conversation_history` (list of messages)
 
 ### Hook Methods
 
 | Method | Description |
 |--------|-------------|
-| `.when(fn)` | Condition to trigger the hook: `fn(ctx) -> bool` |
-| `.inject(fn)` | Append a message to history: `fn(ctx) -> Message` |
-| `.inject_at(pos, fn)` | Insert message at position: `fn(ctx) -> Message` |
-| `.transform(fn)` | Transform the current value: `fn(value, ctx) -> new_value` |
-| `.do(fn)` | Execute side effect: `fn(ctx)` |
+| `.when(fn)` | Condition to trigger the hook: `fn(agent_status) -> bool` |
+| `.inject(fn)` | Append a message to history: `fn(agent_status) -> Message` |
+| `.inject_at(pos, fn)` | Insert message at position: `fn(agent_status) -> Message` |
+| `.transform(fn)` | Transform the current value: `fn(value, agent_status) -> new_value` |
+| `.do(fn)` | Execute side effect: `fn(agent_status)` |
 
 ### Constructor Parameters
 

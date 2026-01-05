@@ -11,17 +11,17 @@ from src.providers import Providers
 from src.connections.llm_connection import AnthropicConnection
 from src.logging_config import get_logger
 
-# Logger per Anthropic provider
+# Logger for Anthropic provider
 logger = get_logger(__name__)
 
 
 class AnthropicProvider(AbstractLLMProvider):
     """
-    Provider per Anthropic Claude con parametri configurabili.
+    Provider for Anthropic Claude with configurable parameters.
 
-    Supporta:
-    - System messages (come parametro separato, non nell'array messages)
-    - Tool calling con content blocks
+    Supports:
+    - System messages (as separate parameter, not in messages array)
+    - Tool calling with content blocks
     - Multi-turn conversations
     - Usage tracking
     """
@@ -39,21 +39,21 @@ class AnthropicProvider(AbstractLLMProvider):
                  thinking_mode: bool = False,
                  thinking_params: Optional[Dict[str, Any]] = None):
         """
-        Inizializza il provider Anthropic con dependency injection della connection
+        Initialize the Anthropic provider with dependency injection of connection
 
         Args:
-            connection: AnthropicConnection singleton (default: None, riusa da GlobalConfig se provider match)
-            model_id: ID del modello Claude (default: "claude-haiku-4-5-20251001")
-            max_tokens: Numero massimo di token (default: 3000)
-            temperature: Temperatura per sampling (default: 0.1)
+            connection: AnthropicConnection singleton (default: None, reuse from GlobalConfig if provider matches)
+            model_id: Claude model ID (default: "claude-haiku-4-5-20251001")
+            max_tokens: Maximum number of tokens (default: 3000)
+            temperature: Sampling temperature (default: 0.1)
             top_p: Top-p sampling (default: None)
-            thinking_mode: Abilita extended thinking (default: False)
-            thinking_params: Parametri per thinking mode (default: None)
+            thinking_mode: Enable extended thinking (default: False)
+            thinking_params: Parameters for thinking mode (default: None)
 
         Raises:
-            ValueError: Se connection=None e GlobalConfig non ha ANTHROPIC settato
+            ValueError: If connection=None and GlobalConfig does not have ANTHROPIC set
         """
-        # Dependency injection della connection con fallback a GlobalConfig
+        # Dependency injection of connection with fallback to GlobalConfig
         if connection is None:
             connection = self._get_connection_from_global_config(
                 Providers.ANTHROPIC,
@@ -62,7 +62,7 @@ class AnthropicProvider(AbstractLLMProvider):
 
         self.connection = connection
 
-        # Salva parametri
+        # Save parameters
         self.model_id = model_id
         self.max_tokens = max_tokens
         self.temperature = 1 if thinking_mode else temperature
@@ -70,7 +70,7 @@ class AnthropicProvider(AbstractLLMProvider):
         self.thinking_mode = thinking_mode
         if thinking_mode:
             if thinking_params is None:
-                print("default parameters: {'type': 'enabled', 'budget_tokens': 2000}")
+                print("Default parameters: {'type': 'enabled', 'budget_tokens': 2000}")
                 self.thinking_params = {"type": "enabled", "budget_tokens": 2000}
             else:
                 self.thinking_params = thinking_params
@@ -79,28 +79,28 @@ class AnthropicProvider(AbstractLLMProvider):
 
     def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
         """
-        Invoca il modello Anthropic con messaggi e tool standardizzati
+        Calls the Anthropic model with standardized messages and tools
         """
         logger.debug(f"Anthropic invoke: model={self.model_id}, messages={len(messages)}, tools={len(tools)}, thinking_mode={self.thinking_mode}")
 
-        # 1. Separa SystemMessage dagli altri (Anthropic lo vuole come parametro, non in messages array)
+        # 1. Separate SystemMessage from others (Anthropic wants it as parameter, not in messages array)
         system_content = None
         other_messages = []
 
         for msg in messages:
             if isinstance(msg, SystemMessage):
-                # SystemMessage va come parametro system, converti singolarmente
+                # SystemMessage goes as system parameter, convert individually
                 system_content = self._convert_messages_to_provider_format([msg])[0]
             else:
                 other_messages.append(msg)
 
-        # 2. Converte gli altri messaggi (usa metodo base class)
+        # 2. Convert other messages (use base class method)
         conversation_messages = self._convert_messages_to_provider_format(other_messages)
 
-        # 3. Converte tools nel formato Anthropic (usa metodo base class)
+        # 3. Convert tools to Anthropic format (use base class method)
         anthropic_tools = self._convert_tools_to_provider_format(tools) if tools else None
 
-        # 4. Costruisce parametri chiamata API
+        # 4. Build API call parameters
         api_params: Dict[str, Any] = {
             "model": self.model_id,
             "max_tokens": self.max_tokens,
@@ -115,7 +115,7 @@ class AnthropicProvider(AbstractLLMProvider):
         if anthropic_tools:
             api_params["tools"] = anthropic_tools
 
-        # 5. Chiama Anthropic API usando il client dalla connection
+        # 5. Call Anthropic API using client from connection
         try:
             client = self.connection.get_client()
             response = client.messages.create(**api_params)
@@ -130,15 +130,15 @@ class AnthropicProvider(AbstractLLMProvider):
             logger.error(f"Anthropic request failed: {e}")
             raise
 
-        # 6. Converte response in AssistantMessage standardizzato
+        # 6. Convert response to standardized AssistantMessage
         assistant_message = self._convert_response_to_assistant_message(response)
         return assistant_message
 
     def _convert_response_to_assistant_message(self, response) -> AssistantMessage:
         """
-        Converte risposta Anthropic in AssistantMessage standardizzato
+        Convert Anthropic response to standardized AssistantMessage
         """
-        # Estrae tool_calls usando il metodo centralizzato
+        # Extract tool_calls using centralized method
         tool_calls = self._extract_tool_calls(response)
         text_content = self._extract_text_from_content_blocks(response)
         usage = self._extract_usage_info(response)
@@ -153,15 +153,15 @@ class AnthropicProvider(AbstractLLMProvider):
 
     def _extract_text_from_content_blocks(self, response) -> str:
         """
-        Estrae il contenuto testuale dai content blocks della response
+        Extract text content from response content blocks
 
-        Gestisce sia dict che object notation per compatibilità.
+        Handles both dict and object notation for compatibility.
 
         Args:
-            response: Response object da Anthropic API
+            response: Response object from Anthropic API
 
         Returns:
-            Contenuto testuale concatenato dai blocks di tipo "text"
+            Text content concatenated from "text" type blocks
         """
         if not hasattr(response, "content"):
             return ""
@@ -177,14 +177,14 @@ class AnthropicProvider(AbstractLLMProvider):
 
     def _get_block_attribute(self, block, attribute: str) -> Any:
         """
-        Helper per ottenere attributo da block gestendo dict e object notation
+        Helper to get attribute from block handling dict and object notation
 
         Args:
-            block: Content block (può essere dict o object)
-            attribute: Nome dell'attributo da estrarre
+            block: Content block (can be dict or object)
+            attribute: Attribute name to extract
 
         Returns:
-            Valore dell'attributo o None se non trovato
+            Attribute value or None if not found
         """
         if isinstance(block, dict):
             return block.get(attribute)
@@ -192,13 +192,13 @@ class AnthropicProvider(AbstractLLMProvider):
 
     def _extract_usage_info(self, response) -> Optional[Usage]:
         """
-        Estrae informazioni di usage dalla response
+        Extract usage information from response
 
         Args:
-            response: Response object da Anthropic API
+            response: Response object from Anthropic API
 
         Returns:
-            Usage object se disponibile, None altrimenti
+            Usage object if available, None otherwise
         """
         if not hasattr(response, "usage"):
             return None

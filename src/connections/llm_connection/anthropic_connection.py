@@ -11,10 +11,10 @@ load_dotenv()
 
 class AnthropicConnection(AbstractLLMConnection):
     """
-    Singleton thread-safe per gestire la connessione a Anthropic Claude.
+    Thread-safe singleton to manage connection to Anthropic Claude.
 
-    La connection è condivisa tra tutti i provider Anthropic che usano la stessa API key.
-    Il client viene inizializzato lazy al primo accesso.
+    The connection is shared among all Anthropic providers using the same API key.
+    Client is lazy initialized on first access.
     """
 
     _instance: Optional['AnthropicConnection'] = None
@@ -31,14 +31,14 @@ class AnthropicConnection(AbstractLLMConnection):
 
     def get_client(self):
         """
-        Ritorna il client Anthropic configurato.
-        Lazy initialization: crea il client solo al primo accesso.
+        Returns the configured Anthropic client.
+        Lazy initialization: creates client only on first access.
 
         Returns:
-            Anthropic client configurato
+            Configured Anthropic client
 
         Raises:
-            ValueError: Se ANTHROPIC_API_KEY non è configurata
+            ValueError: If ANTHROPIC_API_KEY is not configured
         """
         if self._client is None:
             with self._client_lock:
@@ -48,16 +48,16 @@ class AnthropicConnection(AbstractLLMConnection):
 
     def _create_client(self):
         """
-        Crea e configura il client Anthropic.
+        Creates and configures the Anthropic client.
 
         Returns:
-            Anthropic client configurato
+            Configured Anthropic client
 
         Raises:
-            ValueError: Se API key mancante
-            ImportError: Se libreria anthropic non installata
+            ValueError: If API key is missing
+            ImportError: If anthropic library is not installed
         """
-        # Import qui per evitare dipendenze circolari
+        # Import here to avoid circular dependencies
         try:
             from anthropic import Anthropic
         except ImportError:
@@ -65,12 +65,12 @@ class AnthropicConnection(AbstractLLMConnection):
                 "anthropic is not installed. Install with: pip install anthropic"
             )
 
-        # Validazione API key
+        # Validate API key
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
             raise ValueError(
-                "ANTHROPIC_API_KEY non configurata. "
-                "Imposta la variabile d'ambiente ANTHROPIC_API_KEY"
+                "ANTHROPIC_API_KEY not configured. "
+                "Set the environment variable ANTHROPIC_API_KEY"
             )
 
         return Anthropic(api_key=api_key)

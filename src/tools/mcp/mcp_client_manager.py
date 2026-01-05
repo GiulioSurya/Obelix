@@ -14,30 +14,30 @@ from .mcp_validator import MCPValidator, MCPValidationError
 @dataclass
 class MCPConfig:
     """
-    Configurazione per connessione MCP.
+    Configuration for MCP connection.
 
-    Supporta due transport principali:
-    - stdio: Per server locali (subprocess)
-    - streamable-http: Per server remoti (HTTP)
+    Supports two main transports:
+    - stdio: For local servers (subprocess)
+    - streamable-http: For remote servers (HTTP)
 
     Examples:
-        # STDIO - Server locale con subprocess
+        # STDIO - Local server with subprocess
         config = MCPConfig(
             name="local_server",
             transport="stdio",
             command="npx",
             args=["-y", "@modelcontextprotocol/server-everything"],
-            env={"API_KEY": "your-key"}  # Variabili ambiente per il processo
+            env={"API_KEY": "your-key"}  # Environment variables for process
         )
 
-        # STREAMABLE-HTTP - Server remoto con API key nell'URL
+        # STREAMABLE-HTTP - Remote server with API key in URL
         config = MCPConfig(
             name="tavily",
             transport="streamable-http",
             url=f"https://mcp.tavily.com/mcp/?tavilyApiKey={api_key}"
         )
 
-        # STREAMABLE-HTTP - Server remoto con autenticazione Bearer
+        # STREAMABLE-HTTP - Remote server with Bearer authentication
         config = MCPConfig(
             name="github_copilot",
             transport="streamable-http",
@@ -45,7 +45,7 @@ class MCPConfig:
             headers={"Authorization": f"Bearer {github_token}"}
         )
 
-        # STDIO BRIDGE - Server remoto tramite mcp-remote
+        # STDIO BRIDGE - Remote server via mcp-remote
         config = MCPConfig(
             name="tavily_bridge",
             transport="stdio",
@@ -56,17 +56,17 @@ class MCPConfig:
     name: str
     transport: str = "stdio"  # stdio, streamable-http
 
-    # STDIO params - per server locali
-    command: Optional[str] = None  # Comando da eseguire (es. "npx", "python")
-    args: Optional[List[str]] = None  # Argomenti comando (es. ["-y", "server.js"])
-    env: Optional[Dict[str, str]] = None  # Variabili ambiente per subprocess
+    # STDIO params - for local servers
+    command: Optional[str] = None  # Command to execute (e.g. "npx", "python")
+    args: Optional[List[str]] = None  # Command arguments (e.g. ["-y", "server.js"])
+    env: Optional[Dict[str, str]] = None  # Environment variables for subprocess
 
-    # Streamable HTTP params - per server remoti
-    url: Optional[str] = None  # URL endpoint MCP (es. "https://api.example.com/mcp/")
-    headers: Optional[Dict[str, str]] = None  # Headers HTTP (es. Authorization)
+    # Streamable HTTP params - for remote servers
+    url: Optional[str] = None  # MCP endpoint URL (e.g. "https://api.example.com/mcp/")
+    headers: Optional[Dict[str, str]] = None  # HTTP headers (e.g. Authorization)
 
     def get_key(self) -> tuple:
-        """Genera chiave univoca per singleton"""
+        """Generate unique key for singleton"""
         if self.transport == "stdio":
             return self.name, self.transport, self.command, tuple(self.args or [])
         else:
@@ -75,22 +75,22 @@ class MCPConfig:
 
 class MCPClientManager:
     """
-    Manager universale per connessioni MCP con validazione integrata.
+    Universal manager for MCP connections with integrated validation.
 
-    Gestisce connessioni sia stdio che streamable-http con pattern singleton.
-    Supporta tutte le funzionalità MCP: tools, resources, prompts, session management.
+    Manages both stdio and streamable-http connections with singleton pattern.
+    Supports all MCP features: tools, resources, prompts, session management.
 
     Features:
-        - Singleton pattern per riutilizzo connessioni
-        - Support stdio (subprocess locali) e streamable-http (server remoti)
-        - Gestione automatica sessioni HTTP con session ID
-        - Loading completo capabilities (tools, resources, prompts)
-        - Configuration loading da file mcp.json
-        - Environment variables support per API keys
-        - NUOVO: Validazione automatica argomenti con MCPValidator
+        - Singleton pattern for connection reuse
+        - Support stdio (local subprocess) and streamable-http (remote servers)
+        - Automatic HTTP session management with session ID
+        - Complete loading of capabilities (tools, resources, prompts)
+        - Configuration loading from mcp.json file
+        - Environment variables support for API keys
+        - NEW: Automatic argument validation with MCPValidator
 
     Usage:
-        # Modalità 1: Configurazione diretta
+        # Mode 1: Direct configuration
         config = MCPConfig(
             name="tavily",
             transport="streamable-http",
@@ -98,13 +98,13 @@ class MCPClientManager:
         )
         manager = MCPClientManager(config)
 
-        # Modalità 2: Da file di configurazione
+        # Mode 2: From configuration file
         manager = MCPClientManager.from_config_file("mcp.json", "server_name")
 
-        # Modalità 3: Backward compatible
+        # Mode 3: Backward compatible
         manager = MCPClientManager("everything", "npx", ["-y", "server-everything"])
 
-        # Utilizzo
+        # Usage
         async with manager:
             if await manager.connect_server():
                 tools = manager.get_available_tools()
@@ -113,16 +113,16 @@ class MCPClientManager:
 
     Transport Support:
         stdio:
-            - Server locali come subprocess
-            - Comunicazione via stdin/stdout
-            - Supporta environment variables
-            - Esempi: server-everything, server locali custom
+            - Local servers as subprocess
+            - Communication via stdin/stdout
+            - Supports environment variables
+            - Examples: server-everything, custom local servers
 
         streamable-http:
-            - Server remoti via HTTP/SSE
-            - Supporta session management
-            - Headers customizzabili per auth
-            - Esempi: Tavily, GitHub Copilot, server cloud
+            - Remote servers via HTTP/SSE
+            - Supports session management
+            - Customizable headers for auth
+            - Examples: Tavily, GitHub Copilot, cloud servers
     """
 
     _instances = {}
@@ -154,7 +154,7 @@ class MCPClientManager:
         self.config = config
         self.name = config.name
 
-        # Stato connessione
+        # Connection state
         self._session = None
         self._client_connection = None
         self._available_tools: List[Tool] = []
@@ -163,15 +163,15 @@ class MCPClientManager:
         self._connected = False
         self._session_id: Optional[str] = None
 
-        # NUOVO: Validator integrato per conversione automatica tipi
+        # NEW: Integrated validator for automatic type conversion
         self._validator = MCPValidator()
 
     @classmethod
     def from_config_file(cls, config_path: str, server_name: str) -> 'MCPClientManager':
         """
-        Carica configurazione da file mcp.json standard.
+        Load configuration from standard mcp.json file.
 
-        Il file deve seguire la struttura standard MCP:
+        File must follow MCP standard structure:
         {
           "mcpServers": {
             "server_name": {
@@ -182,7 +182,7 @@ class MCPClientManager:
           }
         }
 
-        Per server HTTP:
+        For HTTP servers:
         {
           "mcpServers": {
             "server_name": {
@@ -193,15 +193,15 @@ class MCPClientManager:
         }
 
         Args:
-            config_path: Percorso al file mcp.json
-            server_name: Nome del server nel file config
+            config_path: Path to mcp.json file
+            server_name: Name of server in config file
 
         Returns:
-            MCPClientManager configurato
+            Configured MCPClientManager
 
         Raises:
-            ValueError: Se server non trovato nel file
-            FileNotFoundError: Se file non esiste
+            ValueError: If server not found in file
+            FileNotFoundError: If file does not exist
         """
         with open(config_path, 'r') as f:
             config_data = json.load(f)
@@ -210,7 +210,7 @@ class MCPClientManager:
         if not server_config:
             raise ValueError(f"Server '{server_name}' not found in config file")
 
-        # Determina il transport dal config
+        # Determine transport from config
         if 'url' in server_config:
             transport = "streamable-http"
             return cls(MCPConfig(
@@ -232,45 +232,45 @@ class MCPClientManager:
 
     async def connect_server(self) -> bool:
         """
-        Connette al server MCP usando il transport configurato.
+        Connect to MCP server using configured transport.
 
-        Gestisce automaticamente:
-        - Selezione del transport (stdio/streamable-http)
-        - Impostazione environment variables (se specificate)
-        - Inizializzazione sessione MCP
-        - Loading di tools, resources, prompts disponibili
-        - Estrazione session ID per connessioni HTTP
+        Automatically handles:
+        - Transport selection (stdio/streamable-http)
+        - Environment variables setup (if specified)
+        - MCP session initialization
+        - Loading available tools, resources, prompts
+        - Session ID extraction for HTTP connections
 
         Returns:
-            bool: True se connessione riuscita, False altrimenti
+            bool: True if connection successful, False otherwise
 
         Note:
-            - Per stdio: lancia subprocess e comunica via stdin/stdout
-            - Per streamable-http: apre connessione HTTP con possibile SSE stream
-            - Environment variables vengono settate solo per stdio transport
+            - For stdio: launches subprocess and communicates via stdin/stdout
+            - For streamable-http: opens HTTP connection with possible SSE stream
+            - Environment variables are set only for stdio transport
         """
         try:
-            print(f"DEBUG: Connessione {self.config.transport} a {self.name}")
+            print(f"DEBUG: Connecting {self.config.transport} to {self.name}")
 
             # Set environment variables if provided
             if self.config.env:
                 for key, value in self.config.env.items():
                     os.environ[key] = value
 
-            # Factory per transport
+            # Transport factory
             if self.config.transport == "stdio":
                 return await self._connect_stdio()
             elif self.config.transport in ["streamable-http", "http"]:
                 return await self._connect_streamable_http()
             else:
-                raise ValueError(f"Transport non supportato: {self.config.transport}")
+                raise ValueError(f"Unsupported transport: {self.config.transport}")
 
         except Exception as e:
-            print(f"Errore connessione: {e}")
+            print(f"Connection error: {e}")
             return False
 
     async def _connect_stdio(self) -> bool:
-        """Connessione STDIO"""
+        """STDIO connection"""
         from mcp.client.stdio import stdio_client
 
         params = StdioServerParameters(
@@ -292,16 +292,16 @@ class MCPClientManager:
         return True
 
     async def _connect_streamable_http(self) -> bool:
-        """Connessione Streamable HTTP (MCP 2025-06-18)"""
+        """Streamable HTTP connection (MCP 2025-06-18)"""
         try:
             from mcp.client.streamable_http import streamablehttp_client
 
-            # Prepara headers con versione protocollo
+            # Prepare headers with protocol version
             headers = self.config.headers or {}
             headers['MCP-Protocol-Version'] = '2025-06-18'
             headers['Accept'] = 'application/json, text/event-stream'
 
-            # Usa il client streamable HTTP corretto
+            # Use correct streamable HTTP client
             self._client_connection = streamablehttp_client(self.config.url, headers=headers)
             read, write, _ = await self._client_connection.__aenter__()
 
@@ -321,14 +321,14 @@ class MCPClientManager:
             return True
 
         except ImportError:
-            print("Streamable HTTP client non disponibile. Installa: pip install 'mcp[client]'")
+            print("Streamable HTTP client not available. Install: pip install 'mcp[client]'")
             return False
         except Exception as e:
-            print(f"Errore Streamable HTTP: {e}")
+            print(f"Streamable HTTP error: {e}")
             return False
 
     async def _load_capabilities(self):
-        """Carica tools, resources e prompts disponibili"""
+        """Load available tools, resources and prompts"""
         # Load tools
         tools_result = await self._session.list_tools()
         self._available_tools = tools_result.tools
@@ -369,73 +369,73 @@ class MCPClientManager:
 
     async def get_session_id(self) -> Optional[str]:
         """
-        Ritorna session ID per connessioni HTTP, None per stdio.
+        Return session ID for HTTP connections, None for stdio.
 
-        Il session ID viene estratto dal header 'Mcp-Session-Id' durante
-        l'inizializzazione per server che supportano session management.
+        Session ID is extracted from 'Mcp-Session-Id' header during
+        initialization for servers that support session management.
 
         Returns:
-            Optional[str]: Session ID se disponibile, None per stdio transport
+            Optional[str]: Session ID if available, None for stdio transport
 
         Note:
-            Utilizzato per:
-            - Session management HTTP stateful
-            - Debugging connessioni remote
-            - Terminazione esplicita sessioni
+            Used for:
+            - Stateful HTTP session management
+            - Debugging remote connections
+            - Explicit session termination
         """
         return self._session_id
 
-    # Core MCP operations con validazione integrata
+    # Core MCP operations with integrated validation
     async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> CallToolResult:
         """
-        Chiama tool MCP con validazione automatica degli argomenti.
+        Call MCP tool with automatic argument validation.
 
-        MODIFICHE FASE 2:
-        - Valida e converte argomenti usando MCPValidator prima dell'invio
-        - Conversione automatica "10" → 10, "true" → True tramite Pydantic
-        - Mantiene signature identica (stesso input/output)
-        - Gestisce errori di validazione appropriatamente
+        PHASE 2 CHANGES:
+        - Validates and converts arguments using MCPValidator before sending
+        - Automatic conversion "10" → 10, "true" → True via Pydantic
+        - Maintains identical signature (same input/output)
+        - Appropriately handles validation errors
 
         Args:
-            tool_name: Nome del tool
-            arguments: Argomenti per il tool (possono essere stringhe dal LLM)
+            tool_name: Name of the tool
+            arguments: Arguments for the tool (can be strings from LLM)
 
         Returns:
-            CallToolResult: Risultato del tool
+            CallToolResult: Tool result
 
         Raises:
-            RuntimeError: Se non connesso
-            Exception: Errori di validazione o esecuzione con dettagli migliorati
+            RuntimeError: If not connected
+            Exception: Validation or execution errors with enhanced details
         """
         if not self._connected:
             raise RuntimeError("Not connected to server")
 
         try:
-            # NUOVO: Validazione e conversione automatica tramite MCPValidator
+            # NEW: Automatic validation and conversion via MCPValidator
             validated_arguments = self._validate_tool_arguments(tool_name, arguments)
 
-            # Chiamata al server con argomenti validati e convertiti
+            # Call server with validated and converted arguments
             tool_result = await self._session.call_tool(tool_name, validated_arguments)
             return tool_result
 
         except MCPValidationError as e:
-            # Errori di validazione - informazioni dettagliate per debug
+            # Validation errors - detailed information for debugging
             error_msg = f"Validation error for tool '{tool_name}': {e.validation_errors}"
             raise Exception(error_msg)
 
         except Exception as e:
-            # Altri errori - comportamento invariato con dettagli aggiuntivi
+            # Other errors - unchanged behavior with additional details
             error_msg = str(e)
 
-            # Estrai dettagli aggiuntivi dall'eccezione
+            # Extract additional details from exception
             if hasattr(e, 'data') and e.data:
                 error_msg += f" | Data: {e.data}"
 
-            # Controlla codici di errore specifici
+            # Check for specific error codes
             if hasattr(e, 'code'):
                 error_msg += f" | Code: {e.code}"
 
-            # Per errori HTTP, aggiungi status code
+            # For HTTP errors, add status code
             if "400" in str(e) or "Bad Request" in str(e):
                 error_msg += f" | Params sent: {arguments}"
 
@@ -443,42 +443,42 @@ class MCPClientManager:
 
     def _validate_tool_arguments(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Valida argomenti del tool usando schema MCP e MCPValidator.
+        Validate tool arguments using MCP schema and MCPValidator.
 
         Args:
-            tool_name: Nome del tool
-            arguments: Argomenti raw (possono essere stringhe dal LLM)
+            tool_name: Name of the tool
+            arguments: Raw arguments (can be strings from LLM)
 
         Returns:
-            Dict[str, Any]: Argomenti validati e convertiti nei tipi corretti
+            Dict[str, Any]: Validated and converted arguments with correct types
 
         Raises:
-            MCPValidationError: Se validazione fallisce
+            MCPValidationError: If validation fails
         """
-        # Trova il tool e il suo schema
+        # Find tool and its schema
         tool = self.find_tool(tool_name)
         if not tool:
             raise MCPValidationError(tool_name, [{"error": f"Tool '{tool_name}' not found"}])
 
-        # Se non ha inputSchema, passa argomenti così come sono
+        # If no inputSchema, pass arguments as-is
         if not hasattr(tool, 'inputSchema') or not tool.inputSchema:
             return arguments
 
-        # Validazione tramite MCPValidator - fa la magia della conversione tipi
+        # Validation via MCPValidator - performs type conversion magic
         return self._validator.validate_and_convert(tool_name, tool.inputSchema, arguments)
 
     async def list_resources(self) -> List[Resource]:
         """
-        Lista resources disponibili dal server MCP.
+        List available resources from MCP server.
 
-        Le resources sono data sources che il server espone per fornire
-        contesto ai modelli LLM. Simili a endpoint GET in REST API.
+        Resources are data sources that the server exposes to provide
+        context to LLM models. Similar to GET endpoints in REST API.
 
         Returns:
-            List[Resource]: Lista resources con uri, name, description
+            List[Resource]: List of resources with uri, name, description
 
         Raises:
-            RuntimeError: Se non connesso al server
+            RuntimeError: If not connected to server
 
         Examples:
             resources = await manager.list_resources()
@@ -493,16 +493,16 @@ class MCPClientManager:
 
     async def read_resource(self, uri: str):
         """
-        Leggi contenuto di una risorsa specifica tramite URI.
+        Read content of a specific resource via URI.
 
         Args:
-            uri: URI della risorsa (es. "file://document.txt", "config://settings")
+            uri: Resource URI (e.g. "file://document.txt", "config://settings")
 
         Returns:
-            ResourceContent: Contenuto della risorsa
+            ResourceContent: Resource content
 
         Raises:
-            RuntimeError: Se non connesso al server
+            RuntimeError: If not connected to server
 
         Examples:
             content = await manager.read_resource("file://readme.md")
@@ -517,16 +517,16 @@ class MCPClientManager:
 
     async def list_prompts(self) -> List[Prompt]:
         """
-        Lista prompts disponibili dal server MCP.
+        List available prompts from MCP server.
 
-        I prompts sono template riutilizzabili per interazioni con LLM,
-        possono avere argomenti parametrizzabili.
+        Prompts are reusable templates for interactions with LLM,
+        can have parameterizable arguments.
 
         Returns:
-            List[Prompt]: Lista prompts con name, description, arguments
+            List[Prompt]: List of prompts with name, description, arguments
 
         Raises:
-            RuntimeError: Se non connesso al server
+            RuntimeError: If not connected to server
 
         Examples:
             prompts = await manager.list_prompts()
@@ -541,17 +541,17 @@ class MCPClientManager:
 
     async def get_prompt(self, name: str, arguments: Dict[str, Any] = None):
         """
-        Esegui un prompt con argomenti specificati.
+        Execute a prompt with specified arguments.
 
         Args:
-            name: Nome del prompt da eseguire
-            arguments: Dizionario argomenti per il prompt
+            name: Name of the prompt to execute
+            arguments: Dictionary of arguments for the prompt
 
         Returns:
-            PromptResult: Risultato con messages formatati per LLM
+            PromptResult: Result with messages formatted for LLM
 
         Raises:
-            RuntimeError: Se non connesso al server
+            RuntimeError: If not connected to server
 
         Examples:
             result = await manager.get_prompt("greet_user", {"name": "Alice"})
@@ -565,7 +565,7 @@ class MCPClientManager:
         return result
 
     async def disconnect(self):
-        """Disconnette dal server gestendo entrambi i transport"""
+        """Disconnect from server handling both transports"""
         if self._session:
             await self._session.__aexit__(None, None, None)
         if self._client_connection:
@@ -580,5 +580,5 @@ class MCPClientManager:
         self._available_prompts = []
         self._session_id = None
 
-        print(f"Disconnesso da {self.name}")
+        print(f"Disconnected from {self.name}")
 

@@ -12,7 +12,7 @@ from src.tools.tool_base import ToolBase
 from src.mapping.provider_mapping import OCI_GENERATIVE_AI_COHERE
 from src.logging_config import get_logger
 
-# Logger per CohereRequestStrategy
+# Logger for CohereRequestStrategy
 logger = get_logger(__name__)
 
 
@@ -57,7 +57,7 @@ class CohereRequestStrategy(OCIRequestStrategy):
         for i, message in enumerate(messages):
             msg_type = type(message).__name__
 
-            # TRACE: preview del contenuto messaggio
+            # TRACE: preview of message content
             content_preview = ""
             if hasattr(message, 'content') and message.content:
                 content_preview = str(message.content)[:100]

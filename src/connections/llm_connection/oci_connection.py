@@ -11,10 +11,10 @@ load_dotenv()
 
 class OCIConnection(AbstractLLMConnection):
     """
-    Singleton thread-safe per gestire la connessione a OCI Generative AI.
+    Thread-safe singleton to manage connection to OCI Generative AI.
 
-    La connection è condivisa tra tutti i provider OCI che usano le stesse credenziali.
-    Il client viene inizializzato lazy al primo accesso.
+    The connection is shared among all OCI providers using the same credentials.
+    Client is lazy initialized on first access.
     """
 
     _instance: Optional['OCIConnection'] = None
@@ -31,14 +31,14 @@ class OCIConnection(AbstractLLMConnection):
 
     def get_client(self):
         """
-        Ritorna il client OCI Generative AI configurato.
-        Lazy initialization: crea il client solo al primo accesso.
+        Returns the configured OCI Generative AI client.
+        Lazy initialization: creates client only on first access.
 
         Returns:
-            GenerativeAiInferenceClient configurato
+            Configured GenerativeAiInferenceClient
 
         Raises:
-            ValueError: Se le credenziali OCI non sono configurate
+            ValueError: If OCI credentials are not configured
         """
         if self._client is None:
             with self._client_lock:
@@ -48,16 +48,16 @@ class OCIConnection(AbstractLLMConnection):
 
     def _create_client(self):
         """
-        Crea e configura il client OCI Generative AI.
+        Creates and configures the OCI Generative AI client.
 
         Returns:
-            GenerativeAiInferenceClient configurato
+            Configured GenerativeAiInferenceClient
 
         Raises:
-            ValueError: Se le credenziali mancanti
-            ImportError: Se libreria oci non installata
+            ValueError: If credentials are missing
+            ImportError: If oci library is not installed
         """
-        # Import qui per evitare dipendenze circolari
+        # Import here to avoid circular dependencies
         try:
             from oci.generative_ai_inference import GenerativeAiInferenceClient
         except ImportError:
@@ -68,18 +68,18 @@ class OCIConnection(AbstractLLMConnection):
         from src.k8s_config import YamlConfig
         import os
 
-        # Leggi configurazione OCI completa da infrastructure.yaml (include private_key_content)
+        # Read complete OCI configuration from infrastructure.yaml (includes private_key_content)
         infra_config = YamlConfig(os.getenv("INFRASTRUCTURE_CONFIG_PATH"))
         oci_provider_config = infra_config.get("llm_providers.oci")
 
-        # Validazione presenza chiave privata
+        # Validate presence of private key
         if not oci_provider_config.get("private_key_content"):
             raise ValueError(
-                "Credenziale private_key_content mancante in infrastructure.yaml. "
-                "Questa chiave deve essere configurata nel ConfigMap o Secrets di Kubernetes."
+                "Credential private_key_content missing in infrastructure.yaml. "
+                "This key must be configured in the Kubernetes ConfigMap or Secrets."
             )
 
-        # Configurazione OCI
+        # OCI configuration
         oci_config = {
             'user': oci_provider_config["user_id"],
             'fingerprint': oci_provider_config["fingerprint"],

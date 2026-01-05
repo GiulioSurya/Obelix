@@ -31,7 +31,7 @@ from src.llm_providers.oci_strategies.cohere_strategy import CohereRequestStrate
 logger = get_logger(__name__)
 
 class OCILLm(AbstractLLMProvider):
-    """Provider per OCI Generative AI con parametri configurabili"""
+    """Provider for OCI Generative AI with configurable parameters"""
 
     # Available strategies
     _STRATEGIES = [
@@ -58,28 +58,28 @@ class OCILLm(AbstractLLMProvider):
                  logger: bool = False,
                  **strategy_kwargs):
         """
-        Inizializza il provider OCI con dependency injection della connection
+        Initialize the OCI provider with dependency injection of connection
 
         Args:
-            connection: OCIConnection singleton (default: None, riusa da GlobalConfig se provider match)
-            model_id: ID del modello OCI (default: "meta.llama-3.3-70b-instruct")
-            max_tokens: Numero massimo di token (default: 2000)
-            temperature: Temperatura per sampling (default: 0.1)
+            connection: OCIConnection singleton (default: None, reuse from GlobalConfig if provider matches)
+            model_id: OCI model ID (default: "meta.llama-3.3-70b-instruct")
+            max_tokens: Maximum number of tokens (default: 2000)
+            temperature: Sampling temperature (default: 0.1)
             top_p: Top-p sampling (default: None)
             top_k: Top-k sampling (default: None)
-            frequency_penalty: Penalità frequenza (default: None)
-            presence_penalty: Penalità presenza (default: None)
-            stop_sequences: Sequenze di stop (default: None)
-            is_stream: Abilita streaming (default: False)
-            strategy: Strategy specifica da usare (default: auto-detect dal model_id)
-            **strategy_kwargs: Parametri specifici per la strategia selezionata
+            frequency_penalty: Frequency penalty (default: None)
+            presence_penalty: Presence penalty (default: None)
+            stop_sequences: Stop sequences (default: None)
+            is_stream: Enable streaming (default: False)
+            strategy: Specific strategy to use (default: auto-detect from model_id)
+            **strategy_kwargs: Strategy-specific parameters
                 Generic: reasoning_effort, verbosity, num_generations, log_probs, etc.
                 Cohere: preamble_override, safety_mode, documents, citation_quality, etc.
 
         Raises:
-            ValueError: Se connection=None e GlobalConfig non ha OCI_GENERATIVE_AI settato
+            ValueError: If connection=None and GlobalConfig does not have OCI_GENERATIVE_AI set
         """
-        # Configura logging OCI SDK se abilitato in infrastructure.yaml
+        # Configure OCI SDK logging if enabled in infrastructure.yaml
 
 
         if logger is True:
@@ -87,11 +87,11 @@ class OCILLm(AbstractLLMProvider):
             logging.getLogger('oci').setLevel(logging.DEBUG)
             oci.base_client.is_http_log_enabled(True)
         else:
-            # Disabilita logging OCI SDK se non richiesto
+            # Disable OCI SDK logging if not requested
             logging.getLogger('oci').setLevel(logging.WARNING)
             oci.base_client.is_http_log_enabled(False)
 
-        # Dependency injection della connection con fallback a GlobalConfig
+        # Dependency injection of connection with fallback to GlobalConfig
         if connection is None:
             connection = self._get_connection_from_global_config(
                 Providers.OCI_GENERATIVE_AI,
@@ -100,7 +100,7 @@ class OCILLm(AbstractLLMProvider):
 
         self.connection = connection
 
-        # Salva parametri per uso nelle chiamate
+        # Save parameters for use in calls
         self.model_id = model_id
         self.max_tokens = max_tokens
         self.temperature = temperature
@@ -141,16 +141,16 @@ class OCILLm(AbstractLLMProvider):
 
     def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
         """
-        Invoca il modello OCI con messaggi e tool standardizzati.
-        Usa la strategia appropriata (auto-detected o specificata) per tutto il flusso.
+        Call the OCI model with standardized messages and tools.
+        Uses the appropriate strategy (auto-detected or specified) for the entire flow.
         """
-        # 1. La strategy converte messaggi e tool nel formato provider-specific
+        # 1. The strategy converts messages and tools to provider-specific format
         converted_messages = self.strategy.convert_messages(messages)
         converted_tools = self.strategy.convert_tools(tools)
 
         logger.debug(f"OCI invoke: model={self.model_id}, messages={len(converted_messages)}, tools={len(converted_tools)}")
 
-        # 2. La strategy costruisce la richiesta specifica (Generic o Cohere)
+        # 2. The strategy builds the specific request (Generic or Cohere)
         chat_request = self.strategy.build_request(
             converted_messages=converted_messages,
             converted_tools=converted_tools,
@@ -165,7 +165,7 @@ class OCILLm(AbstractLLMProvider):
             **self.strategy_kwargs
         )
 
-        # 3. Chiama OCI usando il client dalla connection
+        # 3. Call OCI using client from connection
         from src.k8s_config import YamlConfig
         import os
         infra_config = YamlConfig(os.getenv("INFRASTRUCTURE_CONFIG_PATH"))
@@ -184,27 +184,27 @@ class OCILLm(AbstractLLMProvider):
             logger.info(f"OCI chat completed: {response.data.model_id}")
             logger.debug(f"OCI response tokens: {getattr(response.data.chat_response.usage, 'total_tokens', 'N/A')}")
         except Exception as e:
-            # Log errore con dump messaggi per debug "Unsafe Text detected"
+            # Log error with message dump for debugging "Unsafe Text detected"
             logger.error(f"OCI request failed: {e}")
             for i, msg in enumerate(converted_messages):
                 logger.error(f"msg[{i}]: {getattr(msg, 'content', 'N/A')}")
             raise
 
-        # 4. Converte response in AssistantMessage standardizzato
+        # 4. Convert response to standardized AssistantMessage
         assistant_message = self._convert_response_to_assistant_message(response)
         return assistant_message
 
     def _convert_response_to_assistant_message(self, response) -> AssistantMessage:
         """
-        Converte risposta OCI in AssistantMessage standardizzato.
-        Usa la strategy corrente per estrarre tool_calls con il formato giusto.
+        Convert OCI response to standardized AssistantMessage.
+        Uses the current strategy to extract tool_calls in the correct format.
         """
-        # Usa il mapping della strategy per estrarre tool_calls (Generic o Cohere)
+        # Use the strategy's mapping to extract tool_calls (Generic or Cohere)
         mapping = self.strategy.get_mapping()
 
         tool_calls = mapping["tool_output"]["tool_calls"](response)
 
-        # Estrae il contenuto testuale
+        # Extract text content
         # GENERIC: content in choices[0].message.content
         # COHERE: content in chat_response.text
         content = ""
@@ -225,7 +225,7 @@ class OCILLm(AbstractLLMProvider):
               hasattr(response.data.chat_response, 'text')):
             content = response.data.chat_response.text
 
-        # Estrae usage dalla response OCI
+        # Extract usage from OCI response
         usage = None
         try:
             usage_data = response.data.chat_response.usage
@@ -235,7 +235,7 @@ class OCILLm(AbstractLLMProvider):
                 total_tokens=usage_data.total_tokens
             )
         except AttributeError:
-            # Se non riesce a estrarre usage, continua senza (usage rimane None)
+            # If unable to extract usage, continue without it (usage remains None)
             pass
 
         return AssistantMessage(

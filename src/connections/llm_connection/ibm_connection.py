@@ -11,10 +11,10 @@ load_dotenv()
 
 class IBMConnection(AbstractLLMConnection):
     """
-    Singleton thread-safe per gestire la connessione a IBM Watson X.
+    Thread-safe singleton to manage connection to IBM Watson X.
 
-    La connection è condivisa tra tutti i provider IBM che usano le stesse credenziali.
-    Le credenziali vengono validate al primo accesso.
+    The connection is shared among all IBM providers using the same credentials.
+    Credentials are validated on first access.
     """
 
     _instance: Optional['IBMConnection'] = None
@@ -31,17 +31,17 @@ class IBMConnection(AbstractLLMConnection):
 
     def get_client(self):
         """
-        Ritorna le credenziali IBM Watson X configurate.
+        Returns the configured IBM Watson X credentials.
 
-        NOTA: IBM Watson X non ha un client singleton vero e proprio.
-        Ogni ModelInference viene creato con model_id specifico,
-        ma condivide le stesse credenziali.
+        NOTE: IBM Watson X does not have a true singleton client.
+        Each ModelInference is created with a specific model_id,
+        but shares the same credentials.
 
         Returns:
-            Credentials IBM Watson X
+            IBM Watson X Credentials
 
         Raises:
-            ValueError: Se le credenziali IBM non sono configurate
+            ValueError: If IBM credentials are not configured
         """
         if self._credentials is None:
             with self._credentials_lock:
@@ -51,16 +51,16 @@ class IBMConnection(AbstractLLMConnection):
 
     def _create_credentials(self):
         """
-        Crea e valida le credenziali IBM Watson X.
+        Creates and validates IBM Watson X credentials.
 
         Returns:
-            Credentials IBM Watson X configurate
+            Configured IBM Watson X Credentials
 
         Raises:
-            ValueError: Se le credenziali mancanti
-            ImportError: Se libreria ibm-watsonx-ai non installata
+            ValueError: If credentials are missing
+            ImportError: If ibm-watsonx-ai library is not installed
         """
-        # Import qui per evitare dipendenze circolari
+        # Import here to avoid circular dependencies
         try:
             from ibm_watsonx_ai import Credentials
         except ImportError:
@@ -68,14 +68,14 @@ class IBMConnection(AbstractLLMConnection):
                 "ibm-watsonx-ai is not installed. Install with: pip install ibm-watsonx-ai"
             )
 
-        # Validazione credenziali
+        # Validate credentials
         api_key = os.getenv("IBM_WATSONX_API_KEY")
         project_id = os.getenv("IBM_WATSONX_PROJECT_ID")
 
         if not api_key or not project_id:
             raise ValueError(
-                "Credenziali IBM Watson X mancanti. "
-                "Richieste: IBM_WATSONX_API_KEY, IBM_WATSONX_PROJECT_ID"
+                "IBM Watson X credentials missing. "
+                "Required: IBM_WATSONX_API_KEY, IBM_WATSONX_PROJECT_ID"
             )
 
         return Credentials(
@@ -85,15 +85,15 @@ class IBMConnection(AbstractLLMConnection):
 
     def get_project_id(self) -> str:
         """
-        Ritorna il project_id IBM Watson X.
+        Returns the IBM Watson X project_id.
 
         Returns:
-            Project ID configurato
+            Configured Project ID
 
         Raises:
-            ValueError: Se project_id non configurato
+            ValueError: If project_id is not configured
         """
         project_id = os.getenv("IBM_WATSONX_PROJECT_ID")
         if not project_id:
-            raise ValueError("IBM_WATSONX_PROJECT_ID non configurato")
+            raise ValueError("IBM_WATSONX_PROJECT_ID not configured")
         return project_id

@@ -4,12 +4,12 @@ from src.providers import Providers
 
 class GlobalConfig:
     """
-    Singleton per gestire configurazione globale LLM providers.
+    Singleton to manage global LLM provider configuration.
 
-    Gestisce:
-    - Provider corrente
-    - Connection singleton per ogni provider (lazy init)
-    - Factory per creare provider instances con parametri custom
+    Manages:
+    - Current provider
+    - Singleton connection for each provider (lazy init)
+    - Factory to create provider instances with custom parameters
     """
     _instance = None
     _current_provider = None
@@ -23,42 +23,42 @@ class GlobalConfig:
 
     def set_provider(self, provider: Providers):
         """
-        Imposta il provider corrente.
+        Set the current provider.
 
         Args:
-            provider: Provider da usare (OCI, IBM, Anthropic, etc.)
+            provider: Provider to use (OCI, IBM, Anthropic, etc.)
         """
         self._current_provider = provider
 
     def get_current_provider(self) -> Providers:
         """
-        Ritorna il provider corrente.
+        Return the current provider.
 
         Returns:
-            Provider enum corrente
+            Current provider enum
 
         Raises:
-            ValueError: Se provider non impostato
+            ValueError: If provider is not set
         """
         if self._current_provider is None:
-            raise ValueError("Provider non impostato. Usa GlobalConfig().set_provider()")
+            raise ValueError("Provider not set. Use GlobalConfig().set_provider()")
         return self._current_provider
 
     def get_current_provider_instance(self, **kwargs):
         """
-        Crea un'istanza del provider corrente con parametri personalizzabili.
+        Create an instance of the current provider with customizable parameters.
 
-        Usa connection singleton appropriate (lazy init).
-        Permette di personalizzare model_id, temperature, max_tokens, etc.
+        Uses appropriate singleton connections (lazy init).
+        Allows customization of model_id, temperature, max_tokens, etc.
 
         Args:
-            **kwargs: Parametri specifici del provider (model_id, temperature, etc.)
+            **kwargs: Provider-specific parameters (model_id, temperature, etc.)
 
         Returns:
-            Istanza del provider configurato
+            Configured provider instance
 
         Raises:
-            ValueError: Se provider non impostato o non supportato
+            ValueError: If provider is not set or not supported
 
         Examples:
             >>> config = GlobalConfig()
@@ -66,26 +66,26 @@ class GlobalConfig:
             >>> provider = config.get_current_provider_instance(model_id="meta.llama-3.3-70b-instruct", temperature=0.5)
         """
         if self._current_provider is None:
-            raise ValueError("Provider non impostato. Usa GlobalConfig().set_provider()")
+            raise ValueError("Provider not set. Use GlobalConfig().set_provider()")
 
-        # Lazy init della connection (singleton)
+        # Lazy init of connection (singleton)
         if self._current_provider not in self._connections:
             self._connections[self._current_provider] = self._create_connection(self._current_provider)
 
         connection = self._connections[self._current_provider]
 
-        # Crea provider con connection + kwargs personalizzati
+        # Create provider with connection + custom kwargs
         return self._create_provider_instance(self._current_provider, connection, **kwargs)
 
     def _create_connection(self, provider: Providers):
         """
-        Crea la connection singleton appropriata per il provider.
+        Create the appropriate singleton connection for the provider.
 
         Args:
             provider: Provider enum
 
         Returns:
-            Connection singleton (OCIConnection, IBMConnection, etc.)
+            Singleton connection (OCIConnection, IBMConnection, etc.)
         """
         if provider == Providers.OCI_GENERATIVE_AI:
             from src.connections.llm_connection import OCIConnection
@@ -97,25 +97,25 @@ class GlobalConfig:
             from src.connections.llm_connection import AnthropicConnection
             return AnthropicConnection()
         elif provider == Providers.OLLAMA:
-            # Ollama non ha connection singleton (usa client locale)
+            # Ollama does not have singleton connection (uses local client)
             return None
         elif provider == Providers.VLLM:
-            # vLLM non ha connection singleton (carica modello in-process)
+            # vLLM does not have singleton connection (loads model in-process)
             return None
         else:
-            raise ValueError(f"Provider {provider} non supportato")
+            raise ValueError(f"Provider {provider} not supported")
 
     def _create_provider_instance(self, provider: Providers, connection, **kwargs):
         """
-        Crea istanza del provider con connection e parametri custom.
+        Create provider instance with connection and custom parameters.
 
         Args:
             provider: Provider enum
-            connection: Connection singleton (o None)
-            **kwargs: Parametri custom per il provider
+            connection: Singleton connection (or None)
+            **kwargs: Custom parameters for the provider
 
         Returns:
-            Istanza del provider
+            Provider instance
         """
         if provider == Providers.OCI_GENERATIVE_AI:
             from src.llm_providers.oci_provider import OCILLm
@@ -133,6 +133,6 @@ class GlobalConfig:
             from src.llm_providers.vllm_provider import VLLMProvider
             return VLLMProvider(**kwargs)
         else:
-            raise ValueError(f"Provider {provider} non supportato")
+            raise ValueError(f"Provider {provider} not supported")
 
 

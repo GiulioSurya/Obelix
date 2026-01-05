@@ -19,7 +19,7 @@ from src.tools.tool_base import ToolBase
 from src.mapping.provider_mapping import OCI_GENERATIVE_AI_GENERIC
 from src.logging_config import get_logger
 
-# Logger per GenericRequestStrategy
+# Logger for GenericRequestStrategy
 logger = get_logger(__name__)
 
 
@@ -42,7 +42,7 @@ class GenericRequestStrategy(OCIRequestStrategy):
         for i, message in enumerate(messages):
             msg_type = type(message).__name__
 
-            # TRACE: preview del contenuto messaggio
+            # TRACE: preview of message content
             content_preview = ""
             if hasattr(message, 'content') and message.content:
                 content_preview = str(message.content)[:100]

@@ -6,9 +6,9 @@ from enum import Enum
 from src.messages.base_message import BaseMessage, MessageRole
 
 class ToolCall(BaseModel):
-    id: str = Field(..., description="ID univoco della chiamata tool")
-    name: str = Field(..., description="Nome del tool da chiamare")
-    arguments: Dict[str, Any] = Field(..., description="Argomenti per il tool")
+    id: str = Field(..., description="Unique ID of the tool call")
+    name: str = Field(..., description="Name of the tool to call")
+    arguments: Dict[str, Any] = Field(..., description="Arguments for the tool")
 
 
 class ToolStatus(str, Enum):
@@ -18,15 +18,15 @@ class ToolStatus(str, Enum):
 
 
 class ToolResult(BaseModel):
-    tool_name: str = Field(..., description="Nome del tool")
-    tool_call_id: str = Field(..., description="ID della chiamata tool")
-    result: Any = Field(..., description="Risultato del tool")
+    tool_name: str = Field(..., description="Name of the tool")
+    tool_call_id: str = Field(..., description="ID of the tool call")
+    result: Any = Field(..., description="Result of the tool")
     status: ToolStatus = Field(default=ToolStatus.SUCCESS)
     error: Optional[str] = Field(None)
     execution_time: Optional[float] = Field(None)
 
     def __init__(self, **kwargs):
-        # Se c'è un errore, troncalo automaticamente
+        # If there is an error, truncate it automatically
         if 'error' in kwargs and kwargs['error']:
             kwargs['error'] = self._truncate_error_if_needed(kwargs['error'])
 
@@ -35,14 +35,14 @@ class ToolResult(BaseModel):
     @staticmethod
     def _truncate_error_if_needed(error_msg: str, max_length: int = 500) -> str:
         """
-        Tronca messaggi di errore troppo lunghi mantenendo inizio e fine
+        Truncate error messages that are too long while preserving beginning and end
 
         Args:
-            error_msg: Il messaggio di errore originale
-            max_length: Lunghezza massima oltre la quale troncare
+            error_msg: The original error message
+            max_length: Maximum length beyond which to truncate
 
         Returns:
-            Messaggio troncato se necessario
+            Truncated message if necessary
         """
         if not error_msg or len(error_msg) <= max_length:
             return error_msg
@@ -51,10 +51,10 @@ class ToolResult(BaseModel):
         tail_chars = 200
         separator = " ... [truncated] ... "
 
-        # Assicurati che head + tail + separator non superino max_length
+        # Ensure that head + tail + separator do not exceed max_length
         available_space = max_length - len(separator)
         if head_chars + tail_chars > available_space:
-            # Riduci proporzionalmente
+            # Reduce proportionally
             ratio = available_space / (head_chars + tail_chars)
             head_chars = int(head_chars * ratio)
             tail_chars = int(tail_chars * ratio)
@@ -91,18 +91,18 @@ class ToolMessage(BaseMessage):
 
 
 class MCPToolSchema(BaseModel):
-    """Schema tool in formato MCP standard - NON è un messaggio"""
+    """Tool schema in MCP standard format - NOT a message"""
 
     # MCP Standard Fields
-    name: str = Field(..., description="Identificatore univoco del tool")
-    description: Optional[str] = Field(None, description="Descrizione del tool")
-    title: Optional[str] = Field(None, description="Nome friendly per UI")
-    inputSchema: Dict[str, Any] = Field(..., description="JSON Schema parametri")
-    outputSchema: Optional[Dict[str, Any]] = Field(None, description="JSON Schema risposta")
-    annotations: Optional[Dict[str, Any]] = Field(None, description="Suggerimenti comportamentali")
+    name: str = Field(..., description="Unique identifier for the tool")
+    description: Optional[str] = Field(None, description="Description of the tool")
+    title: Optional[str] = Field(None, description="Friendly name for UI")
+    inputSchema: Dict[str, Any] = Field(..., description="JSON Schema for parameters")
+    outputSchema: Optional[Dict[str, Any]] = Field(None, description="JSON Schema for response")
+    annotations: Optional[Dict[str, Any]] = Field(None, description="Behavioral hints")
 
     class Config:
-        # Validazione strict
+        # Strict validation
         validate_assignment = True
-        # Nome del campo come appare in JSON (mantiene camelCase MCP)
+        # Field name as it appears in JSON (maintains MCP camelCase)
         populate_by_name = True

@@ -1,10 +1,10 @@
 # src/embedding_providers/__init__.py
 """
-Modulo per provider di embedding semantici.
+Module for semantic embedding providers.
 
 Exports:
-    AbstractEmbeddingProvider: Classe base astratta per embedding providers
-    OCIEmbeddingProvider: Implementazione per OCI Cohere Embed v4
+    AbstractEmbeddingProvider: Abstract base class for embedding providers
+    OCIEmbeddingProvider: Implementation for OCI Cohere Embed v4
 """
 
 from src.embedding_providers.abstract_embedding_provider import (

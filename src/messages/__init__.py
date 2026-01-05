@@ -1,5 +1,5 @@
 """
-Messages module - Definizioni di messaggi per la comunicazione con LLM.
+Messages module - Message definitions for communication with LLM.
 """
 
 from src.messages.base_message import BaseMessage

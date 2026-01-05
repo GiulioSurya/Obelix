@@ -3,34 +3,34 @@ from pydantic import BaseModel, Field
 
 
 class Usage(BaseModel):
-    """Modello per tracciare l'utilizzo dei token LLM"""
-    input_tokens: int = Field(..., ge=0, description="Numero di token in input (prompt)")
-    output_tokens: int = Field(..., ge=0, description="Numero di token in output (completion)")
-    total_tokens: int = Field(..., ge=0, description="Numero totale di token utilizzati")
+    """Model for tracking LLM token usage"""
+    input_tokens: int = Field(..., ge=0, description="Number of input tokens (prompt)")
+    output_tokens: int = Field(..., ge=0, description="Number of output tokens (completion)")
+    total_tokens: int = Field(..., ge=0, description="Total number of tokens used")
 
     class Config:
-        # Validazione strict per assignment
+        # Strict validation for assignment
         validate_assignment = True
 
 
 class AgentUsage(BaseModel):
-    """Accumula l'utilizzo totale dei token per un agente"""
-    model_id: str = Field(..., description="ID del modello LLM")
-    total_input_tokens: int = Field(default=0, ge=0, description="Somma di tutti i token in input")
-    total_output_tokens: int = Field(default=0, ge=0, description="Somma di tutti i token in output")
-    total_tokens: int = Field(default=0, ge=0, description="Somma totale di tutti i token")
-    call_count: int = Field(default=0, ge=0, description="Numero di chiamate LLM effettuate")
+    """Accumulates total token usage for an agent"""
+    model_id: str = Field(..., description="ID of the LLM model")
+    total_input_tokens: int = Field(default=0, ge=0, description="Sum of all input tokens")
+    total_output_tokens: int = Field(default=0, ge=0, description="Sum of all output tokens")
+    total_tokens: int = Field(default=0, ge=0, description="Total sum of all tokens")
+    call_count: int = Field(default=0, ge=0, description="Number of LLM calls made")
 
     class Config:
-        # Validazione strict per assignment
+        # Strict validation for assignment
         validate_assignment = True
 
     def add_usage(self, usage: Usage) -> None:
         """
-        Somma i token di una nuova chiamata LLM all'accumulo totale
+        Add tokens from a new LLM call to the total accumulation
 
         Args:
-            usage: Oggetto Usage con i token della singola chiamata
+            usage: Usage object with tokens from the single call
         """
         self.total_input_tokens += usage.input_tokens
         self.total_output_tokens += usage.output_tokens
@@ -38,7 +38,7 @@ class AgentUsage(BaseModel):
         self.call_count += 1
 
     def reset(self) -> None:
-        """Reset dei contatori a zero"""
+        """Reset counters to zero"""
         self.total_input_tokens = 0
         self.total_output_tokens = 0
         self.total_tokens = 0

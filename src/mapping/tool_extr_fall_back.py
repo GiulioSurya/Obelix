@@ -7,19 +7,19 @@ from src.messages.tool_message import ToolCall
 
 def _extract_tool_calls_anthropic(response):
     """
-    Estrae tool calls da response Anthropic Claude.
+    Extract tool calls from Anthropic Claude response.
 
-    Anthropic ritorna content come lista di blocks. I tool calls sono blocks con:
+    Anthropic returns content as a list of blocks. Tool calls are blocks with:
     - type="tool_use"
-    - id: identificatore univoco
-    - name: nome del tool
-    - input: argomenti (dict)
+    - id: unique identifier
+    - name: tool name
+    - input: arguments (dict)
 
     Args:
-        response: Anthropic Message response object con .content attribute
+        response: Anthropic Message response object with .content attribute
 
     Returns:
-        Lista di ToolCall objects estratti dai tool_use blocks
+        List of ToolCall objects extracted from tool_use blocks
     """
     tool_calls = []
 
@@ -27,7 +27,7 @@ def _extract_tool_calls_anthropic(response):
         return []
 
     for block in response.content:
-        # Gestisce sia dict che object notation
+        # Handles both dict and object notation
         block_type = (
             block.get("type") if isinstance(block, dict)
             else getattr(block, "type", None)
@@ -180,7 +180,7 @@ def _parse_tool_call_from_content(content):
 #####---------OCI GENERIC (Llama, Gemini, Grok, OpenAI)
 def _extract_tool_calls_generic(resp):
     """
-    Estrae tool calls per GenericChatRequest (Llama, Gemini, Grok, OpenAI).
+    Extract tool calls for GenericChatRequest (Llama, Gemini, Grok, OpenAI).
     Path: resp.data.chat_response.choices[0].message.tool_calls
     """
     # Try structured tool calls first
@@ -199,23 +199,23 @@ def _extract_tool_calls_generic(resp):
 #####---------OCI COHERE (Cohere Command models)
 def _extract_tool_calls_cohere(resp):
     """
-    Estrae tool calls per CohereChatRequest (Cohere Command models).
+    Extract tool calls for CohereChatRequest (Cohere Command models).
     Path: resp.data.chat_response.tool_calls
-    Struttura: {name: str, parameters: dict}
+    Structure: {name: str, parameters: dict}
     """
 
-    # 1. Prima prova: tool calls strutturati (modo standard Cohere)
+    # 1. First try: structured tool calls (standard Cohere mode)
     structured_calls = []
 
-    # Cohere: tool_calls sono direttamente in chat_response, non dentro choices[0].message
+    # Cohere: tool_calls are directly in chat_response, not inside choices[0].message
     if (hasattr(resp, 'data') and
             hasattr(resp.data, 'chat_response') and
             hasattr(resp.data.chat_response, 'tool_calls') and
             resp.data.chat_response.tool_calls):
 
         for call in resp.data.chat_response.tool_calls:
-            # Cohere usa 'name' e 'parameters' (non 'arguments')
-            tool_id = str(uuid.uuid4())  # Cohere non fornisce ID, lo generiamo
+            # Cohere uses 'name' and 'parameters' (not 'arguments')
+            tool_id = str(uuid.uuid4())  # Cohere doesn't provide ID, we generate it
 
             structured_calls.append(ToolCall(
                 id=tool_id,
@@ -223,11 +223,11 @@ def _extract_tool_calls_cohere(resp):
                 arguments=call.parameters if hasattr(call, 'parameters') else {}
             ))
 
-    # Se abbiamo tool calls strutturati, usali
+    # If we have structured tool calls, use them
     if structured_calls:
         return structured_calls
 
-    # 2. Fallback: parsing robusto del JSON dal content
+    # 2. Fallback: robust JSON parsing from content
     content = ""
     if (hasattr(resp, 'data') and
             hasattr(resp.data, 'chat_response') and
@@ -239,27 +239,27 @@ def _extract_tool_calls_cohere(resp):
 
     parsed_calls = []
 
-    # Trova la prima graffa
+    # Find the first brace
     start_pos = content.find('{')
     if start_pos == -1:
         return []
 
-    # Pre-processing: rimuovi escape invalidi (es. \' che non è valido in JSON)
+    # Pre-processing: remove invalid escapes (e.g. \' which is not valid in JSON)
     json_content = content[start_pos:].replace("\\'", "'")
 
-    # Usa JSONDecoder per parsing automatico e robusto
+    # Use JSONDecoder for automatic and robust parsing
     decoder = json.JSONDecoder()
     try:
         obj, end_idx = decoder.raw_decode(json_content, 0)
 
-        # Verifica se ha la struttura di un tool call
+        # Verify it has the structure of a tool call
         if isinstance(obj, dict) and "name" in obj:
             tool_id = str(uuid.uuid4())
 
-            # Estrai parametri - Cohere usa "parameters"
+            # Extract parameters - Cohere uses "parameters"
             arguments = obj.get("parameters") or obj.get("arguments", {})
 
-            # Se arguments è vuoto, usa tutte le chiavi tranne "name" e "type"
+            # If arguments is empty, use all keys except "name" and "type"
             if not arguments or not isinstance(arguments, dict):
                 arguments = {}
                 for key, value in obj.items():
@@ -277,19 +277,19 @@ def _extract_tool_calls_cohere(resp):
     return parsed_calls
 
 
-# Manteniamo per backward compatibility
+# Keep for backward compatibility
 def _extract_tool_calls_hybrid(resp):
     """
-    [DEPRECATED] Usa _extract_tool_calls_generic o _extract_tool_calls_cohere.
-    Manteniamo per backward compatibility con codice esistente.
+    [DEPRECATED] Use _extract_tool_calls_generic or _extract_tool_calls_cohere.
+    Kept for backward compatibility with existing code.
     """
     return _extract_tool_calls_generic(resp)
 
 
 def _extract_tool_calls_ibm_watson_hybrid(resp):
-    """Estrae tool calls per IBM Watson: prima strutturati, poi dal content"""
+    """Extract tool calls for IBM Watson: first structured, then from content"""
 
-    # 1. Prima prova: tool calls strutturati (modo standard IBM Watson)
+    # 1. First try: structured tool calls (standard IBM Watson mode)
     structured_calls = []
     if (resp.get("choices") and
             resp["choices"][0].get("message", {}).get("tool_calls")):
@@ -305,38 +305,38 @@ def _extract_tool_calls_ibm_watson_hybrid(resp):
             if call.get("type") == "function"
         ]
 
-    # Se abbiamo tool calls strutturati, usali
+    # If we have structured tool calls, use them
     if structured_calls:
         return structured_calls
 
-    # 2. Fallback: parsing robusto del JSON dal content
+    # 2. Fallback: robust JSON parsing from content
     content = resp.get("choices", [{}])[0].get("message", {}).get("content", "")
     if not content:
         return []
 
     parsed_calls = []
 
-    # Trova la prima graffa
+    # Find the first brace
     start_pos = content.find('{')
     if start_pos == -1:
         return []
 
-    # Pre-processing: rimuovi escape invalidi (es. \' che non è valido in JSON)
+    # Pre-processing: remove invalid escapes (e.g. \' which is not valid in JSON)
     json_content = content[start_pos:].replace("\\'", "'")
 
-    # Usa JSONDecoder per parsing automatico e robusto
+    # Use JSONDecoder for automatic and robust parsing
     decoder = json.JSONDecoder()
     try:
         obj, end_idx = decoder.raw_decode(json_content, 0)
 
-        # Verifica se ha la struttura di un tool call
+        # Verify it has the structure of a tool call
         if isinstance(obj, dict) and "name" in obj:
             tool_id = str(uuid.uuid4())
 
-            # Estrai parametri - supporta sia "parameters" che "arguments"
+            # Extract parameters - supports both "parameters" and "arguments"
             arguments = obj.get("parameters") or obj.get("arguments", {})
 
-            # Se arguments è vuoto, usa tutte le chiavi tranne "name" e "type"
+            # If arguments is empty, use all keys except "name" and "type"
             if not arguments or not isinstance(arguments, dict):
                 arguments = {}
                 for key, value in obj.items():
@@ -355,24 +355,24 @@ def _extract_tool_calls_ibm_watson_hybrid(resp):
 
 def _extract_tool_calls_ollama(resp):
     """
-    Estrae tool calls per Ollama ChatResponse.
-    Ollama segue formato OpenAI-compatibile: response.message.tool_calls
-    Struttura: ChatResponse con message.tool_calls = [{function: {name, arguments}}]
+    Extract tool calls for Ollama ChatResponse.
+    Ollama follows OpenAI-compatible format: response.message.tool_calls
+    Structure: ChatResponse with message.tool_calls = [{function: {name, arguments}}]
     """
-    # 1. Prima prova: tool calls strutturati dal message
+    # 1. First try: structured tool calls from message
     structured_calls = []
 
-    # Ollama: response è un oggetto ChatResponse con message.tool_calls
+    # Ollama: response is a ChatResponse object with message.tool_calls
     if (hasattr(resp, 'message') and
         hasattr(resp.message, 'tool_calls') and
         resp.message.tool_calls):
 
         for call in resp.message.tool_calls:
-            # Ollama tool_call ha: function: {name, arguments}
+            # Ollama tool_call has: function: {name, arguments}
             if hasattr(call, 'function'):
                 tool_id = getattr(call, 'id', str(uuid.uuid4()))
 
-                # Arguments possono essere string JSON o dict
+                # Arguments can be JSON string or dict
                 arguments = call.function.arguments
                 if isinstance(arguments, str):
                     try:
@@ -386,11 +386,11 @@ def _extract_tool_calls_ollama(resp):
                     arguments=arguments
                 ))
 
-    # Se abbiamo tool calls strutturati, usali
+    # If we have structured tool calls, use them
     if structured_calls:
         return structured_calls
 
-    # 2. Fallback: parsing dal content
+    # 2. Fallback: parsing from content
     content = ""
     if hasattr(resp, 'message') and hasattr(resp.message, 'content'):
         content = resp.message.content

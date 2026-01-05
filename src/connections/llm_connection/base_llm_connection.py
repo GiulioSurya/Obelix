@@ -5,24 +5,24 @@ from typing import Any
 
 class AbstractLLMConnection(ABC):
     """
-    Interfaccia base per connessioni singleton ai provider LLM.
+    Base interface for singleton connections to LLM providers.
 
-    Ogni provider implementa la propria connection che gestisce:
-    - Inizializzazione lazy del client
-    - Thread-safety tramite singleton pattern
-    - Validazione credenziali
+    Each provider implements its own connection that manages:
+    - Lazy client initialization
+    - Thread-safety via singleton pattern
+    - Credential validation
     """
 
     @abstractmethod
     def get_client(self) -> Any:
         """
-        Ritorna il client configurato per il provider LLM.
-        Lazy initialization: il client viene creato al primo accesso.
+        Returns the configured client for the LLM provider.
+        Lazy initialization: client is created on first access.
 
         Returns:
-            Client SDK del provider (tipo dipende dall'implementazione)
+            Provider SDK client (type depends on implementation)
 
         Raises:
-            ValueError: Se credenziali mancanti o invalide
+            ValueError: If credentials are missing or invalid
         """
         pass

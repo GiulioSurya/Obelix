@@ -12,7 +12,7 @@ from src.tools.mcp.mcp_client_manager import MCPClientManager, MCPConfig
 
 @dataclass
 class RuntimeCommand:
-    """Comando per comunicazione thread-safe"""
+    """Command for thread-safe communication"""
     action: str
     args: tuple = ()
     kwargs: dict = None
@@ -24,28 +24,28 @@ class RuntimeCommand:
 
 class MCPRuntimeManager:
     """
-    Runtime Manager per connessioni MCP persistenti con interfaccia sincrona.
+    Runtime Manager for persistent MCP connections with synchronous interface.
 
-    Mantiene una connessione MCP attiva per tutto il ciclo di vita dell'applicazione,
-    esponendo un'interfaccia sincrona semplice che nasconde la complessità asincrona.
+    Maintains an active MCP connection for the entire application lifecycle,
+    exposing a simple synchronous interface that hides asynchronous complexity.
 
     Features:
-    - Connessione automatica al primo utilizzo
-    - Interfaccia completamente sincrona
-    - Riconnessione automatica su errori
-    - Cleanup automatico a fine programma
-    - Thread-safe con queue interno
+    - Automatic connection on first use
+    - Completely synchronous interface
+    - Automatic reconnection on errors
+    - Automatic cleanup at program end
+    - Thread-safe with internal queue
 
     Usage:
-        # Inizializzazione
+        # Initialization
         config = MCPConfig(name="server", command="npx", args=["server"])
         runtime_manager = MCPRuntimeManager(config)
 
-        # Uso semplice
+        # Simple usage
         tools = runtime_manager.get_tools()
         result = runtime_manager.call_tool("search", {"query": "test"})
 
-        # Si disconnette automaticamente
+        # Disconnects automatically
     """
 
     def __init__(self, config: Union[MCPConfig, str], command: str = None, args: List[str] = None):
@@ -71,17 +71,17 @@ class MCPRuntimeManager:
         atexit.register(self.shutdown)
 
     def _ensure_running(self):
-        """Assicura che il thread async sia attivo"""
+        """Ensure async thread is active"""
         if self._thread is None or not self._thread.is_alive():
             self._start_async_thread()
 
     def _start_async_thread(self):
-        """Avvia il thread con event loop async"""
+        """Start thread with async event loop"""
         self._thread = threading.Thread(target=self._run_async_loop, daemon=True)
         self._thread.start()
 
     def _run_async_loop(self):
-        """Event loop principale del thread async"""
+        """Main event loop of async thread"""
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
 
@@ -91,18 +91,18 @@ class MCPRuntimeManager:
             self._loop.close()
 
     async def _async_worker(self):
-        """Worker asincrono che processa i comandi dalla queue"""
+        """Async worker that processes commands from queue"""
         self._mcp_manager = MCPClientManager(self.config)
 
         while not self._shutdown_event.is_set():
             try:
-                # Controlla per nuovi comandi (non-blocking)
+                # Check for new commands (non-blocking)
                 try:
                     cmd = self._request_queue.get(timeout=0.1)
                 except queue.Empty:
                     continue
 
-                # Processa il comando
+                # Process command
                 try:
                     result = await self._execute_command(cmd)
                     self._response_queue.put(('success', result))
@@ -113,8 +113,8 @@ class MCPRuntimeManager:
                 print(f"Error in async worker: {e}")
 
     async def _execute_command(self, cmd: RuntimeCommand):
-        """Esegue un comando specifico"""
-        # Auto-connect se necessario
+        """Execute a specific command"""
+        # Auto-connect if necessary
         if not self._connected:
             connected = await self._mcp_manager.connect_server()
             if not connected:
@@ -122,7 +122,7 @@ class MCPRuntimeManager:
             self._connected = True
             self._tools_cache = self._mcp_manager.get_available_tools()
 
-        # Esegui comando
+        # Execute command
         if cmd.action == 'get_tools':
             return self._tools_cache
 
@@ -158,13 +158,13 @@ class MCPRuntimeManager:
             raise ValueError(f"Unknown command: {cmd.action}")
 
     def _send_command(self, action: str, *args, **kwargs):
-        """Invia comando e attende risposta"""
+        """Send command and wait for response"""
         self._ensure_running()
 
         cmd = RuntimeCommand(action, args, kwargs)
         self._request_queue.put(cmd)
 
-        # Attendi risposta
+        # Wait for response
         try:
             result_type, result = self._response_queue.get(timeout=30)
             if result_type == 'error':
@@ -173,56 +173,56 @@ class MCPRuntimeManager:
         except queue.Empty:
             raise TimeoutError("Command timeout")
 
-    # Public interface - tutti metodi sincroni
+    # Public interface - all synchronous methods
     def get_tools(self) -> List:
-        """Ottieni lista tools disponibili"""
+        """Get list of available tools"""
         return self._send_command('get_tools')
 
     def call_tool(self, tool_name: str, arguments: Dict[str, Any]):
-        """Chiama un tool con argomenti specificati"""
+        """Call a tool with specified arguments"""
         return self._send_command('call_tool', tool_name, arguments)
 
     def get_resources(self) -> List:
-        """Ottieni lista resources cache"""
+        """Get cached resources list"""
         return self._send_command('get_resources')
 
     def list_resources(self) -> List:
-        """Lista resources dal server (fresh)"""
+        """List resources from server (fresh)"""
         return self._send_command('list_resources')
 
     def read_resource(self, uri: str):
-        """Leggi contenuto di una risorsa"""
+        """Read content of a resource"""
         return self._send_command('read_resource', uri)
 
     def get_prompts(self) -> List:
-        """Ottieni lista prompts disponibili"""
+        """Get list of available prompts"""
         return self._send_command('get_prompts')
 
     def get_prompt(self, name: str, arguments: Dict[str, Any] = None):
-        """Esegui un prompt"""
+        """Execute a prompt"""
         return self._send_command('get_prompt', name, arguments or {})
 
     def find_tool(self, tool_name: str):
-        """Trova tool specifico per nome"""
+        """Find specific tool by name"""
         return self._send_command('find_tool', tool_name)
 
     def is_connected(self) -> bool:
-        """Controlla se connesso"""
+        """Check if connected"""
         try:
             return self._send_command('is_connected')
         except:
             return False
 
     def shutdown(self):
-        """Shutdown pulito del manager"""
+        """Clean shutdown of the manager"""
         if self._thread and self._thread.is_alive():
             self._shutdown_event.set()
             self._thread.join(timeout=5)
 
-        # Cleanup finale
+        # Final cleanup
         if self._loop and not self._loop.is_closed():
             try:
-                # Disconnetti il manager MCP se ancora attivo
+                # Disconnect MCP manager if still active
                 if self._mcp_manager and self._connected:
                     asyncio.run_coroutine_threadsafe(
                         self._mcp_manager.disconnect(),
@@ -232,20 +232,20 @@ class MCPRuntimeManager:
                 pass
 
 
-# Utility per creazione rapida
+# Utility for quick creation
 def create_runtime_manager(config: Union[MCPConfig, str], **kwargs) -> MCPRuntimeManager:
     """
-    Factory function per creazione rapida di runtime manager.
+    Factory function for quick creation of runtime manager.
 
     Args:
-        config: MCPConfig object o nome server (backward compatible)
-        **kwargs: Argomenti aggiuntivi per backward compatibility
+        config: MCPConfig object or server name (backward compatible)
+        **kwargs: Additional arguments for backward compatibility
 
     Returns:
-        MCPRuntimeManager configurato e pronto all'uso
+        MCPRuntimeManager configured and ready to use
 
     Examples:
-        # Modo nuovo
+        # New way
         config = MCPConfig(name="tavily", transport="streamable-http", url="...")
         manager = create_runtime_manager(config)
 
@@ -256,7 +256,7 @@ def create_runtime_manager(config: Union[MCPConfig, str], **kwargs) -> MCPRuntim
 
 
 if __name__ == "__main__":
-    # Test del runtime manager
+    # Runtime manager test
     config = MCPConfig(
         name="everything",
         command="npx",
@@ -268,14 +268,14 @@ if __name__ == "__main__":
     try:
         print("Testing sync interface...")
 
-        # Test connessione
+        # Test connection
         print(f"Connected: {manager.is_connected()}")
 
         # Test tools
         tools = manager.get_tools()
         print(f"Available tools: {[tool.name for tool in tools[:3]]}")
 
-        # Test tool call se disponibile
+        # Test tool call if available
         if tools:
             result = manager.call_tool(tools[0].name, {})
             print(f"Tool result type: {type(result)}")

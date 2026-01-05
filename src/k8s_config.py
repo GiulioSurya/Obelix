@@ -2,7 +2,7 @@
 YAML Configuration Loader
 =========================
 
-Modulo per caricare configurazione SophIA da file YAML.
+Module for loading SophIA configuration from YAML file.
 
 Example:
     >>> from src.k8s_config import YamlConfig
@@ -20,7 +20,7 @@ from typing import Any
 
 class YamlConfig:
     """
-    Semplice loader YAML con accesso via dot-notation.
+    Simple YAML loader with dot-notation access.
 
     Example:
         >>> config = YamlConfig("config/agents.yaml")
@@ -30,14 +30,14 @@ class YamlConfig:
 
     def __init__(self, yaml_path: str):
         """
-        Inizializza il loader caricando il file YAML.
+        Initialize the loader by loading the YAML file.
 
         Args:
-            yaml_path: Percorso al file YAML (assoluto o relativo alla root del progetto)
+            yaml_path: Path to YAML file (absolute or relative to project root)
 
         Raises:
-            FileNotFoundError: Se il file non esiste
-            ValueError: Se il file non contiene un dict valido
+            FileNotFoundError: If file does not exist
+            ValueError: If file does not contain a valid dict
         """
         path = Path(yaml_path)
         if not path.is_absolute():
@@ -55,16 +55,16 @@ class YamlConfig:
 
     def get(self, path: str) -> Any:
         """
-        Accesso via dot-notation.
+        Access via dot-notation.
 
         Args:
-            path: Path separato da punti (es. "agents.chart_creator")
+            path: Path separated by dots (e.g. "agents.chart_creator")
 
         Returns:
-            Valore raw (dict/list/primitivo)
+            Raw value (dict/list/primitive)
 
         Raises:
-            KeyError: Se path non trovato
+            KeyError: If path not found
         """
         keys = path.split(".")
         current = self._data

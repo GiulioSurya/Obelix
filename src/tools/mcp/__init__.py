@@ -1,5 +1,5 @@
 """
-MCP (Model Context Protocol) module - Gestione MCP tools.
+MCP (Model Context Protocol) module - MCP tools management.
 """
 
 from src.tools.mcp.mcp_client_manager import MCPClientManager, MCPConfig

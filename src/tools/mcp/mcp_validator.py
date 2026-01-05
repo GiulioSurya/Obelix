@@ -7,7 +7,7 @@ from pydantic.fields import FieldInfo
 
 
 class MCPValidationError(Exception):
-    """Eccezione specifica per errori di validazione MCP"""
+    """Specific exception for MCP validation errors"""
 
     def __init__(self, tool_name: str, validation_errors: list):
         self.tool_name = tool_name
@@ -17,10 +17,10 @@ class MCPValidationError(Exception):
 
 class MCPValidator:
     """
-    Validator centralizzato per tool MCP usando Pydantic dinamico.
+    Centralized validator for MCP tools using dynamic Pydantic.
 
-    Converte JSON Schema MCP in modelli Pydantic per validazione
-    automatica e conversione tipi (es. "10" → 10, "true" → True).
+    Converts MCP JSON Schema into Pydantic models for automatic
+    validation and type conversion (e.g. "10" → 10, "true" → True).
     """
 
     def __init__(self):
@@ -28,49 +28,49 @@ class MCPValidator:
 
     def create_pydantic_model_from_schema(self, tool_name: str, json_schema: dict) -> Type[BaseModel]:
         """
-        Genera dinamicamente modello Pydantic da JSON Schema MCP.
+        Dynamically generate Pydantic model from MCP JSON Schema.
 
         Args:
-            tool_name: Nome del tool (per cache e debug)
-            json_schema: Schema JSON del tool MCP
+            tool_name: Name of the tool (for cache and debug)
+            json_schema: JSON schema of the MCP tool
 
         Returns:
-            Type[BaseModel]: Classe Pydantic per validazione
+            Type[BaseModel]: Pydantic class for validation
         """
         if tool_name in self._cached_validators:
             return self._cached_validators[tool_name]
 
-        # Estrai properties dal JSON Schema
+        # Extract properties from JSON Schema
         properties = json_schema.get('properties', {})
         required_fields = set(json_schema.get('required', []))
 
-        # Converti ogni property in field Pydantic
+        # Convert each property to Pydantic field
         field_definitions = {}
 
         for field_name, field_schema in properties.items():
             python_type, default_value = self._json_schema_to_python_type(field_schema)
 
-            # Determina se il campo è required
+            # Determine if field is required
             if field_name in required_fields:
                 field_definitions[field_name] = (python_type, ...)  # ... = required
             else:
                 field_definitions[field_name] = (python_type, default_value)
 
-        # Crea il modello Pydantic dinamicamente
+        # Create Pydantic model dynamically
         model_name = f"{tool_name.title()}Args"
         pydantic_model = create_model(model_name, **field_definitions)
 
-        # Cache per riutilizzo
+        # Cache for reuse
         self._cached_validators[tool_name] = pydantic_model
 
         return pydantic_model
 
     def _json_schema_to_python_type(self, field_schema: dict) -> tuple:
         """
-        Converte definizione JSON Schema in tipo Python + default.
+        Convert JSON Schema definition to Python type + default.
 
         Args:
-            field_schema: Definizione campo da JSON Schema
+            field_schema: Field definition from JSON Schema
 
         Returns:
             tuple: (python_type, default_value)
@@ -89,7 +89,7 @@ class MCPValidator:
 
         python_type = type_mapping.get(schema_type, str)
 
-        # Se non c'è default esplicito, usa default Python del tipo
+        # If no explicit default, use Python type default
         if default_value is None:
             if schema_type == 'string':
                 default_value = ""
@@ -108,35 +108,35 @@ class MCPValidator:
 
     def validate_and_convert(self, tool_name: str, json_schema: dict, raw_args: dict) -> dict:
         """
-        Valida e converte argomenti usando schema MCP.
+        Validate and convert arguments using MCP schema.
 
-        NUOVO: Pre-processa array e object stringificati prima della validazione Pydantic.
+        NEW: Pre-processes stringified arrays and objects before Pydantic validation.
         """
         try:
-            # NUOVO: Pre-processing degli argomenti per convertire JSON stringificati
+            # NEW: Pre-processing arguments to convert stringified JSON
             preprocessed_args = self._preprocess_json_strings(json_schema, raw_args)
 
-            # Ottieni o crea modello Pydantic
+            # Get or create Pydantic model
             validator_model = self.create_pydantic_model_from_schema(tool_name, json_schema)
 
-            # Pydantic fa la validazione sui dati pre-processati
+            # Pydantic validates the pre-processed data
             validated_instance = validator_model(**preprocessed_args)
 
-            # Ritorna dict con tipi corretti
+            # Return dict with correct types
             return validated_instance.model_dump()
 
         except ValidationError as e:
-            # Converte errori Pydantic in formato più user-friendly
+            # Convert Pydantic errors to more user-friendly format
             raise MCPValidationError(tool_name, e.errors())
         except Exception as e:
-            # Gestisci altri errori
+            # Handle other errors
             raise MCPValidationError(tool_name, [{"error": str(e)}])
 
     def _preprocess_json_strings(self, json_schema: dict, raw_args: dict) -> dict:
         """
-        Pre-processa argomenti convertendo stringhe JSON in tipi Python.
+        Pre-process arguments converting JSON strings to Python types.
 
-        Gestisce array e object che arrivano come stringhe JSON dall'LLM.
+        Handles arrays and objects that arrive as JSON strings from the LLM.
         """
         import json
 
@@ -151,7 +151,7 @@ class MCPValidator:
             prop_def = properties[key]
             prop_type = prop_def.get('type', 'string')
 
-            # Se è un array e il valore è stringa, prova a convertire
+            # If it's an array and value is a string, try to convert
             if prop_type == 'array' and isinstance(value, str):
                 if value.strip() in ('', '[]', 'null'):
                     processed_args[key] = []
@@ -162,7 +162,7 @@ class MCPValidator:
                     except (json.JSONDecodeError, TypeError):
                         processed_args[key] = []
 
-            # Se è un object e il valore è stringa, prova a convertire
+            # If it's an object and value is a string, try to convert
             elif prop_type == 'object' and isinstance(value, str):
                 if value.strip() in ('', '{}', 'null'):
                     processed_args[key] = {}
@@ -173,7 +173,7 @@ class MCPValidator:
                     except (json.JSONDecodeError, TypeError):
                         processed_args[key] = {}
 
-            # Altri tipi - passa attraverso
+            # Other types - pass through
             else:
                 processed_args[key] = value
 
@@ -181,21 +181,21 @@ class MCPValidator:
 
     def get_validator_for_tool(self, tool_name: str, json_schema: dict) -> Type[BaseModel]:
         """
-        Ottiene validator cached per un tool specifico.
+        Get cached validator for a specific tool.
 
         Args:
-            tool_name: Nome del tool
-            json_schema: Schema JSON del tool
+            tool_name: Name of the tool
+            json_schema: JSON schema of the tool
 
         Returns:
-            Type[BaseModel]: Classe Pydantic per validazione manuale
+            Type[BaseModel]: Pydantic class for manual validation
         """
         return self.create_pydantic_model_from_schema(tool_name, json_schema)
 
 
-# Test del validator standalone
+# Standalone validator test
 if __name__ == "__main__":
-    # Schema che include array (simile a Tavily)
+    # Schema that includes arrays (similar to Tavily)
     test_schema_with_arrays = {
         "type": "object",
         "properties": {
@@ -235,7 +235,7 @@ if __name__ == "__main__":
 
     validator = MCPValidator()
 
-    # Test del caso che stava fallendo (Tavily)
+    # Test the case that was failing (Tavily)
     print("=== Test Array Conversion Fix ===")
     tavily_like_args = {
         "query": "Finmatica",
@@ -260,7 +260,7 @@ if __name__ == "__main__":
         print(f"✗ Validation failed: {e}")
         print()
 
-    # Test casi edge per array
+    # Test edge cases for arrays
     print("=== Test Array Edge Cases ===")
     edge_cases = [
         {"query": "test", "include_domains": "[]"},  # Empty array

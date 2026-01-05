@@ -5,5 +5,5 @@ from src.messages.base_message import BaseMessage, MessageRole
 
 
 class HumanMessage(BaseMessage):
-    """Messaggio dall'utente umano"""
+    """Message from human user"""
     role: MessageRole = Field(default=MessageRole.HUMAN)

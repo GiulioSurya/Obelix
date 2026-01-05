@@ -8,7 +8,7 @@ from src.messages.system_message import SystemMessage
 from src.messages.human_message import HumanMessage
 from src.messages.assistant_message import AssistantMessage
 from src.messages.tool_message import ToolMessage, ToolCall, ToolResult, ToolStatus
-from src.base_agent.hooks import AgentEvent, Hook, HookContext
+from src.base_agent.hooks import AgentEvent, Hook, AgentStatus
 from src.messages.standard_message import StandardMessage
 from src.messages.assistant_message import AssistantResponse
 from src.messages.usage import AgentUsage
@@ -43,49 +43,49 @@ class BaseAgent:
 
     def register_tool(self, tool: ToolBase):
         """
-        Registra un tool per l'agent
+        Registers a tool for the agent
 
         Args:
-            tool: Tool da registrare (ToolBase o MCPTool)
+            tool: Tool to register (ToolBase or MCPTool)
 
         Raises:
-            RuntimeError: Se il tool MCP non è connesso
+            RuntimeError: If the MCP tool is not connected
         """
-        # Lazy import di MCPTool per evitare dipendenze Windows su Linux/Docker
+        # Lazy import of MCPTool to avoid Windows dependencies on Linux/Docker
         try:
             from src.tools.mcp.mcp_tool import MCPTool
-            # Se è un MCPTool, verifica che il manager sia connesso
+            # If it's an MCPTool, check that the manager is connected
             if isinstance(tool, MCPTool):
                 if not tool.manager.is_connected():
-                    logger.error(f"Agent {self.agent_name}: tentativo registrazione MCP Tool {tool.tool_name} fallito - manager non connesso")
-                    raise RuntimeError(f"MCP Tool {tool.tool_name} non è connesso. "
-                                       f"Il manager deve essere connesso prima della registrazione.")
+                    logger.error(f"Agent {self.agent_name}: MCP Tool registration attempt for {tool.tool_name} failed - manager not connected")
+                    raise RuntimeError(f"MCP Tool {tool.tool_name} is not connected. "
+                                       f"The manager must be connected before registration.")
 
 
         except ImportError:
-            # MCPTool non disponibile (es. pywin32 mancante su Windows o ambiente Docker)
-            logger.debug("MCP tools non disponibili (import libreria mcp fallito)")
+            # MCPTool not available (e.g. missing pywin32 on Windows or Docker environment)
+            logger.debug("MCP tools not available (mcp library import failed)")
 
-        # Registra il tool
+        # Register the tool
         if tool not in self.registered_tools:
             self.registered_tools.append(tool)
-            # Accesso diretto a tool.tool_name (popolato dal decoratore @tool o da MCPTool)
+            # Direct access to tool.tool_name (populated by @tool decorator or MCPTool)
             tool_name = getattr(tool, 'tool_name', None) or tool.__class__.__name__
-            logger.info(f"Agent {self.agent_name}: tool '{tool_name}' registrato")
+            logger.info(f"Agent {self.agent_name}: tool '{tool_name}' registered")
 
     def on(self, event: AgentEvent) -> Hook:
         """
-        API fluente per registrare hook.
+        Fluent API for registering hooks.
 
-        Esempi:
+        Examples:
             agent.on(AgentEvent.ON_TOOL_ERROR).when(...).inject(...)
             agent.on(AgentEvent.AFTER_LLM_CALL).transform(...)
 
         Args:
-            event: L'evento su cui registrare l'hook
+            event: The event to register the hook on
 
         Returns:
-            Hook: Oggetto hook per method chaining
+            Hook: Hook object for method chaining
         """
         hook = Hook(event)
         self._hooks[event].append(hook)
@@ -98,17 +98,17 @@ class BaseAgent:
         **ctx_kwargs
     ) -> Any:
         """
-        Esegue tutti gli hook registrati per un evento.
+        Executes all hooks registered for an event.
 
         Args:
-            event: L'evento da triggerare
-            current_value: Valore corrente da passare agli hook
-            **ctx_kwargs: Parametri aggiuntivi per HookContext
+            event: The event to trigger
+            current_value: Current value to pass to hooks
+            **ctx_kwargs: Additional parameters for AgentStatus
 
         Returns:
-            Valore trasformato dagli hook
+            Value transformed by hooks
         """
-        ctx = HookContext(
+        agent_status = AgentStatus(
             event=event,
             agent=self,
             **ctx_kwargs
@@ -116,7 +116,7 @@ class BaseAgent:
 
         result = current_value
         for hook in self._hooks[event]:
-            result = await hook.execute(ctx, result)
+            result = await hook.execute(agent_status, result)
 
         return result
 
@@ -140,11 +140,11 @@ class BaseAgent:
                 tool_name = getattr(tool, 'tool_name', tool.__class__.__name__)
                 tool_descriptions.append(ToolDescription(
                     name=tool_name,
-                    description=f"Tool {tool_name} (schema non disponibile: {e})",
+                    description=f"Tool {tool_name} (schema not available: {e})",
                     parameters=[]
                 ))
 
-        # Genera output schema dinamico dai tool
+        # Generate dynamic output schema from tools
         dynamic_output_schema = self.generate_unified_output_schema()
 
         return AgentSchema(
@@ -158,7 +158,7 @@ class BaseAgent:
         )
 
     def generate_unified_output_schema(self) -> Dict[str, Any]:
-        """Schema generico che include outputs di tutti i tool"""
+        """Generic schema that includes outputs from all tools"""
         tool_outputs = {}
 
         for tool in self.registered_tools:
@@ -167,21 +167,21 @@ class BaseAgent:
                 if hasattr(tool_schema, 'outputSchema') and tool_schema.outputSchema:
                     tool_outputs[tool_schema.name] = tool_schema.outputSchema
             except Exception as e:
-                print(f"Impossibile creare schema per il tool: {e}")
-                # WARNING: operazione fallita ma app continua con fallback
-                logger.warning(f"Impossibile creare schema per il tool: {e}")
+                print(f"Unable to create schema for tool: {e}")
+                # WARNING: operation failed but app continues with fallback
+                logger.warning(f"Unable to create schema for tool: {e}")
                 continue
 
         properties = {
-            "result": {"type": "string", "description": "Risultato principale"}
+            "result": {"type": "string", "description": "Main result"}
         }
 
-        # Aggiungi tool_outputs solo se ci sono tool
+        # Add tool_outputs only if there are tools
         if tool_outputs:
             properties["tool_outputs"] = {
                 "type": "object",
                 "properties": tool_outputs,
-                "description": "Output specifici dei tool utilizzati"
+                "description": "Specific outputs from tools used"
             }
 
         return {
@@ -196,53 +196,52 @@ class BaseAgent:
         max_iterations: int = 5
     ) -> AssistantResponse:
         """
-        Esegue query in modo asincrono (per FastAPI).
+        Execute query asynchronously (for FastAPI).
 
-        Versione async-native che usa l'event loop esistente.
-        Include retry logic per errori fatali (crash LLM, network timeout) e
-        validazione input.
+        Native async version that uses the existing event loop.
+        Includes retry logic for fatal errors (LLM crash, network timeout) and input validation.
 
         Args:
-            query: Query da eseguire. Può essere:
-                   - str: stringa convertita automaticamente in HumanMessage
-                   - List[StandardMessage]: lista di messaggi (deve contenere esattamente 1 HumanMessage)
-            max_attempts: Numero massimo di tentativi in caso di crash/errore fatale (default: 3)
-            max_iterations: Numero massimo di iterazioni del loop tool-call (default: 5)
+            query: Query to execute. Can be:
+                   - str: string automatically converted to HumanMessage
+                   - List[StandardMessage]: list of messages (must contain exactly 1 HumanMessage)
+            max_attempts: Maximum number of retry attempts for fatal errors (default: 3)
+            max_iterations: Maximum iterations of the tool-call loop (default: 5)
 
         Returns:
-            AssistantResponse: Risposta strutturata dell'agent
+            AssistantResponse: Structured agent response
 
         Raises:
-            ValueError: Se la lista di messaggi non contiene esattamente 1 HumanMessage
-            TypeError: Se query non è str o List[StandardMessage]
-            RuntimeError: Se tutti i tentativi falliscono
+            ValueError: If message list does not contain exactly 1 HumanMessage
+            TypeError: If query is not str or List[StandardMessage]
+            RuntimeError: If all retry attempts fail
         """
-        # 1. Validazione input
+        # 1. Input validation
         self._validate_query_input(query)
 
-        # 2. Backup conversation history per retry puliti
+        # 2. Backup conversation history for clean retries
         original_history = self.conversation_history.copy()
 
-        # 3. Retry loop per errori fatali
+        # 3. Retry loop for fatal errors
         for attempt in range(max_attempts):
             try:
                 return await self._async_execute_query(query, max_iterations)
             except (ValueError, TypeError):
-                # Errori di validazione non vanno ritentati (già validato)
+                # Validation errors should not be retried (already validated)
                 raise
             except Exception as e:
                 if attempt == max_attempts - 1:
                     raise RuntimeError(
-                        f"Esecuzione fallita dopo {max_attempts} tentativi. "
-                        f"Ultimo errore: {e}"
+                        f"Execution failed after {max_attempts} attempts. "
+                        f"Last error: {e}"
                     )
-                # Ripristina history per retry pulito
+                # Restore history for clean retry
                 self.conversation_history = original_history.copy()
-                #print(f"Tentativo {attempt + 1} fallito: {e}. Riprovo...")
-                # WARNING: retry in corso - situazione anomala ma gestita
-                logger.warning(f"Tentativo {attempt + 1}/{max_attempts} fallito: {e}. Riprovo...")
+                #print(f"Attempt {attempt + 1} failed: {e}. Retrying...")
+                # WARNING: retry in progress - anomalous but handled situation
+                logger.warning(f"Attempt {attempt + 1}/{max_attempts} failed: {e}. Retrying...")
 
-        raise RuntimeError("Esecuzione fallita per motivi sconosciuti")
+        raise RuntimeError("Execution failed for unknown reasons")
 
     def execute_query(
         self,
@@ -251,106 +250,106 @@ class BaseAgent:
         max_iterations: int = 3
     ) -> AssistantResponse:
         """
-        Esegue query in modo sincrono (per CLI).
+        Execute query synchronously (for CLI).
 
-        Wrapper sync che crea un nuovo event loop per eseguire la versione async.
-        Include retry logic per errori fatali e validazione input.
+        Sync wrapper that creates a new event loop to run the async version.
+        Includes retry logic for fatal errors and input validation.
 
         Args:
-            query: Query da eseguire. Può essere:
-                   - str: stringa convertita automaticamente in HumanMessage
-                   - List[StandardMessage]: lista di messaggi (deve contenere esattamente 1 HumanMessage)
-            max_attempts: Numero massimo di tentativi in caso di crash/errore fatale (default: 3)
-            max_iterations: Numero massimo di iterazioni del loop tool-call (default: 5)
+            query: Query to execute. Can be:
+                   - str: string automatically converted to HumanMessage
+                   - List[StandardMessage]: list of messages (must contain exactly 1 HumanMessage)
+            max_attempts: Maximum number of retry attempts for fatal errors (default: 3)
+            max_iterations: Maximum iterations of the tool-call loop (default: 5)
 
         Returns:
-            AssistantResponse: Risposta strutturata dell'agent
+            AssistantResponse: Structured agent response
 
         Raises:
-            ValueError: Se la lista di messaggi non contiene esattamente 1 HumanMessage
-            TypeError: Se query non è str o List[StandardMessage]
-            RuntimeError: Se tutti i tentativi falliscono
+            ValueError: If message list does not contain exactly 1 HumanMessage
+            TypeError: If query is not str or List[StandardMessage]
+            RuntimeError: If all retry attempts fail
         """
         return asyncio.run(self.execute_query_async(query, max_attempts, max_iterations))
 
     def _validate_query_input(self, query: Union[str, List[StandardMessage]]) -> None:
         """
-        Valida l'input della query.
+        Validates the query input.
 
         Args:
-            query: Query da validare
+            query: Query to validate
 
         Raises:
-            ValueError: Se la lista di messaggi non contiene esattamente 1 HumanMessage
-            TypeError: Se query non è str o List[StandardMessage]
+            ValueError: If message list does not contain exactly 1 HumanMessage
+            TypeError: If query is not str or List[StandardMessage]
         """
         if isinstance(query, list):
             human_messages = [msg for msg in query if isinstance(msg, HumanMessage)]
             if len(human_messages) != 1:
                 raise ValueError(
-                    f"La lista di messaggi deve contenere esattamente 1 HumanMessage, "
-                    f"trovati {len(human_messages)}"
+                    f"Message list must contain exactly 1 HumanMessage, "
+                    f"found {len(human_messages)}"
                 )
         elif not isinstance(query, str):
             raise TypeError(
-                f"query deve essere str o List[StandardMessage], "
-                f"ricevuto {type(query).__name__}"
+                f"query must be str or List[StandardMessage], "
+                f"received {type(query).__name__}"
             )
 
     async def _async_execute_query(self, query: Union[str, List[StandardMessage]], max_iterations: int = 5) -> AssistantResponse:
         """
-        Esecuzione asincrona della query (cuore dell'esecuzione)
+        Asynchronous query execution (core execution engine)
 
         Args:
-            query: Query da eseguire. Può essere:
-                   - str: stringa convertita automaticamente in HumanMessage
-                   - List[StandardMessage]: lista di messaggi (deve contenere esattamente 1 HumanMessage)
-            max_iterations: Numero massimo di iterazioni del loop tool-call (default: 5)
+            query: Query to execute. Can be:
+                   - str: string automatically converted to HumanMessage
+                   - List[StandardMessage]: list of messages (must contain exactly 1 HumanMessage)
+            max_iterations: Maximum iterations of the tool-call loop (default: 5)
 
         Returns:
-            AssistantResponse: Risposta strutturata dell'agent
+            AssistantResponse: Structured agent response
 
         Raises:
-            ValueError: Se la lista di messaggi non contiene esattamente 1 HumanMessage
+            ValueError: If message list does not contain exactly 1 HumanMessage
         """
         collected_tool_results = []
         execution_error = None
 
-        # Gestisci input: stringa o lista di messaggi
+        # Handle input: string or list of messages
         if isinstance(query, str):
-            # Caso 1: stringa → crea HumanMessage
+            # Case 1: string → create HumanMessage
             user_message = HumanMessage(content=query)
             self.conversation_history.append(user_message)
         elif isinstance(query, list):
-            # Caso 2: lista di messaggi → valida e aggiungi
-            # Conta HumanMessage nella lista
+            # Case 2: list of messages → validate and add
+            # Count HumanMessages in the list
             human_messages = [msg for msg in query if isinstance(msg, HumanMessage)]
 
             if len(human_messages) != 1:
                 raise ValueError(
-                    f"La lista di messaggi deve contenere esattamente 1 HumanMessage, "
-                    f"trovati {len(human_messages)}"
+                    f"Message list must contain exactly 1 HumanMessage, "
+                    f"found {len(human_messages)}"
                 )
 
-            # Aggiungi tutti i messaggi alla conversation history
+            # Add all messages to conversation history
             self.conversation_history.extend(query)
         else:
             raise TypeError(
-                f"query deve essere str o List[StandardMessage], "
-                f"ricevuto {type(query).__name__}"
+                f"query must be str or List[StandardMessage], "
+                f"received {type(query).__name__}"
             )
 
         # >>> HOOKS: ON_QUERY_START <<<
         await self._trigger_hooks(AgentEvent.ON_QUERY_START, iteration=0)
 
-        # Loop multi-turn per gestire tool calls
+        # Multi-turn loop to handle tool calls
         for iteration in range(1, max_iterations + 1):
             # >>> HOOKS: BEFORE_LLM_CALL <<<
             await self._trigger_hooks(AgentEvent.BEFORE_LLM_CALL, iteration=iteration)
 
             assistant_msg = self.provider.invoke(self.conversation_history, self.registered_tools)
 
-            # >>> HOOKS: AFTER_LLM_CALL <<< (può trasformare assistant_msg)
+            # >>> HOOKS: AFTER_LLM_CALL <<< (can transform assistant_msg)
             assistant_msg = await self._trigger_hooks(
                 AgentEvent.AFTER_LLM_CALL,
                 current_value=assistant_msg,
@@ -358,15 +357,15 @@ class BaseAgent:
                 assistant_message=assistant_msg
             )
 
-            # Traccia usage della chiamata LLM (se disponibile)
+            # Track usage from LLM call (if available)
             if assistant_msg.usage:
                 self.agent_usage.add_usage(assistant_msg.usage)
 
-            # Caso 1: Risposta vuota → uscita valida del loop
+            # Case 1: Empty response → valid loop exit
             if not assistant_msg.tool_calls and not assistant_msg.content:
-                #print("[INFO] Agent ha completato l'esecuzione senza risposta testuale finale.")
-                # INFO: evento normale dell'applicazione
-                logger.info("Agent ha completato l'esecuzione senza risposta testuale finale")
+                #print("[INFO] Agent completed execution without final text response.")
+                # INFO: normal application event
+                logger.info("Agent completed execution without final text response")
                 self.conversation_history.append(assistant_msg)
                 response = self._build_final_response(
                     assistant_msg,
@@ -377,13 +376,13 @@ class BaseAgent:
                 await self._trigger_hooks(AgentEvent.ON_QUERY_END, iteration=iteration)
                 return response
 
-            # Caso 2: Tool calls → elabora
+            # Case 2: Tool calls → process
             if assistant_msg.tool_calls:
                 execution_error = await self._process_tool_calls(
                     assistant_msg, collected_tool_results, execution_error, iteration
                 )
 
-                # Se agent_comment=False e nessun errore, esci senza far commentare LLM
+                # If agent_comment=False and no error, exit without LLM comment
                 if not self.agent_comment and execution_error is None:
                     response = self._build_final_response(
                         assistant_msg, collected_tool_results, execution_error
@@ -393,7 +392,7 @@ class BaseAgent:
 
                 continue
 
-            # Caso 3: Contenuto testuale → risposta finale
+            # Case 3: Text content → final response
             response = self._build_final_response(
                 assistant_msg, collected_tool_results, execution_error
             )
@@ -414,36 +413,36 @@ class BaseAgent:
         iteration: int
     ) -> Optional[str]:
         """
-        Elabora le tool calls dell'assistant con esecuzione parallela.
+        Process assistant tool calls with parallel execution.
 
-        Flusso:
-        1. Esegue tutti i tool in parallelo con asyncio.gather()
-           (se N=1, gather esegue comunque correttamente)
-        2. Raccoglie risultati e crea summary per risposta finale
-        3. Traccia TUTTI gli errori dell'iterazione corrente (con tool_call_id)
-        4. Aggiunge AssistantMessage + ToolMessage alla conversation history
-        5. Ritorna execution_error (None se tutti success, stringa con errori altrimenti)
+        Flow:
+        1. Execute all tools in parallel with asyncio.gather()
+           (if N=1, gather still executes correctly)
+        2. Collect results and create summary for final response
+        3. Track ALL errors from current iteration (with tool_call_id)
+        4. Add AssistantMessage + ToolMessage to conversation history
+        5. Return execution_error (None if all successful, string with errors otherwise)
 
         Args:
-            assistant_msg: Messaggio dell'assistant con le tool calls
-            collected_tool_results: Lista per raccogliere i risultati
-                                    (accumulata tra iterazioni per risposta finale)
-            execution_error: Errore di esecuzione precedente (ignorato,
-                             execution_error viene sovrascritto con errori dell'iterazione corrente)
-            iteration: Numero iterazione corrente
+            assistant_msg: Assistant message with tool calls
+            collected_tool_results: List to collect results
+                                    (accumulated between iterations for final response)
+            execution_error: Previous execution error (ignored,
+                             overwritten with current iteration errors)
+            iteration: Current iteration number
 
         Returns:
-            Optional[str]: Stringa con TUTTI gli errori dell'iterazione corrente,
-                          formato: "Errore in tool_name (ID: call_id): messaggio; ..."
-                          oppure None se tutti i tool hanno avuto successo.
+            Optional[str]: String with ALL errors from current iteration,
+                          format: "Error in tool_name (ID: call_id): message; ..."
+                          or None if all tools succeeded.
 
         Note:
-            - asyncio.gather() esegue i tool in parallelo automaticamente
-            - Se N=1, gather esegue comunque correttamente (non serve branch)
-            - execution_error viene SOVRASCRITTO con gli errori dell'iterazione corrente
-            - Non tiene traccia di errori tra iterazioni diverse (limitazione nota)
-            - Se un tool ha successo in iterazione 2, l'errore dell'iterazione 1 viene perso
-              (questo è intenzionale: se LLM risponde, significa che ha gestito l'errore)
+            - asyncio.gather() executes tools in parallel automatically
+            - If N=1, gather still executes correctly (no branch needed)
+            - execution_error is OVERWRITTEN with current iteration errors
+            - Does not track errors between different iterations (known limitation)
+            - If a tool succeeds in iteration 2, iteration 1 error is lost
+              (this is intentional: if LLM responds, it means it handled the error)
         """
 
         logger.debug(f"Processing {len(assistant_msg.tool_calls)} tool call(s)")
@@ -469,17 +468,17 @@ class BaseAgent:
 
 
         current_iteration_errors = [
-            f"Errore in {r.tool_name} (ID: {r.tool_call_id}): {r.error}"
+            f"Error in {r.tool_name} (ID: {r.tool_call_id}): {r.error}"
             for r in tool_results
-            if r.error  # Filtra solo i tool con errore
+            if r.error  # Filter only tools with errors
         ]
 
         if current_iteration_errors:
-            # Combina tutti gli errori in una stringa separata da "; "
+            # Combine all errors in a string separated by "; "
             execution_error = "; ".join(current_iteration_errors)
             logger.warning(f"Tool execution errors: {execution_error}")
         else:
-            # Tutti i tool hanno avuto successo → resetta execution_error
+            # All tools succeeded → reset execution_error
             execution_error = None
             logger.debug("All tools executed successfully")
 
@@ -493,13 +492,13 @@ class BaseAgent:
 
     def _create_tool_summary(self, result: ToolResult) -> Dict[str, Any]:
         """
-        Crea un summary del risultato del tool
+        Create a summary of the tool result
 
         Args:
-            result: Risultato del tool
+            result: Tool result
 
         Returns:
-            Dict contenente le informazioni essenziali del tool
+            Dict containing essential tool information
         """
         tool_summary = {"tool_name": result.tool_name}
 
@@ -519,21 +518,21 @@ class BaseAgent:
         execution_error: Optional[str]
     ) -> AssistantResponse:
         """
-        Costruisce la risposta finale dell'agent
+        Build the final agent response
 
         Args:
-            assistant_msg: Messaggio finale dell'assistant
-            collected_tool_results: Risultati dei tool eseguiti
-            execution_error: Errore di esecuzione (se presente)
+            assistant_msg: Final assistant message
+            collected_tool_results: Results from executed tools
+            execution_error: Execution error (if present)
 
         Returns:
-            AssistantResponse strutturata
+            Structured AssistantResponse
         """
-        # Fallback per content vuoto
-        final_content = assistant_msg.content if assistant_msg.content else "Esecuzione completata."
+        # Fallback for empty content
+        final_content = assistant_msg.content if assistant_msg.content else "Execution completed."
 
-        # INFO: operazione di business completata
-        logger.info(f"Assistant response generata per agent {self.agent_name}")
+        # INFO: business operation completed
+        logger.info(f"Assistant response generated for agent {self.agent_name}")
         logger.debug(f"Final response: tool_results count={len(collected_tool_results) if collected_tool_results else 0}")
         self.conversation_history.append(assistant_msg)
 
@@ -551,24 +550,24 @@ class BaseAgent:
         execution_error: Optional[str]
     ) -> AssistantResponse:
         """
-        Costruisce la risposta quando si raggiunge il limite di iterazioni
+        Build response when iteration limit is reached
 
         Args:
-            max_iterations: Numero massimo di iterazioni raggiunto
-            collected_tool_results: Risultati dei tool eseguiti
-            execution_error: Errore di esecuzione (se presente)
+            max_iterations: Maximum iterations reached
+            collected_tool_results: Results from executed tools
+            execution_error: Execution error (if present)
 
         Returns:
-            AssistantResponse con warning per timeout
+            AssistantResponse with timeout warning
         """
-        warning_msg = f"Raggiunto il limite di {max_iterations} iterazioni. Esecuzione interrotta."
+        warning_msg = f"Reached iteration limit of {max_iterations}. Execution stopped."
         print(warning_msg)
-        # WARNING: limite raggiunto, situazione anomala
+        # WARNING: limit reached, anomalous situation
         logger.warning(warning_msg)
 
         return AssistantResponse(
             agent_name=self.agent_name,
-            content=f"Esecuzione interrotta dopo {max_iterations} iterazioni.",
+            content=f"Execution stopped after {max_iterations} iterations.",
             tool_results=collected_tool_results if collected_tool_results else None,
             error=execution_error or warning_msg
         )
@@ -580,33 +579,33 @@ class BaseAgent:
         batch_start_time: float = None
     ) -> ToolResult:
         """
-        Esegue un singolo tool con tutti i suoi hook.
+        Execute a single tool with all its hooks.
 
-        Gestisce il ciclo completo di esecuzione per un tool:
-        1. BEFORE_TOOL_EXECUTION hook (può trasformare ToolCall)
-        2. Esecuzione effettiva del tool
-        3. AFTER_TOOL_EXECUTION hook (può trasformare ToolResult)
-        4. ON_TOOL_ERROR hook (solo se errore)
+        Handles the complete execution cycle for a tool:
+        1. BEFORE_TOOL_EXECUTION hook (can transform ToolCall)
+        2. Actual tool execution
+        3. AFTER_TOOL_EXECUTION hook (can transform ToolResult)
+        4. ON_TOOL_ERROR hook (only if error)
 
         Args:
-            call: ToolCall da eseguire (contiene id, name, arguments)
-            iteration: Numero iterazione corrente del loop agent
-            batch_start_time: Timestamp di inizio batch per debug parallelismo
+            call: ToolCall to execute (contains id, name, arguments)
+            iteration: Current iteration number of agent loop
+            batch_start_time: Batch start timestamp for parallelism debugging
 
         Returns:
-            ToolResult: Risultato dell'esecuzione con:
-                - tool_name: nome del tool
-                - tool_call_id: ID fornito dal provider (per tracking)
-                - result: risultato del tool (se success)
-                - status: SUCCESS o ERROR
-                - error: messaggio di errore (se ERROR)
+            ToolResult: Execution result with:
+                - tool_name: tool name
+                - tool_call_id: ID provided by provider (for tracking)
+                - result: tool result (if success)
+                - status: SUCCESS or ERROR
+                - error: error message (if ERROR)
 
         Note:
-            - Questa funzione è async-safe e può essere eseguita in parallelo
-            - Gli hook vengono eseguiti sequenzialmente per ogni tool
-            - Se il tool non viene trovato, ritorna ToolResult con status ERROR
+            - This function is async-safe and can be executed in parallel
+            - Hooks are executed sequentially for each tool
+            - If tool not found, returns ToolResult with ERROR status
         """
-        # === DEBUG PARALLELISMO: log inizio tool ===
+        # === DEBUG PARALLELISM: log tool start ===
         tool_start_time = time.perf_counter()
         if batch_start_time:
             relative_start = tool_start_time - batch_start_time
@@ -622,7 +621,7 @@ class BaseAgent:
 
         result = await self._async_execute_tool(call)
 
-        # Fallback: se tool non trovato, crea ToolResult di errore
+        # Fallback: if tool not found, create error ToolResult
         if not result:
             result = ToolResult(
                 tool_name=call.name,
@@ -639,11 +638,6 @@ class BaseAgent:
             tool_result=result
         )
 
-        # ┌─────────────────────────────────────────────────────────┐
-        # │ HOOK: ON_TOOL_ERROR                                     │
-        # │ Eseguito SOLO se il tool ha restituito un errore        │
-        # │ Casi d'uso: retry logic, notifiche, fallback           │
-        # └─────────────────────────────────────────────────────────┘
         if result.status == ToolStatus.ERROR:
             await self._trigger_hooks(
                 AgentEvent.ON_TOOL_ERROR,
@@ -652,7 +646,6 @@ class BaseAgent:
                 error=result.error
             )
 
-        # === DEBUG PARALLELISMO: log fine tool ===
         if batch_start_time:
             tool_duration = time.perf_counter() - tool_start_time
             relative_end = time.perf_counter() - batch_start_time
@@ -670,54 +663,54 @@ class BaseAgent:
 
     async def _async_execute_tool(self, tool_call: ToolCall) -> Optional[ToolResult]:
         """
-        Helper per l'esecuzione asincrona dei tool
+        Helper for asynchronous tool execution
 
         Args:
-            tool_call: Chiamata al tool da eseguire
+            tool_call: Tool call to execute
 
         Returns:
-            ToolResult: Risultato dell'esecuzione del tool, None se tool non trovato
+            ToolResult: Execution result, None if tool not found
         """
 
         for tool in self.registered_tools:
-            # Accesso diretto a tool.tool_name (decoratore @tool o MCPTool)
+            # Direct access to tool.tool_name (@tool decorator or MCPTool)
             tool_name = getattr(tool, 'tool_name', None)
             if tool_name == tool_call.name:
                 try:
                     result = await tool.execute(tool_call)
                     return result
                 except Exception as e:
-                    # Crea un ToolResult con errore invece di fallire completamente
+                    # Create ToolResult with error instead of failing completely
                     return ToolResult(
                         tool_name=tool_call.name,
                         tool_call_id=tool_call.id,
                         result=None,
                         status="error",
-                        error=f"Errore esecuzione tool: {e}"
+                        error=f"Tool execution error: {e}"
                     )
 
-        # print(f"[ERROR] Tool {tool_call.name} non trovato tra i tool registrati")
+        # print(f"[ERROR] Tool {tool_call.name} not found among registered tools")
         # print(f"[ERROR] Registered tools: {[getattr(t, 'tool_name', t.__class__.__name__) for t in self.registered_tools]}")
-        # ERROR: operazione fallita, tool non trovato
-        logger.error(f"Tool {tool_call.name} non trovato tra i tool registrati")
+        # ERROR: operation failed, tool not found
+        logger.error(f"Tool {tool_call.name} not found among registered tools")
         logger.error(f"Registered tools: {[getattr(t, 'tool_name', t.__class__.__name__) for t in self.registered_tools]}")
         return None
 
     def get_conversation_history(self) -> List[StandardMessage]:
         """
-        Restituisce la cronologia della conversazione
+        Return the conversation history
 
         Returns:
-            List[StandardMessage]: Lista dei messaggi della conversazione
+            List[StandardMessage]: List of conversation messages
         """
         return self.conversation_history.copy()
 
     def clear_conversation_history(self, keep_system_message: bool = True):
         """
-        Pulisce la cronologia della conversazione
+        Clear the conversation history
 
         Args:
-            keep_system_message: Se mantenere il messaggio di sistema
+            keep_system_message: Whether to keep the system message
         """
         if keep_system_message:
             self.conversation_history = [self.system_message]

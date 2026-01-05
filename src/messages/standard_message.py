@@ -5,5 +5,5 @@ from src.messages.system_message import SystemMessage
 from src.messages.assistant_message import AssistantMessage
 from src.messages.tool_message import ToolMessage
 
-# Type alias per tutti i tipi di messaggi standardizzati
+# Type alias for all types of standardized messages
 StandardMessage = Union[HumanMessage, SystemMessage, AssistantMessage, ToolMessage]

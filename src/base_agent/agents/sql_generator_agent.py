@@ -7,20 +7,20 @@ from src.base_agent.base_agent import BaseAgent
 from src.tools.sql_query_executor_tool import SqlQueryExecutorTool
 from src.connections.db_connection import get_oracle_connection
 from src.messages import HumanMessage, ToolResult, ToolStatus, AssistantMessage
-from src.base_agent.hooks import AgentEvent, HookContext
+from src.base_agent.hooks import AgentEvent, AgentStatus
 from src.k8s_config import YamlConfig
 import os
 
 
 class SQLGeneratorAgent(BaseAgent):
     """
-    Agent specializzato nella generazione di query SQL.
-    Riceve la query aumentata dal QueryEnhancementAgent e genera SQL Oracle ottimizzato.
-    Riceve lo schema database come oggetto nel costruttore.
+    Agent specialized in SQL query generation.
+    Receives the query enhanced by QueryEnhancementAgent and generates optimized Oracle SQL.
+    Receives the database schema as an object in the constructor.
 
-    Feature: Schema injection intelligente su errori "invalid identifier"
-    - Quando Oracle ritorna ORA-00904 "invalid identifier", inietta schema completo
-    - Schema iniettato una sola volta per sessione (evita spam)
+    Feature: Intelligent schema injection on "invalid identifier" errors
+    - When Oracle returns ORA-00904 "invalid identifier", injects complete schema
+    - Schema injected only once per session (avoids spam)
     """
     def __init__(
         self,
@@ -30,18 +30,18 @@ class SQLGeneratorAgent(BaseAgent):
         agent_comment: bool = False,
     ):
         """
-        Inizializza l'agent con lo schema database.
+        Initialize the agent with the database schema.
 
         Args:
-            system_prompt: System prompt per l'agent (obbligatorio, caricato da K8sConfig).
-            database_schema: Schema database come stringa SQL DDL o Dict JSON
-            provider: LLM provider (opzionale, usa GlobalConfig se non specificato)
+            system_prompt: System prompt for the agent (required, loaded from K8sConfig).
+            database_schema: Database schema as SQL DDL string or JSON Dict
+            provider: LLM provider (optional, uses GlobalConfig if not specified)
         """
         if not database_schema:
-            raise ValueError("database_schema non può essere vuoto")
+            raise ValueError("database_schema cannot be empty")
 
         self.database_schema = database_schema
-        self._schema_injected_in_session = False  # Previene iniezioni multiple per sessione
+        self._schema_injected_in_session = False  # Prevents multiple injections per session
         self.plan = plan
         agents_config = YamlConfig(os.getenv("CONFIG_PATH"))
         system_prompt = agents_config.get("prompts.sql_generator")
@@ -51,15 +51,15 @@ class SQLGeneratorAgent(BaseAgent):
             provider=provider,
             agent_comment=agent_comment
         )
-        #injection del plan per la query sql datto dal precedente agent
-        self.on(AgentEvent.ON_QUERY_START).inject_at(2, lambda ctx: AssistantMessage(content=self.plan))
+        # Inject the plan for the SQL query from the previous agent
+        self.on(AgentEvent.ON_QUERY_START).inject_at(2, lambda agent_status: AssistantMessage(content=self.plan))
 
-        # Hook 1: Arricchisce errori Oracle con documentazione ufficiale
+        # Hook 1: Enriches Oracle errors with official documentation
         self.on(AgentEvent.AFTER_TOOL_EXECUTION) \
             .when(self._is_oracle_error_with_docs) \
             .transform(self._enrich_with_oracle_docs)
 
-        # Hook 2: Inietta schema database su errori "invalid identifier"
+        # Hook 2: Injects database schema on "invalid identifier" errors
         self.on(AgentEvent.ON_TOOL_ERROR) \
             .when(self._is_invalid_identifier_error) \
             .inject(self._create_schema_injection_message)
@@ -69,15 +69,15 @@ class SQLGeneratorAgent(BaseAgent):
 
     async def _fetch_oracle_error_docs(self, error_message: str) -> Optional[Dict[str, str]]:
         """
-        Estrae informazioni dalla documentazione Oracle ufficiale per un errore specifico.
+        Extracts information from official Oracle documentation for a specific error.
 
         Args:
-            error_message: Messaggio di errore Oracle completo (contiene URL help)
+            error_message: Complete Oracle error message (contains help URL)
 
         Returns:
-            Dict con chiavi 'cause', 'action', 'url' se parsing ha successo, None altrimenti
+            Dict with keys 'cause', 'action', 'url' if parsing succeeds, None otherwise
         """
-        # Estrai URL dalla stringa di errore
+        # Extract URL from error string
         url_pattern = r'https://docs\.oracle\.com/error-help/db/[^\s\n]+'
         url_match = re.search(url_pattern, error_message)
 
@@ -87,7 +87,7 @@ class SQLGeneratorAgent(BaseAgent):
         url = url_match.group(0).rstrip('/')
 
         try:
-            # HTTP GET con timeout e follow redirects
+            # HTTP GET with timeout and follow redirects
             async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
                 response = await client.get(url)
 
@@ -98,22 +98,22 @@ class SQLGeneratorAgent(BaseAgent):
                 # Parse HTML
                 soup = BeautifulSoup(response.text, 'html.parser')
 
-                # Estrai Cause e Action
-                # Le pagine Oracle usano <h3>Cause</h3> e <h3>Action</h3>
-                # seguiti da <div class="ca"><p>...</p></div>
+                # Extract Cause and Action
+                # Oracle pages use <h3>Cause</h3> and <h3>Action</h3>
+                # followed by <div class="ca"><p>...</p></div>
                 cause_text = None
                 action_text = None
 
-                # Cerca tutti gli h3
+                # Search all h3 tags
                 for h3_tag in soup.find_all('h3'):
                     heading = h3_tag.get_text(strip=True).lower()
 
-                    # Trova il <div class="ca"> successivo
+                    # Find the next <div class="ca">
                     ca_div = h3_tag.find_next_sibling('div', class_='ca')
                     if not ca_div:
                         continue
 
-                    # Estrai tutto il testo dentro il div (inclusi eventuali <p>)
+                    # Extract all text inside the div (including any <p> tags)
                     content = ca_div.get_text(strip=True)
 
                     if 'cause' in heading:
@@ -121,7 +121,7 @@ class SQLGeneratorAgent(BaseAgent):
                     elif 'action' in heading:
                         action_text = content
 
-                # Return solo se abbiamo almeno uno dei due
+                # Return only if we have at least one of the two
                 if cause_text or action_text:
                     return {
                         'cause': cause_text or 'N/A',
@@ -132,21 +132,21 @@ class SQLGeneratorAgent(BaseAgent):
                 return None
 
         except Exception as e:
-            # Fallback graceful: se fetch fallisce, non bloccare l'esecuzione
+            # Graceful fallback: if fetch fails, don't block execution
             print(f"Failed to fetch Oracle error docs: {e}")
             return None
 
-    def _is_oracle_error_with_docs(self, ctx: HookContext) -> bool:
+    def _is_oracle_error_with_docs(self, agent_status: AgentStatus) -> bool:
         """
-        Condizione hook: verifica se l'errore Oracle contiene URL documentazione.
+        Hook condition: checks if the Oracle error contains documentation URL.
 
         Args:
-            ctx: Contesto hook con tool_result
+            agent_status: Agent status with tool_result
 
         Returns:
-            True se l'errore contiene URL docs.oracle.com
+            True if the error contains docs.oracle.com URL
         """
-        result = ctx.tool_result
+        result = agent_status.tool_result
         return (
             result is not None and
             result.status == ToolStatus.ERROR and
@@ -155,16 +155,16 @@ class SQLGeneratorAgent(BaseAgent):
             "https://docs.oracle.com" in result.error
         )
 
-    async def _enrich_with_oracle_docs(self, result: ToolResult, ctx: HookContext) -> ToolResult:
+    async def _enrich_with_oracle_docs(self, result: ToolResult, agent_status: AgentStatus) -> ToolResult:
         """
-        Trasformazione hook: arricchisce errore con documentazione Oracle.
+        Hook transformation: enriches error with Oracle documentation.
 
         Args:
-            result: ToolResult da arricchire
-            ctx: Contesto hook
+            result: ToolResult to enrich
+            agent_status: Agent status
 
         Returns:
-            ToolResult con errore arricchito o originale
+            ToolResult with enriched error or original
         """
         oracle_docs = await self._fetch_oracle_error_docs(result.error)
 
@@ -177,53 +177,53 @@ class SQLGeneratorAgent(BaseAgent):
 
         return result
 
-    def _is_invalid_identifier_error(self, ctx: HookContext) -> bool:
+    def _is_invalid_identifier_error(self, agent_status: AgentStatus) -> bool:
         """
-        Condizione hook: verifica se l'errore è "invalid identifier".
+        Hook condition: checks if the error is "invalid identifier".
 
         Args:
-            ctx: Contesto hook con error
+            agent_status: Agent status with error
 
         Returns:
-            True se l'errore indica colonne/tabelle inesistenti e non già iniettato
+            True if the error indicates non-existent columns/tables and not already injected
         """
         return (
-            ctx.error is not None and
-            ("invalid identifier" in ctx.error or
-             "table or view does not exist" in ctx.error) and
+            agent_status.error is not None and
+            ("invalid identifier" in agent_status.error or
+             "table or view does not exist" in agent_status.error) and
             not self._schema_injected_in_session
         )
 
-    def _create_schema_injection_message(self, ctx: HookContext) -> HumanMessage:
+    def _create_schema_injection_message(self, agent_status: AgentStatus) -> HumanMessage:
         """
-        Factory hook: crea messaggio con schema database.
+        Factory hook: creates message with database schema.
 
-        Chiamato quando Oracle ritorna errore "invalid identifier".
-        Marca la sessione per evitare iniezioni multiple.
+        Called when Oracle returns "invalid identifier" error.
+        Marks the session to prevent multiple injections.
 
         Args:
-            ctx: Contesto hook
+            agent_status: Agent status
 
         Returns:
-            HumanMessage con schema database
+            HumanMessage with database schema
         """
-        print("[Schema Injection] Rilevato 'invalid identifier', inietto schema database")
+        print("[Schema Injection] Detected 'invalid identifier', injecting database schema")
         self._schema_injected_in_session = True
 
-        # Formatta lo schema in base al tipo
+        # Format the schema based on type
         if isinstance(self.database_schema, dict):
             schema_content = json.dumps(self.database_schema, indent=2)
         else:
             schema_content = str(self.database_schema)
 
         return HumanMessage(
-            content=f"""La query SQL ha generato un errore "invalid identifier".
-Stai usando nomi di colonne o tabelle che non esistono nel database.
-Ecco lo schema del database completo per aiutarti a correggere:
+            content=f"""The SQL query generated an "invalid identifier" error.
+You are using column or table names that do not exist in the database.
+Here is the complete database schema to help you correct the issue:
 
 {schema_content}
 
-Verifica attentamente i nomi delle colonne e riesegui la query con i nomi corretti."""
+Carefully verify the column names and re-execute the query with the correct names."""
         )
 
 

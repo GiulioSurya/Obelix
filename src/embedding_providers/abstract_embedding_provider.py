@@ -7,8 +7,8 @@ import threading
 
 class SingletonEmbeddingMeta(ABCMeta):
     """
-    Metaclasse singleton thread-safe per garantire una sola istanza
-    di ogni classe Embedding Provider nel sistema.
+    Thread-safe singleton metaclass to ensure a single instance
+    of each Embedding Provider class in the system.
     """
     _instances = {}
     _lock = threading.Lock()
@@ -16,7 +16,7 @@ class SingletonEmbeddingMeta(ABCMeta):
     def __call__(cls, *args, **kwargs):
         if cls not in cls._instances:
             with cls._lock:
-                # Pattern di double-checked locking
+                # Double-checked locking pattern
                 if cls not in cls._instances:
                     cls._instances[cls] = super(SingletonEmbeddingMeta, cls).__call__(*args, **kwargs)
         return cls._instances[cls]
@@ -24,38 +24,38 @@ class SingletonEmbeddingMeta(ABCMeta):
 
 class AbstractEmbeddingProvider(ABC, metaclass=SingletonEmbeddingMeta):
     """
-    Classe base astratta per i provider di embedding.
+    Abstract base class for embedding providers.
 
-    Ogni provider implementa la propria logica di encoding semantico
-    mantenendo un'interfaccia uniforme per generare vettori numerici
-    da testo in linguaggio naturale.
+    Each provider implements its own semantic encoding logic
+    while maintaining a uniform interface to generate numerical vectors
+    from natural language text.
 
-    L'unica interfaccia pubblica obbligatoria è embed().
+    The only mandatory public interface is embed().
     """
 
     @abstractmethod
     def embed(self, texts: Union[str, List[str]]) -> Union[np.ndarray, List[np.ndarray]]:
         """
-        Genera embeddings per uno o più testi.
+        Generates embeddings for one or more texts.
 
         Args:
-            texts: Singolo testo (str) o lista di testi (List[str])
+            texts: Single text (str) or list of texts (List[str])
 
         Returns:
-            - Se input è str: np.ndarray con shape (embedding_dim,)
-            - Se input è List[str]: List[np.ndarray] con len = len(texts)
+            - If input is str: np.ndarray with shape (embedding_dim,)
+            - If input is List[str]: List[np.ndarray] with len = len(texts)
 
         Raises:
-            ValueError: Se il batch size eccede i limiti del provider
+            ValueError: If batch size exceeds provider limits
         """
         pass
 
     @abstractmethod
     def get_embedding_dimension(self) -> int:
         """
-        Restituisce la dimensionalità degli embedding generati.
+        Returns the dimensionality of generated embeddings.
 
         Returns:
-            int: Numero di dimensioni del vettore embedding
+            int: Number of dimensions in the embedding vector
         """
         pass

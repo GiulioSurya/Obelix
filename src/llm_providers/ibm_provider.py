@@ -17,14 +17,11 @@ except ImportError:
         "ibm-watsonx-ai is not installed. Install with: pip install ibm-watsonx-ai"
     )
 
-# Logger per IBM Watson X provider
+# Logger for IBM Watson X provider
 logger = get_logger(__name__)
 
-#mistralai/mistral-large
-#meta-llama/llama-3-3-70b-instruct
-#['ibm/granite-13b-instruct-v2', 'ibm/granite-3-2b-instruct', 'ibm/granite-3-3-8b-instruct', 'ibm/granite-3-8b-instruct', 'ibm/granite-4-h-small', 'meta-llama/llama-2-13b-chat', 'meta-llama/llama-3-2-11b-vision-instruct', 'meta-llama/llama-3-2-90b-vision-instruct', 'meta-llama/llama-3-3-70b-instruct', 'meta-llama/llama-4-maverick-17b-128e-instruct-fp8', 'mistralai/mistral-medium-2505', 'mistralai/mistral-small-3-1-24b-instruct-2503', 'sdaia/allam-1-13b-instruct']
 class IBMWatsonXLLm(AbstractLLMProvider):
-    """Provider per IBM Watson X con parametri configurabili"""
+    """Provider for IBM Watson X with configurable parameters"""
 
     @property
     def provider_type(self) -> Providers:
@@ -45,27 +42,27 @@ class IBMWatsonXLLm(AbstractLLMProvider):
                  n: Optional[int] = None,
                  logit_bias: Optional[Dict[int, float]] = None):
         """
-        Inizializza il provider IBM Watson X con dependency injection della connection
+        Initialize the IBM Watson X provider with dependency injection of connection
 
         Args:
-            connection: IBMConnection singleton (default: None, riusa da GlobalConfig se provider match)
-            model_id: ID del modello (default: "meta-llama/llama-3-3-70b-instruct")
-            max_tokens: Numero massimo di token (default: 3000)
-            temperature: Temperatura per sampling (default: 0.3)
+            connection: IBMConnection singleton (default: None, reuse from GlobalConfig if provider matches)
+            model_id: Model ID (default: "meta-llama/llama-3-3-70b-instruct")
+            max_tokens: Maximum number of tokens (default: 3000)
+            temperature: Sampling temperature (default: 0.3)
             top_p: Top-p sampling (default: None)
-            seed: Seed per riproducibilità (default: None)
-            stop: Sequenze di stop (default: None)
-            frequency_penalty: Penalità frequenza token (default: None)
-            presence_penalty: Penalità presenza token (default: None)
-            logprobs: Restituisci log probabilities (default: None)
-            top_logprobs: Numero top log probabilities (default: None)
-            n: Numero di completamenti da generare (default: None)
-            logit_bias: Bias per specifici token (default: None)
+            seed: Seed for reproducibility (default: None)
+            stop: Stop sequences (default: None)
+            frequency_penalty: Token frequency penalty (default: None)
+            presence_penalty: Token presence penalty (default: None)
+            logprobs: Return log probabilities (default: None)
+            top_logprobs: Number of top log probabilities (default: None)
+            n: Number of completions to generate (default: None)
+            logit_bias: Bias for specific tokens (default: None)
 
         Raises:
-            ValueError: Se connection=None e GlobalConfig non ha IBM_WATSON settato
+            ValueError: If connection=None and GlobalConfig does not have IBM_WATSON set
         """
-        # Dependency injection della connection con fallback a GlobalConfig
+        # Dependency injection of connection with fallback to GlobalConfig
         if connection is None:
             connection = self._get_connection_from_global_config(
                 Providers.IBM_WATSON,
@@ -74,10 +71,10 @@ class IBMWatsonXLLm(AbstractLLMProvider):
 
         self.connection = connection
 
-        # Salva model_id
+        # Save model_id
         self.model_id = model_id
 
-        # Costruisci parametri
+        # Build parameters
         params_dict = {
             "max_tokens": max_tokens,
             "temperature": temperature,
@@ -102,7 +99,7 @@ class IBMWatsonXLLm(AbstractLLMProvider):
         if logit_bias is not None:
             params_dict["logit_bias"] = logit_bias
 
-        # Crea ModelInference usando credenziali dalla connection
+        # Create ModelInference using credentials from connection
         credentials = self.connection.get_client()
         self.client = ModelInference(
             model_id=model_id,
@@ -113,16 +110,16 @@ class IBMWatsonXLLm(AbstractLLMProvider):
 
     def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
         """
-        Invoca il modello IBM Watson con messaggi e tool standardizzati
+        Call the IBM Watson model with standardized messages and tools
         """
         logger.debug(f"IBM Watson invoke: model={self.model_id}, messages={len(messages)}, tools={len(tools)}")
 
-        # 1. Converte messaggi e tool nel formato IBM (usa metodi base class)
+        # 1. Convert messages and tools to IBM format (use base class methods)
         ibm_messages = self._convert_messages_to_provider_format(messages)
         ibm_tools = self._convert_tools_to_provider_format(tools)
 
-        # 2. Chiama IBM Watson
-        # NOTA: tool_choice_option va passato SOLO se ci sono tools definiti
+        # 2. Call IBM Watson
+        # NOTE: tool_choice_option should be passed ONLY if tools are defined
         try:
             if ibm_tools:
                 response = self.client.chat(
@@ -137,7 +134,7 @@ class IBMWatsonXLLm(AbstractLLMProvider):
 
             logger.info(f"IBM Watson chat completed: {self.model_id}")
 
-            # Log usage se disponibile
+            # Log usage if available
             usage = response.get("usage", {})
             if usage:
                 logger.debug(f"IBM Watson tokens: input={usage.get('prompt_tokens')}, output={usage.get('completion_tokens')}, total={usage.get('total_tokens')}")
@@ -146,18 +143,18 @@ class IBMWatsonXLLm(AbstractLLMProvider):
             logger.error(f"IBM Watson request failed: {e}")
             raise
 
-        # 3. Converte response in AssistantMessage standardizzato
+        # 3. Convert response to standardized AssistantMessage
         assistant_message = self._convert_response_to_assistant_message(response)
         return assistant_message
 
     def _convert_response_to_assistant_message(self, response) -> AssistantMessage:
         """
-        Converte risposta IBM Watson in AssistantMessage standardizzato
+        Convert IBM Watson response to standardized AssistantMessage
         """
-        # Estrae tool_calls usando il metodo centralizzato
+        # Extract tool_calls using centralized method
         tool_calls = self._extract_tool_calls(response)
 
-        # Estrae il contenuto testuale
+        # Extract text content
         content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
 
         logger.debug(f"IBM Watson response: content_length={len(content)}, tool_calls={len(tool_calls)}")

@@ -8,7 +8,7 @@ from src.tools.tool_base import ToolBase
 from src.providers import Providers
 from src.logging_config import get_logger
 
-# Logger per vLLM provider
+# Logger for vLLM provider
 logger = get_logger(__name__)
 
 try:
@@ -16,12 +16,12 @@ try:
     from vllm.sampling_params import SamplingParams
 except ImportError:
     raise ImportError(
-        "vLLM non è installato. Installa con: pip install vllm"
+        "vLLM is not installed. Install with: pip install vllm"
     )
 
 
 class VLLMProvider(AbstractLLMProvider):
-    """Provider per vLLM con parametri configurabili per offline inference"""
+    """Provider for vLLM with configurable parameters for offline inference"""
 
     @property
     def provider_type(self) -> Providers:
@@ -48,31 +48,31 @@ class VLLMProvider(AbstractLLMProvider):
                  trust_remote_code: bool = False,
                  **kwargs):
         """
-        Inizializza il provider vLLM per offline inference
+        Initialize the vLLM provider for offline inference
 
         Args:
-            model_id: ID del modello da caricare (default: "meta-llama/Llama-3.2-1B-Instruct")
-            temperature: Temperatura per sampling (default: 0.1)
-            max_tokens: Numero massimo di token da generare (default: 2000)
+            model_id: Model ID to load (default: "meta-llama/Llama-3.2-1B-Instruct")
+            temperature: Sampling temperature (default: 0.1)
+            max_tokens: Maximum number of tokens to generate (default: 2000)
             top_p: Top-p (nucleus) sampling (default: None)
             top_k: Top-k sampling (default: None)
-            seed: Seed per riproducibilità (default: None)
-            stop: Sequenze di stop (default: None)
-            frequency_penalty: Penalità per frequenza token (default: None)
-            presence_penalty: Penalità per presenza token (default: None)
-            repetition_penalty: Penalità per ripetizioni (default: None)
+            seed: Seed for reproducibility (default: None)
+            stop: Stop sequences (default: None)
+            frequency_penalty: Penalty for token frequency (default: None)
+            presence_penalty: Penalty for token presence (default: None)
+            repetition_penalty: Penalty for repetitions (default: None)
             min_p: Minimum probability threshold (default: None)
-            tensor_parallel_size: Numero di GPU per tensor parallelism (default: 1)
-            dtype: Data type per i pesi del modello (default: "auto")
-            quantization: Metodo di quantizzazione (es. "awq", "gptq") (default: None)
-            gpu_memory_utilization: Frazione della memoria GPU da usare (default: 0.9)
-            max_model_len: Lunghezza massima del contesto (default: None, usa config modello)
-            trust_remote_code: Permetti esecuzione di codice remoto (default: False)
-            **kwargs: Altri parametri da passare a vLLM
+            tensor_parallel_size: Number of GPUs for tensor parallelism (default: 1)
+            dtype: Data type for model weights (default: "auto")
+            quantization: Quantization method (e.g. "awq", "gptq") (default: None)
+            gpu_memory_utilization: Fraction of GPU memory to use (default: 0.9)
+            max_model_len: Maximum context length (default: None, uses model config)
+            trust_remote_code: Allow execution of remote code (default: False)
+            **kwargs: Other parameters to pass to vLLM
         """
         self.model_id = model_id
 
-        # Inizializza il modello vLLM
+        # Initialize the vLLM model
         llm_kwargs = {
             "model": model_id,
             "tensor_parallel_size": tensor_parallel_size,
@@ -86,12 +86,12 @@ class VLLMProvider(AbstractLLMProvider):
         if max_model_len is not None:
             llm_kwargs["max_model_len"] = max_model_len
 
-        # Aggiungi eventuali parametri extra
+        # Add any extra parameters
         llm_kwargs.update(kwargs)
 
         self.llm = LLM(**llm_kwargs)
 
-        # Costruisci sampling parameters
+        # Build sampling parameters
         sampling_params_dict = {}
 
         if temperature is not None:
@@ -119,15 +119,15 @@ class VLLMProvider(AbstractLLMProvider):
 
     def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
         """
-        Invoca il modello vLLM con messaggi e tool standardizzati
+        Invoke the vLLM model with standardized messages and tools
         """
         logger.debug(f"vLLM invoke: model={self.model_id}, messages={len(messages)}, tools={len(tools)}")
 
-        # 1. Converte messaggi e tool nel formato vLLM (usa metodi base class)
+        # 1. Convert messages and tools to vLLM format (use base class methods)
         vllm_messages = self._convert_messages_to_provider_format(messages)
         vllm_tools = self._convert_tools_to_provider_format(tools)
 
-        # 2. Chiama vLLM con llm.chat()
+        # 2. Call vLLM with llm.chat()
         try:
             if vllm_tools:
                 outputs = self.llm.chat(
@@ -145,7 +145,7 @@ class VLLMProvider(AbstractLLMProvider):
 
             logger.info(f"vLLM chat completed: {self.model_id}")
 
-            # Log usage se disponibile
+            # Log usage if available
             if outputs and hasattr(outputs[0], 'metrics'):
                 metrics = outputs[0].metrics
                 logger.debug(f"vLLM metrics: {metrics}")
@@ -154,25 +154,25 @@ class VLLMProvider(AbstractLLMProvider):
             logger.error(f"vLLM request failed: {e}")
             raise
 
-        # 3. Converte response in AssistantMessage standardizzato
+        # 3. Convert response to standardized AssistantMessage
         assistant_message = self._convert_response_to_assistant_message(outputs[0], vllm_tools)
         return assistant_message
 
     def _convert_response_to_assistant_message(self, output, tools: List[Dict[str, Any]]) -> AssistantMessage:
         """
-        Converte risposta vLLM in AssistantMessage standardizzato
+        Convert vLLM response to standardized AssistantMessage
 
         Args:
-            output: RequestOutput di vLLM
-            tools: Lista di tools passati alla richiesta (per determinare se aspettarsi tool calls)
+            output: RequestOutput from vLLM
+            tools: List of tools passed to the request (to determine if tool calls are expected)
         """
-        # Estrae tool_calls usando il metodo centralizzato (vLLM extractor richiede tools)
+        # Extract tool_calls using centralized method (vLLM extractor requires tools)
         tool_calls = self._extract_tool_calls(output, tools=tools)
 
-        # Estrae il contenuto testuale
+        # Extract text content
         content = ""
         if hasattr(output, 'outputs') and output.outputs:
-            # output.outputs è una lista di CompletionOutput
+            # output.outputs is a list of CompletionOutput
             first_output = output.outputs[0]
             if hasattr(first_output, 'text'):
                 content = first_output.text.strip()

@@ -1,10 +1,10 @@
 """
-Tools module - Strumenti per agenti (tool calling).
+Tools module - Tools for agents (tool calling).
 
-Uso:
+Usage:
     from src.tools import tool, ToolBase
 
-    @tool(name="my_tool", description="Descrizione del tool")
+    @tool(name="my_tool", description="Description of the tool")
     class MyTool(ToolBase):
         param: str = Field(...)
 

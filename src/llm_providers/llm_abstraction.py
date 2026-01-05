@@ -13,50 +13,50 @@ from src.logging_config import get_logger
 if TYPE_CHECKING:
     from src.providers import Providers
 
-# Logger per trace operazioni comuni provider
+# Logger for tracing common provider operations
 logger = get_logger(__name__)
 
 
 class AbstractLLMProvider(ABC):
     """
-    Classe base astratta per i provider LLM.
+    Abstract base class for LLM providers.
 
-    Fornisce:
-    - Metodi comuni per conversione messaggi e tools (usando ProviderRegistry)
-    - Helper per estrazione tool_calls
-    - Metodo centralizzato per ottenere connection da GlobalConfig
-    - Interfaccia pubblica obbligatoria: invoke()
+    Provides:
+    - Common methods for message and tool conversion (using ProviderRegistry)
+    - Helper for tool_calls extraction
+    - Centralized method to get connection from GlobalConfig
+    - Mandatory public interface: invoke()
 
-    Ogni provider deve:
-    - Implementare `provider_type` property
-    - Implementare `invoke()` method
-    - (Opzionale) Override metodi di conversione se usa pattern diversi (es. strategy)
+    Each provider must:
+    - Implement `provider_type` property
+    - Implement `invoke()` method
+    - (Optional) Override conversion methods if using different patterns (e.g. strategy)
     """
 
     @property
     @abstractmethod
     def provider_type(self) -> "Providers":
         """
-        Ritorna l'enum Providers di questo provider.
-        Usato per ottenere il mapping corretto da ProviderRegistry.
+        Returns the Providers enum for this provider.
+        Used to get the correct mapping from ProviderRegistry.
         """
         pass
 
     @abstractmethod
     def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
         """
-        Chiama il modello LLM con messaggi e tool standardizzati
+        Calls the LLM model with standardized messages and tools
 
         Args:
-            messages: Lista di messaggi in formato StandardMessage
-            tools: Lista di tool disponibili
+            messages: List of messages in StandardMessage format
+            tools: List of available tools
 
         Returns:
-            AssistantMessage con la risposta del modello (include campo usage popolato)
+            AssistantMessage with model response (includes populated usage field)
         """
         pass
 
-    # ========== METODO CENTRALIZZATO PER CONNECTION ==========
+    # ========== CENTRALIZED METHOD FOR CONNECTION ==========
 
     @staticmethod
     def _get_connection_from_global_config(
@@ -64,20 +64,20 @@ class AbstractLLMProvider(ABC):
         provider_class_name: str
     ) -> Any:
         """
-        Logica comune per ottenere connection da GlobalConfig.
+        Common logic to get connection from GlobalConfig.
 
-        Verifica che GlobalConfig abbia il provider corretto settato,
-        altrimenti solleva ValueError con istruzioni chiare.
+        Verifies that GlobalConfig has the correct provider set,
+        otherwise raises ValueError with clear instructions.
 
         Args:
-            expected_provider: Il Providers enum atteso (es. Providers.OCI_GENERATIVE_AI)
-            provider_class_name: Nome della classe per messaggi di errore (es. "OCILLm")
+            expected_provider: Expected Providers enum (e.g. Providers.OCI_GENERATIVE_AI)
+            provider_class_name: Class name for error messages (e.g. "OCILLm")
 
         Returns:
-            Connection dal GlobalConfig
+            Connection from GlobalConfig
 
         Raises:
-            ValueError: Se GlobalConfig non ha provider settato o ha provider diverso
+            ValueError: If GlobalConfig has no provider set or has a different provider
         """
         from src.config import GlobalConfig
 
@@ -85,33 +85,33 @@ class AbstractLLMProvider(ABC):
 
         config = GlobalConfig()
 
-        # Verifica che ci sia un provider settato
+        # Verify that a provider is set
         try:
             current_provider = config.get_current_provider()
         except ValueError:
             logger.error(f"GlobalConfig has no provider set, cannot create {provider_class_name}")
             raise ValueError(
-                f"Impossibile creare {provider_class_name} senza connection. "
-                "Opzioni: \n"
-                f"1. Passa connection esplicitamente\n"
-                f"2. Setta GlobalConfig: GlobalConfig().set_provider(Providers.{expected_provider.name})"
+                f"Cannot create {provider_class_name} without connection. "
+                "Options: \n"
+                f"1. Pass connection explicitly\n"
+                f"2. Set GlobalConfig: GlobalConfig().set_provider(Providers.{expected_provider.name})"
             )
 
-        # Verifica che sia il provider atteso
+        # Verify that it is the expected provider
         if current_provider != expected_provider:
             logger.error(
                 f"Provider mismatch: GlobalConfig has {current_provider.value}, "
                 f"but creating {provider_class_name} (expected {expected_provider.value})"
             )
             raise ValueError(
-                f"GlobalConfig ha provider '{current_provider.value}' settato, "
-                f"ma stai creando {provider_class_name}.\n"
-                f"Opzioni:\n"
-                f"1. Passa connection esplicitamente\n"
-                f"2. Cambia GlobalConfig: GlobalConfig().set_provider(Providers.{expected_provider.name})"
+                f"GlobalConfig has provider '{current_provider.value}' set, "
+                f"but you are creating {provider_class_name}.\n"
+                f"Options:\n"
+                f"1. Pass connection explicitly\n"
+                f"2. Change GlobalConfig: GlobalConfig().set_provider(Providers.{expected_provider.name})"
             )
 
-        # Riusa connection dal GlobalConfig (lazy init se necessario)
+        # Reuse connection from GlobalConfig (lazy init if necessary)
         if current_provider not in config._connections:
             logger.debug(f"Creating new connection for {current_provider.value}")
             config._connections[current_provider] = config._create_connection(current_provider)
@@ -120,20 +120,20 @@ class AbstractLLMProvider(ABC):
 
         return config._connections[current_provider]
 
-    # ========== METODI COMUNI PER CONVERSIONE ==========
+    # ========== COMMON CONVERSION METHODS ==========
 
     def _convert_messages_to_provider_format(self, messages: List[StandardMessage]) -> List[Any]:
         """
-        Converte StandardMessage nel formato provider-specific usando ProviderRegistry.
+        Converts StandardMessage to provider-specific format using ProviderRegistry.
 
-        Questo metodo implementa il pattern comune usato da IBM, Ollama, vLLM, Anthropic.
-        Provider con logica diversa (es. OCI con strategy) possono fare override.
+        This method implements the common pattern used by IBM, Ollama, vLLM, Anthropic.
+        Providers with different logic (e.g. OCI with strategy) can override.
 
         Args:
-            messages: Lista di StandardMessage
+            messages: List of StandardMessage
 
         Returns:
-            Lista di messaggi nel formato del provider
+            List of messages in provider format
         """
         from src.providers import ProviderRegistry
 
@@ -147,7 +147,7 @@ class AbstractLLMProvider(ABC):
         for i, message in enumerate(messages):
             msg_type = type(message).__name__
 
-            # TRACE: preview del contenuto messaggio
+            # TRACE: preview of message content
             content_preview = ""
             if hasattr(message, 'content') and message.content:
                 content_preview = str(message.content)[:100]
@@ -160,7 +160,7 @@ class AbstractLLMProvider(ABC):
             elif isinstance(message, AssistantMessage):
                 converted_messages.append(message_converters["assistant_message"](message))
             elif isinstance(message, ToolMessage):
-                # ToolMessage può generare multiple messages
+                # ToolMessage can generate multiple messages
                 converted_messages.extend(message_converters["tool_message"](message))
 
         logger.debug(f"Converted {len(converted_messages)} messages for {self.provider_type.value}")
@@ -168,16 +168,16 @@ class AbstractLLMProvider(ABC):
 
     def _convert_tools_to_provider_format(self, tools: List[ToolBase]) -> List[Any]:
         """
-        Converte ToolBase nel formato provider-specific usando ProviderRegistry.
+        Converts ToolBase to provider-specific format using ProviderRegistry.
 
-        Questo metodo implementa il pattern comune usato da IBM, Ollama, vLLM, Anthropic.
-        Provider con logica diversa (es. OCI con strategy) possono fare override.
+        This method implements the common pattern used by IBM, Ollama, vLLM, Anthropic.
+        Providers with different logic (e.g. OCI with strategy) can override.
 
         Args:
-            tools: Lista di ToolBase
+            tools: List of ToolBase
 
         Returns:
-            Lista di tool nel formato del provider (vuota se tools è vuoto)
+            List of tools in provider format (empty if tools is empty)
         """
         if not tools:
             logger.debug("No tools to convert")
@@ -197,14 +197,14 @@ class AbstractLLMProvider(ABC):
 
     def _extract_tool_calls(self, response: Any, **kwargs) -> List[Dict[str, Any]]:
         """
-        Estrae tool_calls dalla response usando il mapping del provider.
+        Extracts tool_calls from response using provider mapping.
 
         Args:
-            response: Response object dal provider API
-            **kwargs: Parametri aggiuntivi (es. tools per vLLM)
+            response: Response object from provider API
+            **kwargs: Additional parameters (e.g. tools for vLLM)
 
         Returns:
-            Lista di tool calls estratti
+            List of extracted tool calls
         """
         logger.debug(f"Extracting tool_calls from {self.provider_type.value} response")
 
@@ -213,7 +213,7 @@ class AbstractLLMProvider(ABC):
         mapping = ProviderRegistry.get_mapping(self.provider_type)
         extractor = mapping["tool_output"]["tool_calls"]
 
-        # Alcuni extractor richiedono parametri aggiuntivi (es. vLLM richiede tools)
+        # Some extractors require additional parameters (e.g. vLLM requires tools)
         if kwargs:
             tool_calls = extractor(response, **kwargs)
         else:

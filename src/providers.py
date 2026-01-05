@@ -10,7 +10,7 @@ class Providers(Enum):
     VLLM = "vllm"
 
     def create_instance(self) -> AbstractLLMProvider:
-        """Factory method per creare l'istanza del provider"""
+        """Factory method to create provider instance"""
         if self == Providers.ANTHROPIC:
             from src.llm_providers.anthropic_provider import AnthropicProvider
             return AnthropicProvider()
@@ -26,7 +26,7 @@ class Providers(Enum):
         elif self == Providers.VLLM:
             from src.llm_providers.vllm_provider import VLLMProvider
             return VLLMProvider()
-        raise ValueError(f"Provider {self} non supportato")
+        raise ValueError(f"Provider {self} not supported")
 
 
 class ProviderRegistry:
