@@ -14,7 +14,7 @@ Usage:
 
 from src.tools.tool_base import ToolBase
 from src.tools.tool_decorator import tool
-from src.tools.sql_query_executor_tool import SqlQueryExecutorTool
+from src.tools.tool.sql_query_executor_tool import SqlQueryExecutorTool
 
 __all__ = [
     "ToolBase",

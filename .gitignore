@@ -357,6 +357,7 @@ test-results/
 # Claude Code instructions and planning docs
 CLAUDE.md
 src/base_agent/subagent_implementation_plan.md
+src/base_agent/blackboard.md
 
 # ============================================================================
 # Miscellaneous

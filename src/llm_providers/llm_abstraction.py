@@ -150,7 +150,7 @@ class AbstractLLMProvider(ABC):
             # TRACE: preview of message content
             content_preview = ""
             if hasattr(message, 'content') and message.content:
-                content_preview = str(message.content)[:100]
+                content_preview = str(message.content)[:400]
             logger.trace(f"msg[{i}] {msg_type}: {content_preview}")
 
             if isinstance(message, HumanMessage):

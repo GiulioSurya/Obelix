@@ -1,10 +1,10 @@
-from typing import Union, Dict, Optional, List, Any
+from typing import Union, Dict, Optional
 import json
 import re
 import httpx
 from bs4 import BeautifulSoup
 from src.base_agent.base_agent import BaseAgent
-from src.tools.sql_query_executor_tool import SqlQueryExecutorTool
+from src.tools.tool.sql_query_executor_tool import SqlQueryExecutorTool
 from src.connections.db_connection import get_oracle_connection
 from src.messages import HumanMessage, ToolResult, ToolStatus, AssistantMessage
 from src.base_agent.hooks import AgentEvent, AgentStatus

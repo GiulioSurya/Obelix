@@ -146,6 +146,51 @@ class WeatherTool(ToolBase):
 - Implement `async def execute(self)` method
 - The decorator handles validation, error wrapping, and result formatting
 
+### Interactive Questions Tool
+
+The `AskUserQuestionTool` allows agents to gather user input through structured, interactive questions with multiple-choice options:
+
+```python
+from src.tools.tool.ask_user_question_tool import AskUserQuestionTool
+
+class InteractiveAgent(BaseAgent):
+    def __init__(self):
+        super().__init__(
+            system_message="You are an assistant that gathers user preferences.",
+            agent_name="PreferenceAgent"
+        )
+
+        # Register the question tool
+        self.register_tool(AskUserQuestionTool())
+```
+
+The agent can then ask questions dynamically:
+
+```python
+# The LLM will call the tool with this structure
+questions = [{
+    "question": "Which database should we use?",
+    "header": "Database",
+    "options": [
+        {
+            "label": "PostgreSQL",
+            "description": "Relational, ACID compliant, perfect for structured data"
+        },
+        {
+            "label": "MongoDB",
+            "description": "Document store, flexible schema, great for rapid development"
+        }
+    ],
+    "multi_select": False
+}]
+```
+
+**Features**:
+- Single-select and multi-select questions
+- Question validation (1-4 questions, 2-4 options each)
+- Users can always select "Other" for custom input
+- Interactive CLI presentation with formatted output
+
 ---
 
 ## Creating Agents

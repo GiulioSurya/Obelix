@@ -448,10 +448,10 @@ class BaseAgent:
         logger.debug(f"Processing {len(assistant_msg.tool_calls)} tool call(s)")
         logger.debug(f"Tool names: {[tc.name for tc in assistant_msg.tool_calls]}")
 
-        # === DEBUG PARALLELISMO ===
         batch_start_time = time.perf_counter()
         logger.debug(f"START ELABORATING TOOLS: n {len(assistant_msg.tool_calls)} tools @ t=0.000s")
 
+        #parallel tools call
         tasks = [
             self._execute_single_tool_with_hooks(call, iteration, batch_start_time)
             for call in assistant_msg.tool_calls
