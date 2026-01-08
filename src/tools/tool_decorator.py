@@ -1,6 +1,6 @@
 # src/tools/tool_decorator.py
 """
-@tool decorator for defining tools in a declarative way.
+Decorator @tool for declaratively defining tools.
 
 Usage example:
     @tool(name="sql_query_executor", description="Execute SQL queries")
@@ -10,11 +10,17 @@ Usage example:
         def __init__(self, oracle_conn: OracleConnection):
             self.oracle_conn = oracle_conn
 
-        async def execute(self) -> dict:
+        def execute(self) -> dict:  # can be sync or async
             # self.sql_query already populated!
             return self.oracle_conn.execute_query(self.sql_query)
+
+The decorator automatically handles both sync and async methods:
+- If execute is sync: executed in separate thread (asyncio.to_thread)
+- If execute is async: executed directly with await
 """
+import asyncio
 import copy
+import inspect
 import time
 from typing import Type, Any, get_type_hints
 
@@ -26,11 +32,11 @@ from src.messages.tool_message import ToolCall, ToolResult, ToolStatus, MCPToolS
 
 def tool(name: str = None, description: str = None):
     """
-    Decorator for defining tools in a declarative way.
+    Decorator for declaratively defining tools.
 
     Args:
-        name: Name of the tool (REQUIRED)
-        description: Description of the tool (REQUIRED)
+        name: Tool name (REQUIRED)
+        description: Tool description (REQUIRED)
 
     Raises:
         ValueError: If name or description are missing (at import time)
@@ -60,12 +66,13 @@ def tool(name: str = None, description: str = None):
 
         # 4. Wrap the original execute method
         original_execute = cls.execute
+        is_async = inspect.iscoroutinefunction(original_execute)
 
         async def wrapped_execute(self, tool_call: ToolCall) -> ToolResult:
             """Wrapped execute that handles validation and errors automatically"""
             start_time = time.time()
             try:
-                # Create isolated copy for parallel execution and thread-safety
+                # Create isolated copy for thread-safe parallel execution
                 instance = copy.copy(self)
 
                 # Validate arguments and populate attributes on the COPY
@@ -74,7 +81,12 @@ def tool(name: str = None, description: str = None):
                     setattr(instance, field_name, getattr(validated, field_name))
 
                 # Call original execute on the COPY (isolated)
-                result = await original_execute(instance)
+                # Automatically detect if it's sync or async
+                if is_async:
+                    result = await original_execute(instance)
+                else:
+                    # Execute in separate thread to avoid blocking the event loop
+                    result = await asyncio.to_thread(original_execute, instance)
 
                 return ToolResult(
                     tool_name=tool_call.name,
@@ -115,7 +127,7 @@ def tool(name: str = None, description: str = None):
 
 def _create_input_schema(cls: Type, tool_name: str) -> Type:
     """
-    Create dynamic Pydantic model from Fields annotated on the class.
+    Create dynamic Pydantic model from annotated Fields on the class.
 
     Extracts all class attributes that have:
     - Type annotation (e.g. sql_query: str)
@@ -123,7 +135,7 @@ def _create_input_schema(cls: Type, tool_name: str) -> Type:
 
     Args:
         cls: The tool class to analyze
-        tool_name: Name of the tool for model naming
+        tool_name: Tool name for model naming
 
     Returns:
         Dynamic Pydantic model with extracted fields
@@ -139,14 +151,14 @@ def _create_input_schema(cls: Type, tool_name: str) -> Type:
 
     # Extract fields with FieldInfo
     for attr_name, attr_type in hints.items():
-        # Skip internal attributes and base class
+        # Skip internal and base class attributes
         if attr_name.startswith('_'):
             continue
 
-        # Get default from class
+        # Get the default from the class
         default = getattr(cls, attr_name, ...)
 
-        # If it's a FieldInfo, include it in schema
+        # If it's a FieldInfo, include it in the schema
         if isinstance(default, FieldInfo):
             fields[attr_name] = (attr_type, default)
 
