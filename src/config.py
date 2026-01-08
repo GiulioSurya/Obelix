@@ -1,5 +1,6 @@
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from src.providers import Providers
+from src.connections.llm_connection.base_llm_connection import AbstractLLMConnection
 
 
 class GlobalConfig:
@@ -8,7 +9,7 @@ class GlobalConfig:
 
     Manages:
     - Current provider
-    - Singleton connection for each provider (lazy init)
+    - Singleton connection for each provider (passed explicitly)
     - Factory to create provider instances with custom parameters
     """
     _instance = None
@@ -21,14 +22,18 @@ class GlobalConfig:
             cls._connections = {}  # Initialize connections dict
         return cls._instance
 
-    def set_provider(self, provider: Providers):
+    def set_provider(self, provider: Providers, connection: Optional[AbstractLLMConnection] = None):
         """
-        Set the current provider.
+        Set the current provider and its connection.
 
         Args:
             provider: Provider to use (OCI, IBM, Anthropic, etc.)
+            connection: Initialized connection for the provider.
+                       If None, the connection must be passed before using the provider.
         """
         self._current_provider = provider
+        if connection is not None:
+            self._connections[provider] = connection
 
     def get_current_provider(self) -> Providers:
         """
@@ -48,7 +53,7 @@ class GlobalConfig:
         """
         Create an instance of the current provider with customizable parameters.
 
-        Uses appropriate singleton connections (lazy init).
+        Uses the connection passed to set_provider().
         Allows customization of model_id, temperature, max_tokens, etc.
 
         Args:
@@ -58,52 +63,27 @@ class GlobalConfig:
             Configured provider instance
 
         Raises:
-            ValueError: If provider is not set or not supported
+            ValueError: If provider is not set or connection is not provided
 
         Examples:
             >>> config = GlobalConfig()
-            >>> config.set_provider(Providers.OCI_GENERATIVE_AI)
+            >>> connection = OCIConnection(oci_config)
+            >>> config.set_provider(Providers.OCI_GENERATIVE_AI, connection=connection)
             >>> provider = config.get_current_provider_instance(model_id="meta.llama-3.3-70b-instruct", temperature=0.5)
         """
         if self._current_provider is None:
             raise ValueError("Provider not set. Use GlobalConfig().set_provider()")
 
-        # Lazy init of connection (singleton)
         if self._current_provider not in self._connections:
-            self._connections[self._current_provider] = self._create_connection(self._current_provider)
+            raise ValueError(
+                f"Connection for {self._current_provider.value} not initialized. "
+                f"Pass the connection to set_provider()."
+            )
 
         connection = self._connections[self._current_provider]
 
         # Create provider with connection + custom kwargs
         return self._create_provider_instance(self._current_provider, connection, **kwargs)
-
-    def _create_connection(self, provider: Providers):
-        """
-        Create the appropriate singleton connection for the provider.
-
-        Args:
-            provider: Provider enum
-
-        Returns:
-            Singleton connection (OCIConnection, IBMConnection, etc.)
-        """
-        if provider == Providers.OCI_GENERATIVE_AI:
-            from src.connections.llm_connection import OCIConnection
-            return OCIConnection()
-        elif provider == Providers.IBM_WATSON:
-            from src.connections.llm_connection import IBMConnection
-            return IBMConnection()
-        elif provider == Providers.ANTHROPIC:
-            from src.connections.llm_connection import AnthropicConnection
-            return AnthropicConnection()
-        elif provider == Providers.OLLAMA:
-            # Ollama does not have singleton connection (uses local client)
-            return None
-        elif provider == Providers.VLLM:
-            # vLLM does not have singleton connection (loads model in-process)
-            return None
-        else:
-            raise ValueError(f"Provider {provider} not supported")
 
     def _create_provider_instance(self, provider: Providers, connection, **kwargs):
         """

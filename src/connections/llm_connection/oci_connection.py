@@ -1,12 +1,11 @@
 # src/connections/llm_connection/oci_connection.py
 import os
 import threading
-from typing import Optional
-from dotenv import load_dotenv
+from typing import Optional, Union
 
 from src.connections.llm_connection.base_llm_connection import AbstractLLMConnection
 
-load_dotenv()
+DEFAULT_OCI_CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".oci", "config")
 
 
 class OCIConnection(AbstractLLMConnection):
@@ -15,19 +14,66 @@ class OCIConnection(AbstractLLMConnection):
 
     The connection is shared among all OCI providers using the same credentials.
     Client is lazy initialized on first access.
+
+    Args:
+        oci_config: OCI configuration. Can be:
+            - None: loads from default path (~/.oci/config)
+            - str: path to OCI config file
+            - dict: configuration dictionary with keys: user, fingerprint, key_content/key_file, tenancy, region
     """
 
     _instance: Optional['OCIConnection'] = None
     _lock = threading.Lock()
     _client = None
     _client_lock = threading.Lock()
+    _initialized = False
 
-    def __new__(cls):
+    def __new__(cls, oci_config: Optional[Union[dict, str]] = None):
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
                     cls._instance = super().__new__(cls)
         return cls._instance
+
+    def __init__(self, oci_config: Optional[Union[dict, str]] = None):
+        if self._initialized:
+            return
+        self._oci_config = self._resolve_config(oci_config)
+        self._initialized = True
+
+    def _resolve_config(self, oci_config: Optional[Union[dict, str]]) -> dict:
+        """
+        Resolves the OCI configuration from various input types.
+
+        Args:
+            oci_config: Config dict, file path, or None for default
+
+        Returns:
+            Configuration dictionary
+
+        Raises:
+            ValueError: If config cannot be resolved
+        """
+        if isinstance(oci_config, dict):
+            return oci_config
+
+        config_path = oci_config if isinstance(oci_config, str) else DEFAULT_OCI_CONFIG_PATH
+
+        if not os.path.exists(config_path):
+            raise ValueError(
+                f"OCI config file not found at '{config_path}'. "
+                "Please provide either:\n"
+                "  - A configuration dictionary with keys: user, fingerprint, key_content/key_file, tenancy, region\n"
+                "  - A valid path to an OCI config file\n"
+                f"  - Or create a config file at the default location: {DEFAULT_OCI_CONFIG_PATH}"
+            )
+
+        try:
+            from oci.config import from_file
+        except ImportError:
+            raise ImportError("oci is not installed. Install with: pip install oci")
+
+        return from_file(config_path, "DEFAULT")
 
     def get_client(self):
         """
@@ -54,38 +100,11 @@ class OCIConnection(AbstractLLMConnection):
             Configured GenerativeAiInferenceClient
 
         Raises:
-            ValueError: If credentials are missing
             ImportError: If oci library is not installed
         """
-        # Import here to avoid circular dependencies
         try:
             from oci.generative_ai_inference import GenerativeAiInferenceClient
         except ImportError:
-            raise ImportError(
-                "oci is not installed. Install with: pip install oci"
-            )
+            raise ImportError("oci is not installed. Install with: pip install oci")
 
-        from src.k8s_config import YamlConfig
-        import os
-
-        # Read complete OCI configuration from infrastructure.yaml (includes private_key_content)
-        infra_config = YamlConfig(os.getenv("INFRASTRUCTURE_CONFIG_PATH"))
-        oci_provider_config = infra_config.get("llm_providers.oci")
-
-        # Validate presence of private key
-        if not oci_provider_config.get("private_key_content"):
-            raise ValueError(
-                "Credential private_key_content missing in infrastructure.yaml. "
-                "This key must be configured in the Kubernetes ConfigMap or Secrets."
-            )
-
-        # OCI configuration
-        oci_config = {
-            'user': oci_provider_config["user_id"],
-            'fingerprint': oci_provider_config["fingerprint"],
-            'key_content': oci_provider_config["private_key_content"],
-            'tenancy': oci_provider_config["tenancy"],
-            'region': oci_provider_config["region"]
-        }
-
-        return GenerativeAiInferenceClient(oci_config)
+        return GenerativeAiInferenceClient(self._oci_config)

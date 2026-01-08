@@ -369,32 +369,73 @@ agent = BaseAgent(
 )
 ```
 
-### Using GlobalConfig (Alternative)
+### Using GlobalConfig (Recommended)
 
-Instead of manually creating connections and providers, you can use `GlobalConfig`:
+`GlobalConfig` is a singleton that manages global provider configuration, allowing you to set up a provider once and reuse it across your application.
+
+#### Step 1: Initialize Connection
+
+Create a connection by passing the required credentials:
+
+```python
+from src.connections.llm_connection import AnthropicConnection
+# or: IBMConnection, OCIConnection, etc.
+
+connection = AnthropicConnection(api_key="your_api_key")
+```
+
+#### Step 2: Configure GlobalConfig
 
 ```python
 from src.config import GlobalConfig
+from src.providers import Providers
+
+config = GlobalConfig()
+config.set_provider(Providers.ANTHROPIC, connection=connection)
+```
+
+#### Step 3: Use GlobalConfig in Agents
+
+Any agent will automatically use the configured provider if no provider is passed:
+
+```python
 from src.base_agent.base_agent import BaseAgent
 
-# Set up global provider (done once at startup)
-GlobalConfig.set_default_provider(provider)
-
-# Agent will use GlobalConfig if no provider is passed
 agent = BaseAgent(
     system_message="You are a helpful assistant.",
     agent_name="MyAgent"
     # provider=None → uses GlobalConfig
 )
+
+response = agent.execute_query("What can you help me with?")
+print(response.content)
+```
+
+#### Customize Provider Parameters
+
+You can customize model parameters while using GlobalConfig:
+
+```python
+provider = config.get_current_provider_instance(
+    model_id="claude-opus-4-20250514",
+    max_tokens=4096,
+    temperature=0.5
+)
+
+agent = BaseAgent(
+    system_message="You are a helpful assistant.",
+    provider=provider,
+    agent_name="MyAgent"
+)
 ```
 
 ### Available Connections
 
-| Connection | Provider | Environment Variable |
-|------------|----------|---------------------|
-| `AnthropicConnection` | `AnthropicProvider` | `ANTHROPIC_API_KEY` |
-| `OCIConnection` | `OCIProvider` | OCI config file |
-| `IBMConnection` | `IBMProvider` | `IBM_API_KEY`, `IBM_PROJECT_ID` |
+| Connection | Credentials |
+|------------|-------------|
+| `AnthropicConnection(api_key)` | Anthropic API key |
+| `OCIConnection(oci_config)` | OCI config (file path or dict) |
+| `IBMConnection(api_key, project_id, url)` | IBM Watson X credentials |
 
 ---
 

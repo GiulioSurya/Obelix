@@ -1,12 +1,8 @@
 # src/connections/llm_connection/anthropic_connection.py
-import os
 import threading
 from typing import Optional
-from dotenv import load_dotenv
 
 from src.connections.llm_connection.base_llm_connection import AbstractLLMConnection
-
-load_dotenv()
 
 
 class AnthropicConnection(AbstractLLMConnection):
@@ -21,13 +17,20 @@ class AnthropicConnection(AbstractLLMConnection):
     _lock = threading.Lock()
     _client = None
     _client_lock = threading.Lock()
+    _initialized = False
 
-    def __new__(cls):
+    def __new__(cls, api_key: str):
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
                     cls._instance = super().__new__(cls)
         return cls._instance
+
+    def __init__(self, api_key: str):
+        if self._initialized:
+            return
+        self._api_key = api_key
+        self._initialized = True
 
     def get_client(self):
         """
@@ -54,10 +57,8 @@ class AnthropicConnection(AbstractLLMConnection):
             Configured Anthropic client
 
         Raises:
-            ValueError: If API key is missing
             ImportError: If anthropic library is not installed
         """
-        # Import here to avoid circular dependencies
         try:
             from anthropic import Anthropic
         except ImportError:
@@ -65,12 +66,4 @@ class AnthropicConnection(AbstractLLMConnection):
                 "anthropic is not installed. Install with: pip install anthropic"
             )
 
-        # Validate API key
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise ValueError(
-                "ANTHROPIC_API_KEY not configured. "
-                "Set the environment variable ANTHROPIC_API_KEY"
-            )
-
-        return Anthropic(api_key=api_key)
+        return Anthropic(api_key=self._api_key)
