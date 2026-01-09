@@ -30,64 +30,50 @@ setup(
     python_requires=">=3.13",
     install_requires=[
         # Core - Data & Validation
-        "pandas>=2.2.0",
-        "numpy>=2.4.0",
         "pydantic>=2.12.0",
+        "numpy>=2.2.0",
 
         # Core - Logging
-        "loguru",
+        "loguru>=0.7.0",
 
         # Core - Configuration
-        "python-dotenv>=1.2.0",
-        "pyyaml",
-
-        # Core - Utilities
-        "httpx>=0.28.0",
-        "docstring_parser>=0.17.0",
-        "circuitbreaker>=2.1.0",
-        "cachetools>=6.0.0",
-        "tabulate>=0.9.0",
+        "pyyaml>=6.0.0",
     ],
     extras_require={
         # LLM Providers (optional)
-        "anthropic": ["anthropic>=0.75.0"],
+        "anthropic": ["anthropic>=0.71.0"],
         "oci": ["oci>=2.164.0"],
         "ibm": ["ibm_watsonx_ai>=1.4.0"],
         "ollama": ["ollama>=0.6.0"],
+        "vllm": ["vllm>=0.13.0"],
 
-        # Database Connections (optional)
-        "oracle": ["oracledb>=2.0.0"],
-        "postgres": ["psycopg[binary,pool]>=3.0.0"],
+        # MCP (Model Context Protocol)
+        "mcp": ["mcp>=1.25.0"],
 
         # Development
         "dev": [
-            "pytest>=7.0.0",
-            "pytest-asyncio>=0.21.0",
-            "pytest-cov>=4.0.0",
+            "pytest>=9.0.0",
+            "pytest-asyncio>=1.0.0",
+            "pytest-cov>=7.0.0",
         ],
 
         # All LLM providers
         "all-llm": [
-            "anthropic>=0.75.0",
+            "anthropic>=0.71.0",
             "oci>=2.164.0",
             "ibm_watsonx_ai>=1.4.0",
             "ollama>=0.6.0",
+            "vllm>=0.13.0",
         ],
 
-        # All databases
-        "all-db": [
-            "oracledb>=2.0.0",
-            "psycopg[binary,pool]>=3.0.0",
-        ],
-
-        # Everything
+        # Everything (all providers + mcp)
         "all": [
-            "anthropic>=0.75.0",
+            "anthropic>=0.71.0",
             "oci>=2.164.0",
             "ibm_watsonx_ai>=1.4.0",
             "ollama>=0.6.0",
-            "oracledb>=2.0.0",
-            "psycopg[binary,pool]>=3.0.0",
+            "vllm>=0.13.0",
+            "mcp>=1.25.0",
         ],
     },
     entry_points={

@@ -22,7 +22,7 @@ import asyncio
 import copy
 import inspect
 import time
-from typing import Type, Any, get_type_hints
+from typing import Type, get_type_hints
 
 from pydantic import create_model
 from pydantic.fields import FieldInfo

@@ -38,12 +38,19 @@ pip install -e ".[anthropic]"          # Anthropic Claude
 pip install -e ".[oci]"                # Oracle Cloud Infrastructure
 pip install -e ".[ibm]"                # IBM Watson X
 pip install -e ".[ollama]"             # Ollama (local models)
+pip install -e ".[vllm]"               # vLLM (self-hosted inference)
+
+# Install with MCP support
+pip install -e ".[mcp]"
 
 # Install multiple providers
 pip install -e ".[anthropic,oci]"
 
 # Install all LLM providers
 pip install -e ".[all-llm]"
+
+# Install everything (all providers + MCP)
+pip install -e ".[all]"
 
 # Install with development tools
 pip install -e ".[dev]"
@@ -57,7 +64,10 @@ pip install -e ".[dev]"
 | `oci` | Oracle Cloud Infrastructure Generative AI |
 | `ibm` | IBM Watson X AI |
 | `ollama` | Ollama local models |
+| `vllm` | vLLM self-hosted inference |
+| `mcp` | Model Context Protocol support |
 | `all-llm` | All LLM providers |
+| `all` | All providers + MCP |
 | `dev` | Development tools (pytest, coverage) |
 
 ## Quick Start
@@ -102,8 +112,7 @@ class CalculatorTool(ToolBase):
     a: float = Field(..., description="First operand")
     b: float = Field(..., description="Second operand")
 
-    async def execute(self) -> dict:
-        """Execute the calculation. Attributes are already populated by the decorator."""
+    def execute(self) -> dict:
         operations = {
             "add": lambda x, y: x + y,
             "subtract": lambda x, y: x - y,
@@ -130,7 +139,7 @@ class WeatherTool(ToolBase):
     def __init__(self, api_client):
         self.api_client = api_client
 
-    async def execute(self) -> dict:
+    def execute(self) -> dict:
         data = self.api_client.get_weather(self.city)
         return {
             "city": self.city,
@@ -143,7 +152,7 @@ class WeatherTool(ToolBase):
 
 - Use the `@tool` decorator with `name` and `description` (both required)
 - Define input parameters using Pydantic `Field`
-- Implement `async def execute(self)` method
+- Implement `def execute(self)` method (the decorator handles async wrapping)
 - The decorator handles validation, error wrapping, and result formatting
 
 ### Interactive Questions Tool
