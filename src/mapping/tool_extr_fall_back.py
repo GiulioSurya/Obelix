@@ -467,3 +467,63 @@ def _extract_tool_calls_vllm(output, tools):
 
     # Fallback: usa il parser generico per trovare JSON nel content
     return _parse_tool_call_from_content(content)
+
+
+def _extract_tool_calls_openai(response):
+    """
+    Extract tool calls from OpenAI ChatCompletion response.
+
+    OpenAI returns response.choices[0].message.tool_calls as a list of objects:
+    - id: unique identifier
+    - type: "function"
+    - function.name: tool name
+    - function.arguments: JSON string of arguments
+
+    Args:
+        response: OpenAI ChatCompletion response object
+
+    Returns:
+        List of ToolCall objects extracted from tool_calls
+    """
+    # 1. First try: structured tool calls
+    structured_calls = []
+
+    if (hasattr(response, 'choices') and
+            response.choices and
+            hasattr(response.choices[0], 'message') and
+            hasattr(response.choices[0].message, 'tool_calls') and
+            response.choices[0].message.tool_calls):
+
+        for call in response.choices[0].message.tool_calls:
+            if call.type != "function":
+                continue
+
+            # Arguments is a JSON string in OpenAI API
+            arguments = call.function.arguments
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except json.JSONDecodeError:
+                    arguments = {}
+
+            structured_calls.append(ToolCall(
+                id=call.id,
+                name=call.function.name,
+                arguments=arguments
+            ))
+
+    if structured_calls:
+        return structured_calls
+
+    # 2. Fallback: parse from content
+    content = ""
+    if (hasattr(response, 'choices') and
+            response.choices and
+            hasattr(response.choices[0], 'message') and
+            response.choices[0].message.content):
+        content = response.choices[0].message.content
+
+    if not content:
+        return []
+
+    return _parse_tool_call_from_content(content)

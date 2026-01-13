@@ -15,7 +15,8 @@ from src.mapping.tool_extr_fall_back import (
     _extract_tool_calls_hybrid,
     _extract_tool_calls_ibm_watson_hybrid,
     _extract_tool_calls_ollama,
-    _extract_tool_calls_vllm
+    _extract_tool_calls_vllm,
+    _extract_tool_calls_openai
 )
 
 # ===== ANTHROPIC MAPPING =====
@@ -380,3 +381,61 @@ VLLM = {
 }
 
 ProviderRegistry.register(Providers.VLLM, VLLM)
+
+# ===== OPENAI MAPPING =====
+OPENAI = {
+    "tool_input": {
+        "tool_schema": lambda tool_schema: {
+            "type": "function",
+            "function": {
+                "name": tool_schema.name,
+                "description": tool_schema.description,
+                "parameters": tool_schema.inputSchema
+            }
+        }
+    },
+    "tool_output": {
+        "tool_calls": _extract_tool_calls_openai
+    },
+    "message_input": {
+        "human_message": lambda msg: {
+            "role": "user",
+            "content": msg.content
+        },
+
+        "system_message": lambda msg: {
+            "role": "system",
+            "content": msg.content
+        },
+
+        "assistant_message": lambda msg: {
+            "role": "assistant",
+            "content": msg.content if msg.content else None,
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "id": tool_call.id,
+                    "function": {
+                        "name": tool_call.name,
+                        "arguments": json.dumps(tool_call.arguments)
+                    }
+                }
+                for tool_call in msg.tool_calls
+            ] if msg.tool_calls else None
+        } if msg.tool_calls or msg.content else {
+            "role": "assistant",
+            "content": ""
+        },
+
+        "tool_message": lambda msg: [
+            {
+                "role": "tool",
+                "tool_call_id": result.tool_call_id,
+                "content": str(result.result) if result.result is not None else (result.error or "No result")
+            }
+            for result in msg.tool_results
+        ]
+    },
+}
+
+ProviderRegistry.register(Providers.OPENAI, OPENAI)

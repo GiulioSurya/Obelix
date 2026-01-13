@@ -118,6 +118,9 @@ class GlobalConfig:
         elif provider == Providers.VLLM:
             from src.llm_providers.vllm_provider import VLLMProvider
             return VLLMProvider(**kwargs)
+        elif provider == Providers.OPENAI:
+            from src.llm_providers.openai_provider import OpenAIProvider
+            return OpenAIProvider(connection, **kwargs)
         else:
             raise ValueError(f"Provider {provider} not supported")
 
