@@ -15,6 +15,8 @@ A multi-provider LLM agent framework with tool support, hooks system, and seamle
 - **Async/Sync Execution**: Support for both synchronous and asynchronous workflows
 - **Loguru Logging**: Structured logging with rotation and color output
 
+---
+
 ## Requirements
 
 - **Python 3.13+**
@@ -70,6 +72,68 @@ pip install -e ".[dev]"
 | `all-llm` | All LLM providers |
 | `all` | All providers + MCP |
 | `dev` | Development tools (pytest, coverage) |
+
+
+## Powered by Pydantic
+
+Obelix leverages [Pydantic](https://github.com/pydantic/pydantic) extensively for type safety, validation, and automatic schema generation throughout the framework.
+
+### Type-Safe Message System
+
+All messages in Obelix are Pydantic models with full validation:
+
+```python
+from src.messages import HumanMessage, AssistantMessage, ToolCall, ToolResult
+
+# Messages are validated at creation
+message = HumanMessage(content="Analyze this data")
+
+# Tool calls have typed arguments
+tool_call = ToolCall(
+    id="call_123",
+    name="calculator",
+    arguments={"operation": "add", "a": 5, "b": 3}
+)
+```
+
+### Automatic Schema Generation for Tools
+
+The `@tool` decorator extracts Pydantic `Field` definitions and automatically generates JSON Schema for MCP compatibility:
+
+```python
+@tool(name="calculator", description="Performs arithmetic")
+class CalculatorTool(ToolBase):
+    operation: str = Field(..., description="add, subtract, multiply, divide")
+    a: float = Field(..., description="First operand")
+    b: float = Field(..., description="Second operand")
+
+# Schema is auto-generated via Pydantic's model_json_schema()
+# No manual JSON Schema writing required!
+```
+
+### Self-Healing Validation Loop
+
+When an LLM generates invalid tool arguments, Pydantic catches the error which is automatically added to the conversation history, allowing the agent to self-correct without any extra configuration:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  LLM generates tool call with wrong arguments                   │
+│         ↓                                                       │
+│  Pydantic validates arguments → ValidationError                 │
+│         ↓                                                       │
+│  Error caught and wrapped in ToolResult(status=ERROR)           │
+│         ↓                                                       │
+│  ToolResult added to conversation history (built-in behavior)   │
+│         ↓                                                       │
+│  LLM sees the error and generates corrected arguments           │
+│         ↓                                                       │
+│  Tool executes successfully ✓                                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+This works out of the box - no hooks required. The error message from Pydantic is descriptive enough for the LLM to understand what went wrong and fix it.
+
+-----
 
 ## Quick Start
 

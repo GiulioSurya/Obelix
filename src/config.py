@@ -46,7 +46,10 @@ class GlobalConfig:
             ValueError: If provider is not set
         """
         if self._current_provider is None:
-            raise ValueError("Provider not set. Use GlobalConfig().set_provider()")
+            raise ValueError(
+                "Provider not set. Either use GlobalConfig().set_provider() "
+                "or pass a provider directly to the agent constructor."
+            )
         return self._current_provider
 
     def get_current_provider_instance(self, **kwargs):
@@ -72,7 +75,10 @@ class GlobalConfig:
             >>> provider = config.get_current_provider_instance(model_id="meta.llama-3.3-70b-instruct", temperature=0.5)
         """
         if self._current_provider is None:
-            raise ValueError("Provider not set. Use GlobalConfig().set_provider()")
+            raise ValueError(
+                "Provider not set. Either use GlobalConfig().set_provider() "
+                "or pass a provider directly to the agent constructor."
+            )
 
         if self._current_provider not in self._connections:
             raise ValueError(
