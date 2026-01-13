@@ -383,3 +383,6 @@ src/base_agent/blackboard.md
 dist/
 build/
 *.whl
+
+# Documentation (Local/Working)
+docs/
