@@ -22,9 +22,13 @@ class BaseAgent:
     def __init__(self,
                  system_message: str,
                  provider: Optional[AbstractLLMProvider] = None,
-                 agent_comment: bool = True):
+                 agent_comment: bool = True,
+                 max_iterations: int = 15,
+                 max_attempts: int = 5):
         self.system_message = SystemMessage(content=system_message)
         self.agent_comment = agent_comment
+        self.max_iterations = max_iterations
+        self.max_attempts = max_attempts
 
         self.provider = provider or GlobalConfig().get_current_provider_instance()
 
@@ -118,9 +122,7 @@ class BaseAgent:
 
     async def execute_query_async(
         self,
-        query: Union[str, List[StandardMessage]],
-        max_attempts: int = 20,
-        max_iterations: int = 20
+        query: Union[str, List[StandardMessage]]
     ) -> AssistantResponse:
         """
         Execute query asynchronously (for FastAPI).
@@ -132,8 +134,6 @@ class BaseAgent:
             query: Query to execute. Can be:
                    - str: string automatically converted to HumanMessage
                    - List[StandardMessage]: list of messages (must contain exactly 1 HumanMessage)
-            max_attempts: Maximum number of retry attempts for fatal errors (default: 3)
-            max_iterations: Maximum iterations of the tool-call loop (default: 5)
 
         Returns:
             AssistantResponse: Structured agent response
@@ -150,31 +150,29 @@ class BaseAgent:
         original_history = self.conversation_history.copy()
 
         # 3. Retry loop for fatal errors
-        for attempt in range(max_attempts):
+        for attempt in range(self.max_attempts):
             try:
-                return await self._async_execute_query(query, max_iterations)
+                return await self._async_execute_query(query)
             except (ValueError, TypeError):
                 # Validation errors should not be retried (already validated)
                 raise
             except Exception as e:
-                if attempt == max_attempts - 1:
+                if attempt == self.max_attempts - 1:
                     raise RuntimeError(
-                        f"Execution failed after {max_attempts} attempts. "
+                        f"Execution failed after {self.max_attempts} attempts. "
                         f"Last error: {e}"
                     )
                 # Restore history for clean retry
                 self.conversation_history = original_history.copy()
-                #print(f"Attempt {attempt + 1} failed: {e}. Retrying...")
                 # WARNING: retry in progress - anomalous but handled situation
-                logger.warning(f"Attempt {attempt + 1}/{max_attempts} failed: {e}. Retrying...")
+                logger.warning(f"Attempt {attempt + 1}/{self.max_attempts} failed: {e}. Retrying in 5 seconds...")
+                await asyncio.sleep(5)
 
         raise RuntimeError("Execution failed for unknown reasons")
 
     def execute_query(
         self,
-        query: Union[str, List[StandardMessage]],
-        max_attempts: int = 12,
-        max_iterations: int = 12
+        query: Union[str, List[StandardMessage]]
     ) -> AssistantResponse:
         """
         Execute query synchronously (for CLI).
@@ -186,8 +184,6 @@ class BaseAgent:
             query: Query to execute. Can be:
                    - str: string automatically converted to HumanMessage
                    - List[StandardMessage]: list of messages (must contain exactly 1 HumanMessage)
-            max_attempts: Maximum number of retry attempts for fatal errors (default: 3)
-            max_iterations: Maximum iterations of the tool-call loop (default: 5)
 
         Returns:
             AssistantResponse: Structured agent response
@@ -197,7 +193,7 @@ class BaseAgent:
             TypeError: If query is not str or List[StandardMessage]
             RuntimeError: If all retry attempts fail
         """
-        return asyncio.run(self.execute_query_async(query, max_attempts, max_iterations))
+        return asyncio.run(self.execute_query_async(query))
 
     def _validate_query_input(self, query: Union[str, List[StandardMessage]]) -> None:
         """
@@ -223,7 +219,7 @@ class BaseAgent:
                 f"received {type(query).__name__}"
             )
 
-    async def _async_execute_query(self, query: Union[str, List[StandardMessage]], max_iterations: int = 5) -> AssistantResponse:
+    async def _async_execute_query(self, query: Union[str, List[StandardMessage]]) -> AssistantResponse:
         """
         Asynchronous query execution (core execution engine)
 
@@ -231,7 +227,6 @@ class BaseAgent:
             query: Query to execute. Can be:
                    - str: string automatically converted to HumanMessage
                    - List[StandardMessage]: list of messages (must contain exactly 1 HumanMessage)
-            max_iterations: Maximum iterations of the tool-call loop (default: 5)
 
         Returns:
             AssistantResponse: Structured agent response
@@ -270,7 +265,7 @@ class BaseAgent:
         await self._trigger_hooks(AgentEvent.ON_QUERY_START, iteration=0)
 
         # Multi-turn loop to handle tool calls
-        for iteration in range(1, max_iterations + 1):
+        for iteration in range(1, self.max_iterations + 1):
             # >>> HOOKS: BEFORE_LLM_CALL <<<
             await self._trigger_hooks(AgentEvent.BEFORE_LLM_CALL, iteration=iteration)
 
@@ -327,9 +322,9 @@ class BaseAgent:
             return response
 
         # >>> HOOKS: ON_MAX_ITERATIONS <<<
-        await self._trigger_hooks(AgentEvent.ON_MAX_ITERATIONS, iteration=max_iterations)
+        await self._trigger_hooks(AgentEvent.ON_MAX_ITERATIONS, iteration=self.max_iterations)
         return self._build_timeout_response(
-            max_iterations, collected_tool_results, execution_error
+            self.max_iterations, collected_tool_results, execution_error
         )
 
     async def _process_tool_calls(
