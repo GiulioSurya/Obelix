@@ -267,6 +267,9 @@ logs/
 # Project Specific
 # ============================================================================
 
+# Demo files
+demo_subagent.py
+
 # Helm charts (if you want to ignore them)
 # helm/
 

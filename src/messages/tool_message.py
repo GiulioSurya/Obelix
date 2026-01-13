@@ -95,7 +95,7 @@ class MCPToolSchema(BaseModel):
 
     # MCP Standard Fields
     name: str = Field(..., description="Unique identifier for the tool")
-    description: Optional[str] = Field(None, description="Description of the tool")
+    description: str = Field(..., description="Description of the tool")
     title: Optional[str] = Field(None, description="Friendly name for UI")
     inputSchema: Dict[str, Any] = Field(..., description="JSON Schema for parameters")
     outputSchema: Optional[Dict[str, Any]] = Field(None, description="JSON Schema for response")
