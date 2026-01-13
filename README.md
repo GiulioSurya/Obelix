@@ -7,7 +7,7 @@ A multi-provider LLM agent framework with tool support, hooks system, and seamle
 
 ## Features
 
-- **Multi-Provider Support**: Anthropic, Oracle Cloud (OCI), IBM Watson, Ollama, vLLM
+- **Multi-Provider Support**: OpenAI, Anthropic, Oracle Cloud (OCI), IBM Watson, Ollama, vLLM
 - **Tool System**: Declarative tool creation with automatic validation
 - **Sub-Agent Orchestration**: Compose hierarchical agent workflows with `@orchestrator` and `@subagent`
 - **Parallel Tool Calls**: Execute multiple tools concurrently for improved performance
@@ -37,6 +37,7 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -e .
 
 # Install with specific provider(s)
+pip install -e ".[openai]"             # OpenAI GPT models (also works with OpenAI-compatible APIs)
 pip install -e ".[anthropic]"          # Anthropic Claude
 pip install -e ".[oci]"                # Oracle Cloud Infrastructure
 pip install -e ".[ibm]"                # IBM Watson X
@@ -63,7 +64,8 @@ pip install -e ".[dev]"
 
 | Extra | Description |
 |-------|-------------|
-| `anthropic` | Anthropic Claude provider |
+| `openai` | OpenAI GPT models + OpenAI-compatible APIs (Anthropic, Azure, etc.) |
+| `anthropic` | Anthropic Claude provider (native SDK) |
 | `oci` | Oracle Cloud Infrastructure Generative AI |
 | `ibm` | IBM Watson X AI |
 | `ollama` | Ollama local models |
@@ -602,6 +604,7 @@ agent = BaseAgent(
 
 | Connection | Credentials |
 |------------|-------------|
+| `OpenAIConnection(api_key, base_url=None)` | OpenAI API key (or any OpenAI-compatible API) |
 | `AnthropicConnection(api_key)` | Anthropic API key |
 | `OCIConnection(oci_config)` | OCI config (file path or dict) |
 | `IBMConnection(api_key, project_id, url)` | IBM Watson X credentials |
@@ -719,7 +722,8 @@ obelix/
 
 | Provider | Module | Description |
 |----------|--------|-------------|
-| Anthropic | `anthropic_provider.py` | Claude models |
+| OpenAI | `openai_provider.py` | GPT models + OpenAI-compatible APIs |
+| Anthropic | `anthropic_provider.py` | Claude models (native SDK) |
 | Oracle Cloud (OCI) | `oci_provider.py` | OCI Generative AI |
 | IBM Watson | `ibm_provider.py` | WatsonX AI |
 | Ollama | `ollama_provider.py` | Local models |

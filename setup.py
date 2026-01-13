@@ -42,6 +42,7 @@ setup(
     extras_require={
         # LLM Providers (optional)
         "anthropic": ["anthropic>=0.71.0"],
+        "openai": ["openai>=2.14.0"],
         "oci": ["oci>=2.164.0"],
         "ibm": ["ibm_watsonx_ai>=1.4.0"],
         "ollama": ["ollama>=0.6.0"],
@@ -60,6 +61,7 @@ setup(
         # All LLM providers
         "all-llm": [
             "anthropic>=0.71.0",
+            "openai>=2.14.0",
             "oci>=2.164.0",
             "ibm_watsonx_ai>=1.4.0",
             "ollama>=0.6.0",
@@ -69,6 +71,7 @@ setup(
         # Everything (all providers + mcp)
         "all": [
             "anthropic>=0.71.0",
+            "openai>=2.14.0",
             "oci>=2.164.0",
             "ibm_watsonx_ai>=1.4.0",
             "ollama>=0.6.0",

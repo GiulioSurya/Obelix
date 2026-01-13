@@ -8,6 +8,7 @@ class Providers(Enum):
     OCI_GENERATIVE_AI = "oci"
     OLLAMA = "ollama"
     VLLM = "vllm"
+    OPENAI = "openai"
 
     def create_instance(self) -> AbstractLLMProvider:
         """Factory method to create provider instance"""
@@ -26,6 +27,9 @@ class Providers(Enum):
         elif self == Providers.VLLM:
             from src.llm_providers.vllm_provider import VLLMProvider
             return VLLMProvider()
+        elif self == Providers.OPENAI:
+            from src.llm_providers.openai_provider import OpenAIProvider
+            return OpenAIProvider()
         raise ValueError(f"Provider {self} not supported")
 
 
