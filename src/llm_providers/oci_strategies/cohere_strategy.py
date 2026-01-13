@@ -57,11 +57,9 @@ class CohereRequestStrategy(OCIRequestStrategy):
         for i, message in enumerate(messages):
             msg_type = type(message).__name__
 
-            # TRACE: preview of message content
-            content_preview = ""
-            if hasattr(message, 'content') and message.content:
-                content_preview = str(message.content)[:100]
-            logger.trace(f"msg[{i}] {msg_type}: {content_preview}")
+            # TRACE: full message content
+            content = message.content if hasattr(message, 'content') else ""
+            logger.trace(f"msg[{i}] {msg_type}: {content}")
             if isinstance(message, HumanMessage):
                 # Store user messages; last one goes to 'message' field
                 if last_user_message is not None:

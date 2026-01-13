@@ -147,11 +147,9 @@ class AbstractLLMProvider(ABC):
         for i, message in enumerate(messages):
             msg_type = type(message).__name__
 
-            # TRACE: preview of message content
-            content_preview = ""
-            if hasattr(message, 'content') and message.content:
-                content_preview = str(message.content)[:400]
-            logger.trace(f"msg[{i}] {msg_type}: {content_preview}")
+            # TRACE: full message content
+            content = message.content if hasattr(message, 'content') else ""
+            logger.trace(f"msg[{i}] {msg_type}: {content}")
 
             if isinstance(message, HumanMessage):
                 converted_messages.append(message_converters["human_message"](message))

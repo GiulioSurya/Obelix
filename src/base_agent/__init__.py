@@ -1,12 +1,13 @@
 """
-Base Agent module - Classi base per la creazione di agenti.
+Base Agent module - Core classes for agent creation.
 """
 
 from src.base_agent.base_agent import BaseAgent
-from src.base_agent.agent_schema import AgentSchema, ToolDescription
+from src.base_agent.subagent_decorator import subagent
+from src.base_agent.orchestrator_decorator import orchestrator
 
 __all__ = [
     "BaseAgent",
-    "AgentSchema",
-    "ToolDescription",
+    "subagent",
+    "orchestrator",
 ]

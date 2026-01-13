@@ -45,9 +45,9 @@ class OCILLm(AbstractLLMProvider):
 
     def __init__(self,
                  connection: Optional[OCIConnection] = None,
-                 model_id: str = "meta.llama-3.3-70b-instruct",
+                 model_id: str = "openai.gpt-oss-120b",
                  max_tokens: int = 3500,
-                 temperature: float = 0,
+                 temperature: float = 0.1,
                  top_p: Optional[float] = None,
                  top_k: Optional[int] = None,
                  frequency_penalty: Optional[float] = None,
@@ -182,7 +182,7 @@ class OCILLm(AbstractLLMProvider):
                 )
             )
             logger.info(f"OCI chat completed: {response.data.model_id}")
-            logger.debug(f"OCI response tokens: {getattr(response.data.chat_response.usage, 'total_tokens', 'N/A')}")
+            logger.debug(f"OCI response total tokens: {response.data.chat_response.usage.total_tokens}")
         except Exception as e:
             # Log error with message dump for debugging "Unsafe Text detected"
             logger.error(f"OCI request failed: {e}")

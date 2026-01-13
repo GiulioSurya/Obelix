@@ -1,9 +1,8 @@
-# src/agents/base_agent.py
+# src/base_agent/base_agent.py
 import asyncio
 import time
-from typing import List, Optional, Dict, Any, Union, Callable
+from typing import List, Optional, Dict, Any, Union
 from src.logging_config import get_logger
-from src.base_agent.agent_schema import AgentSchema, ToolDescription
 from src.messages.system_message import SystemMessage
 from src.messages.human_message import HumanMessage
 from src.messages.assistant_message import AssistantMessage
@@ -18,20 +17,17 @@ from src.config import GlobalConfig
 
 logger = get_logger(__name__)
 
+
 class BaseAgent:
     def __init__(self,
                  system_message: str,
                  provider: Optional[AbstractLLMProvider] = None,
-                 agent_name: str = None,
-                 description: str = None,
                  agent_comment: bool = True):
         self.system_message = SystemMessage(content=system_message)
         self.agent_comment = agent_comment
 
         self.provider = provider or GlobalConfig().get_current_provider_instance()
 
-        self.agent_name = agent_name or self.__class__.__name__
-        self.description = description if description is not None else "AI assistant for specialized task execution"
         self.registered_tools: List[ToolBase] = []
         self.conversation_history: List[StandardMessage] = [self.system_message]
         self.agent_usage = AgentUsage(model_id=self.provider.model_id)
@@ -57,7 +53,7 @@ class BaseAgent:
             # If it's an MCPTool, check that the manager is connected
             if isinstance(tool, MCPTool):
                 if not tool.manager.is_connected():
-                    logger.error(f"Agent {self.agent_name}: MCP Tool registration attempt for {tool.tool_name} failed - manager not connected")
+                    logger.error(f"Agent {self.__class__.__name__}: MCP Tool registration attempt for {tool.tool_name} failed - manager not connected")
                     raise RuntimeError(f"MCP Tool {tool.tool_name} is not connected. "
                                        f"The manager must be connected before registration.")
 
@@ -71,7 +67,7 @@ class BaseAgent:
             self.registered_tools.append(tool)
             # Direct access to tool.tool_name (populated by @tool decorator or MCPTool)
             tool_name = getattr(tool, 'tool_name', None) or tool.__class__.__name__
-            logger.info(f"Agent {self.agent_name}: tool '{tool_name}' registered")
+            logger.info(f"Agent {self.__class__.__name__}: tool '{tool_name}' registered")
 
     def on(self, event: AgentEvent) -> Hook:
         """
@@ -120,80 +116,11 @@ class BaseAgent:
 
         return result
 
-    def get_agent_schema(self) -> AgentSchema:
-        tool_descriptions = []
-
-        for tool in self.registered_tools:
-            try:
-                schema = tool.create_schema()
-                parameter_keys = []
-                if hasattr(schema, 'inputSchema') and schema.inputSchema:
-                    properties = schema.inputSchema.get('properties', {})
-                    parameter_keys = list(properties.keys())
-
-                tool_descriptions.append(ToolDescription(
-                    name=schema.name,
-                    description=schema.description or f"Tool {schema.name}",
-                    parameters=parameter_keys
-                ))
-            except Exception as e:
-                tool_name = getattr(tool, 'tool_name', tool.__class__.__name__)
-                tool_descriptions.append(ToolDescription(
-                    name=tool_name,
-                    description=f"Tool {tool_name} (schema not available: {e})",
-                    parameters=[]
-                ))
-
-        # Generate dynamic output schema from tools
-        dynamic_output_schema = self.generate_unified_output_schema()
-
-        return AgentSchema(
-            name=self.agent_name,
-            description=self.description,
-            capabilities={
-                "tools": len(tool_descriptions) > 0,
-                "available_tools": [tool.model_dump() for tool in tool_descriptions]
-            },
-            output_schema=dynamic_output_schema
-        )
-
-    def generate_unified_output_schema(self) -> Dict[str, Any]:
-        """Generic schema that includes outputs from all tools"""
-        tool_outputs = {}
-
-        for tool in self.registered_tools:
-            try:
-                tool_schema = tool.create_schema()
-                if hasattr(tool_schema, 'outputSchema') and tool_schema.outputSchema:
-                    tool_outputs[tool_schema.name] = tool_schema.outputSchema
-            except Exception as e:
-                print(f"Unable to create schema for tool: {e}")
-                # WARNING: operation failed but app continues with fallback
-                logger.warning(f"Unable to create schema for tool: {e}")
-                continue
-
-        properties = {
-            "result": {"type": "string", "description": "Main result"}
-        }
-
-        # Add tool_outputs only if there are tools
-        if tool_outputs:
-            properties["tool_outputs"] = {
-                "type": "object",
-                "properties": tool_outputs,
-                "description": "Specific outputs from tools used"
-            }
-
-        return {
-            "type": "object",
-            "properties": properties
-        }
-
     async def execute_query_async(
         self,
         query: Union[str, List[StandardMessage]],
-        max_attempts: int = 3,
-        max_iterations: int = 5
+        max_attempts: int = 20,
+        max_iterations: int = 20
     ) -> AssistantResponse:
         """
         Execute query asynchronously (for FastAPI).
@@ -246,8 +173,8 @@ class BaseAgent:
     def execute_query(
         self,
         query: Union[str, List[StandardMessage]],
-        max_attempts: int = 3,
-        max_iterations: int = 3
+        max_attempts: int = 12,
+        max_iterations: int = 12
     ) -> AssistantResponse:
         """
         Execute query synchronously (for CLI).
@@ -532,12 +459,12 @@ class BaseAgent:
         final_content = assistant_msg.content if assistant_msg.content else "Execution completed."
 
         # INFO: business operation completed
-        logger.info(f"Assistant response generated for agent {self.agent_name}")
+        logger.info(f"Assistant response generated for agent {self.__class__.__name__}")
         logger.debug(f"Final response: tool_results count={len(collected_tool_results) if collected_tool_results else 0}")
         self.conversation_history.append(assistant_msg)
 
         return AssistantResponse(
-            agent_name=self.agent_name,
+            agent_name=self.__class__.__name__,
             content=final_content,
             tool_results=collected_tool_results if collected_tool_results else None,
             error=execution_error
@@ -566,7 +493,7 @@ class BaseAgent:
         logger.warning(warning_msg)
 
         return AssistantResponse(
-            agent_name=self.agent_name,
+            agent_name=self.__class__.__name__,
             content=f"Execution stopped after {max_iterations} iterations.",
             tool_results=collected_tool_results if collected_tool_results else None,
             error=execution_error or warning_msg

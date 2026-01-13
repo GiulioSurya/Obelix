@@ -9,6 +9,7 @@ A multi-provider LLM agent framework with tool support, hooks system, and seamle
 
 - **Multi-Provider Support**: Anthropic, Oracle Cloud (OCI), IBM Watson, Ollama, vLLM
 - **Tool System**: Declarative tool creation with automatic validation
+- **Sub-Agent Orchestration**: Compose hierarchical agent workflows with `@orchestrator` and `@subagent`
 - **Parallel Tool Calls**: Execute multiple tools concurrently for improved performance
 - **Hooks System**: Intercept and modify agent behavior at runtime
 - **Async/Sync Execution**: Support for both synchronous and asynchronous workflows
@@ -303,6 +304,101 @@ The `AgentStatus` object provides access to the current state. Available fields 
 | `.transform(fn)` | Transform the current value: `fn(value, agent_status) -> new_value` |
 | `.do(fn)` | Execute side effect: `fn(agent_status)` |
 
+### Sub-Agent Orchestration
+
+Obelix supports hierarchical agent composition through the `@orchestrator` and `@subagent` decorators. An orchestrator agent can register other agents as "virtual tools", delegating specialized tasks through function calling.
+
+#### Creating a Sub-Agent
+
+Sub-agents are specialized agents that can be registered and invoked by orchestrators:
+
+```python
+from src.base_agent.subagent_decorator import subagent
+from src.base_agent.base_agent import BaseAgent
+from pydantic import Field
+
+@subagent(name="sql_analyzer", description="Analyzes SQL errors and suggests fixes")
+class SQLAnalyzerAgent(BaseAgent):
+    # Optional context fields (in addition to mandatory 'query')
+    error_context: str = Field(default="", description="Error context from database")
+    schema_info: str = Field(default="", description="Optional schema information")
+
+    def __init__(self):
+        super().__init__(
+            system_message="You are a SQL expert that analyzes errors and suggests fixes.",
+            agent_name="SQLAnalyzer"
+        )
+        # Sub-agents can have their own tools
+        self.register_tool(SQLQueryTool())
+```
+
+**Key points**:
+- `@subagent` requires `name` and `description` (validated at import time)
+- Define optional context fields using Pydantic `Field`
+- The `query` field is automatically added as the first parameter
+- Sub-agents are autonomous and can have their own tools and hooks
+
+#### Creating an Orchestrator
+
+Orchestrators coordinate multiple sub-agents:
+
+```python
+from src.base_agent.orchestrator_decorator import orchestrator
+from src.base_agent.base_agent import BaseAgent
+
+@orchestrator(name="db_coordinator", description="Coordinates database operations")
+class DatabaseCoordinator(BaseAgent):
+    def __init__(self):
+        super().__init__(
+            system_message="You coordinate database tasks and delegate to specialists.",
+            agent_name="DBCoordinator"
+        )
+        # Orchestrators can have their own tools
+        self.register_tool(DatabaseConnectionTool())
+
+# Create orchestrator and register sub-agents
+coordinator = DatabaseCoordinator()
+coordinator.register_agent(SQLAnalyzerAgent())
+coordinator.register_agent(QueryOptimizerAgent())
+```
+
+**Key points**:
+- `@orchestrator` adds the `register_agent()` method
+- Only agents decorated with `@subagent` can be registered
+- Sub-agents are wrapped as tools and appear in the LLM's tool schema
+- Orchestrators can mix regular tools and sub-agents
+
+#### How Sub-Agents are Invoked
+
+When the LLM calls a registered sub-agent, it provides arguments like a regular tool:
+
+```json
+{
+  "tool_calls": [{
+    "name": "sql_analyzer",
+    "arguments": {
+      "query": "Why is this query failing?",
+      "error_context": "ORA-00942: table or view does not exist",
+      "schema_info": "Tables: users, orders, products"
+    }
+  }]
+}
+```
+
+The framework automatically:
+1. Validates arguments against the sub-agent's schema
+2. Combines `query` and context fields into a complete query
+3. Executes the sub-agent in isolation (thread-safe copy)
+4. Returns the result as a `ToolResult` to the orchestrator
+
+#### Benefits
+
+- **Separation of concerns**: Each sub-agent focuses on a specific task
+- **Reusability**: Sub-agents can be registered with multiple orchestrators
+- **Parallel execution**: Multiple sub-agents can run concurrently
+- **No coupling**: Sub-agents don't know about orchestrators
+- **Declarative composition**: Build complex workflows with simple decorators
+
 ### Constructor Parameters
 
 | Parameter | Type | Default | Description |
@@ -530,27 +626,29 @@ INFO     | src.agents.my_agent:execute | Query executed
 ```
 obelix/
 ├── src/
-│   ├── base_agent/           # Agent infrastructure
-│   │   ├── base_agent.py     # BaseAgent class
-│   │   ├── hooks.py          # Hooks system
-│   │   └── agents/           # Concrete agent implementations
-│   ├── tools/                # Tool implementations
-│   │   ├── tool_base.py      # Abstract ToolBase
-│   │   └── tool_decorator.py # @tool decorator
-│   ├── llm_providers/        # LLM provider implementations
+│   ├── base_agent/                # Agent infrastructure
+│   │   ├── base_agent.py          # BaseAgent class
+│   │   ├── hooks.py               # Hooks system
+│   │   ├── orchestrator_decorator.py  # @orchestrator decorator
+│   │   ├── subagent_decorator.py      # @subagent decorator
+│   │   └── agents/                # Concrete agent implementations
+│   ├── tools/                     # Tool implementations
+│   │   ├── tool_base.py           # Abstract ToolBase
+│   │   └── tool_decorator.py      # @tool decorator
+│   ├── llm_providers/             # LLM provider implementations
 │   │   ├── anthropic_provider.py
 │   │   ├── oci_provider.py
 │   │   ├── ibm_provider.py
 │   │   └── ollama_provider.py
-│   ├── connections/          # LLM connections (singleton clients)
-│   ├── messages/             # Message types
-│   ├── logging_config.py     # Loguru configuration
-│   └── config.py             # Global configuration
-├── config/                   # YAML configuration files
-├── tests/                    # Test suite
-├── LICENSE                   # Apache 2.0 License
-├── setup.py                  # Package configuration
-└── README.md                 # This file
+│   ├── connections/               # LLM connections (singleton clients)
+│   ├── messages/                  # Message types
+│   ├── logging_config.py          # Loguru configuration
+│   └── config.py                  # Global configuration
+├── config/                        # YAML configuration files
+├── tests/                         # Test suite
+├── LICENSE                        # Apache 2.0 License
+├── setup.py                       # Package configuration
+└── README.md                      # This file
 ```
 
 ## Supported LLM Providers
