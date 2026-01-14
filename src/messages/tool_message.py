@@ -71,10 +71,12 @@ class ToolMessage(BaseMessage):
     tool_results: List[ToolResult] = Field(...)
 
     def __init__(self, tool_results: List[ToolResult], **kwargs):
-        if 'content' not in kwargs:
-            kwargs['content'] = self._generate_content_summary(tool_results)
+        # *** DEPRECATED *** content auto-generation is redundant, see TODO.md
+        # if 'content' not in kwargs:
+        #     kwargs['content'] = self._generate_content_summary(tool_results)
         super().__init__(tool_results=tool_results, **kwargs)
 
+    # *** DEPRECATED *** - kept for backward compatibility, see TODO.md
     @staticmethod
     def _generate_content_summary(tool_results: List[ToolResult]) -> str:
         if not tool_results:
