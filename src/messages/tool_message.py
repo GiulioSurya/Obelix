@@ -33,13 +33,13 @@ class ToolResult(BaseModel):
         super().__init__(**kwargs)
 
     @staticmethod
-    def _truncate_error_if_needed(error_msg: str, max_length: int = 500) -> str:
+    def _truncate_error_if_needed(error_msg: str, max_length: int = 2000) -> str:
         """
         Truncate error messages that are too long while preserving beginning and end
 
         Args:
             error_msg: The original error message
-            max_length: Maximum length beyond which to truncate
+            max_length: Maximum length beyond which to truncate (default: 2000)
 
         Returns:
             Truncated message if necessary
@@ -47,8 +47,8 @@ class ToolResult(BaseModel):
         if not error_msg or len(error_msg) <= max_length:
             return error_msg
 
-        head_chars = 200
-        tail_chars = 200
+        head_chars = 800
+        tail_chars = 800
         separator = " ... [truncated] ... "
 
         # Ensure that head + tail + separator do not exceed max_length

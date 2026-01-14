@@ -8,7 +8,7 @@ from src.messages.human_message import HumanMessage
 from src.messages.system_message import SystemMessage
 from src.messages.tool_message import ToolMessage
 from src.tools.tool_base import ToolBase
-from src.logging_config import get_logger
+from src.logging_config import get_logger, format_message_for_trace
 
 if TYPE_CHECKING:
     from src.providers import Providers
@@ -147,9 +147,8 @@ class AbstractLLMProvider(ABC):
         for i, message in enumerate(messages):
             msg_type = type(message).__name__
 
-            # TRACE: full message content
-            content = message.content if hasattr(message, 'content') else ""
-            logger.trace(f"msg[{i}] {msg_type}: {content}")
+            # TRACE: full message content with tool_calls/tool_results
+            logger.trace(f"msg[{i}] {format_message_for_trace(message)}")
 
             if isinstance(message, HumanMessage):
                 converted_messages.append(message_converters["human_message"](message))

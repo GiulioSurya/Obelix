@@ -290,18 +290,33 @@ class MyAgent(BaseAgent):
 
 ### Agent with Tools
 
+Tools can be registered via the `tools` parameter or the `register_tool()` method:
+
 ```python
 from src.base_agent.base_agent import BaseAgent
-from src.tools.my_tool import MyTool
+from src.tools.my_tool import CalculatorTool, WeatherTool
 
+# Option 1: tools parameter (single tool or list)
+agent = BaseAgent(
+    system_message="You are a helpful assistant.",
+    agent_name="MyAgent",
+    tools=[CalculatorTool, WeatherTool]  # Classes auto-instantiated
+)
+
+# Option 2: tools parameter with dependencies
+api_client = WeatherAPI(api_key="...")
+agent = BaseAgent(
+    system_message="You are a helpful assistant.",
+    tools=[CalculatorTool, WeatherTool(api_client)]  # Mix classes and instances
+)
+
+# Option 3: register_tool() method
 class ToolEquippedAgent(BaseAgent):
     def __init__(self):
         super().__init__(
             system_message="You are an assistant with calculation capabilities.",
             agent_name="CalculatorAgent"
         )
-
-        # Register tools
         self.register_tool(CalculatorTool())
 ```
 

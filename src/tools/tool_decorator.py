@@ -24,10 +24,32 @@ import inspect
 import time
 from typing import Type, get_type_hints
 
-from pydantic import create_model
+from pydantic import create_model, ValidationError
 from pydantic.fields import FieldInfo
 
 from src.messages.tool_message import ToolCall, ToolResult, ToolStatus, MCPToolSchema
+
+
+#TODO really important, need to be tested (WE NEED TEST ASAP)
+def _get_validation_action(err: dict, field_name: str) -> str:
+    """Get actionable message for a Pydantic validation error."""
+    err_type = err["type"]
+
+    if err_type == "missing":
+        return f"Add '{field_name}' required."
+    elif err_type.endswith("_type"):
+        expected = err_type.replace("_type", "")
+        return f"Provide a {expected} value for '{field_name}'."
+    elif err_type == "extra_forbidden":
+        return f"Remove '{field_name}', not a valid parameter."
+    elif err_type in ("too_short", "too_long", "string_too_short", "string_too_long"):
+        return f"Adjust length of '{field_name}'."
+    elif err_type in ("greater_than", "less_than", "greater_than_equal", "less_than_equal"):
+        return f"Adjust value of '{field_name}'."
+    elif err_type in ("enum", "literal_error"):
+        return f"Use an allowed value for '{field_name}'."
+    else:
+        return f"Fix '{field_name}'."
 
 
 def tool(name: str = None, description: str = None):
@@ -93,6 +115,39 @@ def tool(name: str = None, description: str = None):
                     tool_call_id=tool_call.id,
                     result=result,
                     status=ToolStatus.SUCCESS,
+                    execution_time=time.time() - start_time
+                )
+
+            except ValidationError as e:
+                error_details = []
+                for err in e.errors():
+                    # Build readable path: questions[0].question
+                    path_parts = []
+                    for item in err["loc"]:
+                        if isinstance(item, int):
+                            path_parts.append(f"[{item}]")
+                        else:
+                            if path_parts:
+                                path_parts.append(f".{item}")
+                            else:
+                                path_parts.append(str(item))
+                    loc = "".join(path_parts)
+
+                    msg = err["msg"]
+                    field_name = err["loc"][-1] if err["loc"] else "unknown"
+                    action = _get_validation_action(err, field_name)
+
+                    detail = f"  - '{loc}': {msg}\n    Action: {action}"
+                    error_details.append(detail)
+
+                error_msg = f"VALIDATION ERROR for tool '{tool_call.name}':\n\n" + "\n\n".join(error_details)
+
+                return ToolResult(
+                    tool_name=tool_call.name,
+                    tool_call_id=tool_call.id,
+                    result=None,
+                    status=ToolStatus.ERROR,
+                    error=error_msg,
                     execution_time=time.time() - start_time
                 )
             except Exception as e:

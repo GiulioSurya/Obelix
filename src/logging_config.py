@@ -256,6 +256,74 @@ def get_logger(name: str):
     return logger.bind(name=name)
 
 
+def format_message_for_trace(message, max_chars: int = 2500) -> str:
+    """
+    Format a StandardMessage for TRACE logging with full details.
+
+    Shows complete message content including tool_calls for AssistantMessage
+    and tool_results for ToolMessage, with configurable truncation.
+
+    Args:
+        message: A StandardMessage instance (HumanMessage, SystemMessage,
+                 AssistantMessage, or ToolMessage)
+        max_chars: Maximum characters before truncation. Default: 2500
+
+    Returns:
+        Formatted string representation of the message
+
+    Example output:
+        SystemMessage: "You are an expert..."
+        HumanMessage: "Calculate 2+2"
+        AssistantMessage: content="" | tool_calls=[calculator(a=2, b=2, op="add")]
+        ToolMessage: [calculator: SUCCESS result={'result': 4}]
+    """
+    msg_type = type(message).__name__
+
+    # Import here to avoid circular imports
+    from src.messages.assistant_message import AssistantMessage
+    from src.messages.tool_message import ToolMessage
+
+    if isinstance(message, AssistantMessage):
+        parts = []
+        content = message.content or ""
+        if content:
+            parts.append(f'content="{content}"')
+        else:
+            parts.append('content=""')
+
+        if message.tool_calls:
+            tool_strs = []
+            for tc in message.tool_calls:
+                args_str = ", ".join(f"{k}={v!r}" for k, v in tc.arguments.items())
+                tool_strs.append(f"{tc.name}({args_str})")
+            parts.append(f"tool_calls=[{', '.join(tool_strs)}]")
+
+        formatted = f"{msg_type}: {' | '.join(parts)}"
+
+    elif isinstance(message, ToolMessage):
+        results_strs = []
+        for tr in message.tool_results:
+            status = tr.status.value if hasattr(tr.status, 'value') else str(tr.status)
+            result_repr = repr(tr.result)
+            if tr.error:
+                results_strs.append(f"{tr.tool_name}: {status} error={tr.error!r}")
+            else:
+                results_strs.append(f"{tr.tool_name}: {status} result={result_repr}")
+        formatted = f"{msg_type}: [{'; '.join(results_strs)}]"
+
+    else:
+        # SystemMessage, HumanMessage, or other
+        content = message.content if hasattr(message, 'content') else ""
+        formatted = f"{msg_type}: {content}"
+
+    # Truncate if too long
+    if len(formatted) > max_chars:
+        truncate_marker = " ... [TRUNCATED]"
+        formatted = formatted[:max_chars - len(truncate_marker)] + truncate_marker
+
+    return formatted
+
+
 # =============================================================================
 # QUICK USAGE EXAMPLES
 # =============================================================================

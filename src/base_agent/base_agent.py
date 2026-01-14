@@ -1,7 +1,8 @@
 # src/base_agent/base_agent.py
 import asyncio
+import inspect
 import time
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Optional, Dict, Any, Union, Type
 from src.logging_config import get_logger
 from src.messages.system_message import SystemMessage
 from src.messages.human_message import HumanMessage
@@ -24,7 +25,8 @@ class BaseAgent:
                  provider: Optional[AbstractLLMProvider] = None,
                  agent_comment: bool = True,
                  max_iterations: int = 15,
-                 max_attempts: int = 5):
+                 max_attempts: int = 5,
+                 tools: Optional[Union[ToolBase, Type[ToolBase], List[Union[Type[ToolBase], ToolBase]]]] = None):
         self.system_message = SystemMessage(content=system_message)
         self.agent_comment = agent_comment
         self.max_iterations = max_iterations
@@ -40,6 +42,14 @@ class BaseAgent:
         self._hooks: Dict[AgentEvent, List[Hook]] = {
             event: [] for event in AgentEvent
         }
+
+        # Register tools from constructor parameter
+        if tools:
+            if not isinstance(tools, list):
+                tools = [tools]
+            for tool in tools:
+                tool_instance = tool() if inspect.isclass(tool) else tool
+                self.register_tool(tool_instance)
 
     def register_tool(self, tool: ToolBase):
         """
