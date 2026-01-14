@@ -55,22 +55,7 @@ class Question(BaseModel):
     description="""\
 Ask interactive questions to the user and receive structured responses.
 Use to clarify requirements, gather preferences, validate assumptions, or get decisions.
-
-IMPORTANT: Use EXACTLY this JSON structure (do NOT use inquirer.js format):
-
-  "questions": [{
-    "question": "Which database should we use?",
-    "header": "Database",
-    "options": [
-      {"label": "PostgreSQL", "description": "Relational, ACID compliant"},
-      {"label": "MongoDB", "description": "Document store, flexible schema"}
-    ],
-    "multi_select": false
-  }]
-}
-
-Required fields per question: question (string), header (max 12 chars), options (2-4 items with label+description).
-Optional: multi_select (boolean, default false). User can always select 'Other' for custom input."""
+"""
 )
 class AskUserQuestionTool(ToolBase):
     """
