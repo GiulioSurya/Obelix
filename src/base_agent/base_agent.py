@@ -340,7 +340,7 @@ class BaseAgent:
     async def _process_tool_calls(
         self,
         assistant_msg: AssistantMessage,
-        collected_tool_results: List[Dict[str, Any]],
+        collected_tool_results: List[ToolResult],
         execution_error: Optional[str],
         iteration: int
     ) -> Optional[str]:
@@ -394,9 +394,7 @@ class BaseAgent:
         logger.debug(f"PARALLEL END: {len(tool_results)} tools completed in {batch_duration:.3f}s")
 
 
-        for result in tool_results:
-            tool_summary = self._create_tool_summary(result)
-            collected_tool_results.append(tool_summary)
+        collected_tool_results.extend(tool_results)
 
 
         current_iteration_errors = [
@@ -422,31 +420,10 @@ class BaseAgent:
 
         return execution_error
 
-    def _create_tool_summary(self, result: ToolResult) -> Dict[str, Any]:
-        """
-        Create a summary of the tool result
-
-        Args:
-            result: Tool result
-
-        Returns:
-            Dict containing essential tool information
-        """
-        tool_summary = {"tool_name": result.tool_name}
-
-        if result.status == ToolStatus.SUCCESS and result.result is not None:
-            tool_summary["result"] = result.result
-            logger.debug(f"Tool summary created for {result.tool_name}: result keys={list(result.result.keys()) if isinstance(result.result, dict) else type(result.result)}")
-
-        if result.error:
-            tool_summary["error"] = result.error
-
-        return tool_summary
-
     def _build_final_response(
         self,
         assistant_msg: AssistantMessage,
-        collected_tool_results: List[Dict[str, Any]],
+        collected_tool_results: List[ToolResult],
         execution_error: Optional[str]
     ) -> AssistantResponse:
         """
@@ -478,7 +455,7 @@ class BaseAgent:
     def _build_timeout_response(
         self,
         max_iterations: int,
-        collected_tool_results: List[Dict[str, Any]],
+        collected_tool_results: List[ToolResult],
         execution_error: Optional[str]
     ) -> AssistantResponse:
         """

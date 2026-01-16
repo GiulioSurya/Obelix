@@ -1,9 +1,16 @@
 # src/messages/human_messages.py
-from pydantic import Field
+from pydantic import Field, BaseModel
 
-from src.messages.base_message import BaseMessage, MessageRole
+from typing import Dict, Any
+from datetime import datetime
 
 
-class HumanMessage(BaseMessage):
+from src.messages.roles import MessageRole
+
+
+class HumanMessage(BaseModel):
     """Message from human user"""
     role: MessageRole = Field(default=MessageRole.HUMAN)
+    content: str = Field(default="", description="Textual content of the message")
+    timestamp: datetime = Field(default_factory=datetime.now, description="Creation timestamp")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")

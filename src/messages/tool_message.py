@@ -2,8 +2,9 @@
 from pydantic import BaseModel, Field
 from typing import List, Any, Optional, Dict
 from enum import Enum
+from datetime import datetime
 
-from src.messages.base_message import BaseMessage, MessageRole
+from src.messages.roles import  MessageRole
 
 class ToolCall(BaseModel):
     id: str = Field(..., description="Unique ID of the tool call")
@@ -66,8 +67,10 @@ class ToolResult(BaseModel):
         arbitrary_types_allowed = True
 
 
-class ToolMessage(BaseMessage):
+class ToolMessage(BaseModel):
     role: MessageRole = Field(default=MessageRole.TOOL)
+    timestamp: datetime = Field(default_factory=datetime.now, description="Creation timestamp")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
     tool_results: List[ToolResult] = Field(...)
 
     def __init__(self, tool_results: List[ToolResult], **kwargs):
@@ -75,22 +78,22 @@ class ToolMessage(BaseMessage):
         # if 'content' not in kwargs:
         #     kwargs['content'] = self._generate_content_summary(tool_results)
         super().__init__(tool_results=tool_results, **kwargs)
-
-    # *** DEPRECATED *** - kept for backward compatibility, see TODO.md
-    @staticmethod
-    def _generate_content_summary(tool_results: List[ToolResult]) -> str:
-        if not tool_results:
-            return "No tool results"
-
-        summaries = []
-        for result in tool_results:
-            if result.status == ToolStatus.SUCCESS:
-                summaries.append(f"{result.tool_name}: {result.result}")
-            else:
-                summaries.append(f"{result.tool_name}: {result.status.value} - {result.error}")
-
-        return "; ".join(summaries)
-
+    #
+    # # *** DEPRECATED *** - kept for backward compatibility, see TODO.md
+    # @staticmethod
+    # def _generate_content_summary(tool_results: List[ToolResult]) -> str:
+    #     if not tool_results:
+    #         return "No tool results"
+    #
+    #     summaries = []
+    #     for result in tool_results:
+    #         if result.status == ToolStatus.SUCCESS:
+    #             summaries.append(f"{result.tool_name}: {result.result}")
+    #         else:
+    #             summaries.append(f"{result.tool_name}: {result.status.value} - {result.error}")
+    #
+    #     return "; ".join(summaries)
+    #
 
 class MCPToolSchema(BaseModel):
     """Tool schema in MCP standard format - NOT a message"""
