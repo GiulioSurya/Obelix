@@ -16,6 +16,7 @@ Usage:
     coordinator = CoordinatorAgent()
     coordinator.register_agent(AnalyzerAgent())
 """
+import asyncio
 import copy
 import time
 from typing import Type, TYPE_CHECKING
@@ -50,10 +51,18 @@ class _SubAgentWrapper(ToolBase):
         self.tool_description = agent.subagent_description
         self._input_schema = agent._subagent_input_schema
         self._fields = agent._subagent_fields
+        self._stateless = getattr(agent, 'subagent_stateless', False)
+        # Lock for serializing calls when stateless=False
+        self._execution_lock = asyncio.Lock()
 
     async def execute(self, tool_call: ToolCall) -> ToolResult:
         """
         Execute the sub-agent with arguments from the tool call.
+
+        Behavior depends on stateless flag:
+        - stateless=True: Creates isolated copy of agent (fork of conversation_history),
+          allows parallel execution, copy is discarded after execution.
+        - stateless=False: Serializes calls with lock, preserves conversation_history.
 
         Args:
             tool_call: ToolCall containing query and optional context fields
@@ -61,31 +70,26 @@ class _SubAgentWrapper(ToolBase):
         Returns:
             ToolResult with the sub-agent's response
         """
+        if self._stateless:
+            return await self._execute_stateless(tool_call)
+        else:
+            async with self._execution_lock:
+                return await self._execute_stateful(tool_call)
+
+    async def _execute_stateless(self, tool_call: ToolCall) -> ToolResult:
+        """Execute in stateless mode: isolated copy, parallel-safe."""
         start_time = time.time()
         try:
-            # Create isolated copy for parallel execution
-            instance = copy.copy(self)
+            # Create isolated copy of agent for this execution
+            agent_copy = copy.copy(self._agent)
+            # Fork conversation_history (copy current state, will be discarded after)
+            agent_copy.conversation_history = self._agent.conversation_history.copy()
 
-            # Validate arguments and populate attributes
-            validated = self._input_schema(**tool_call.arguments)
-            for field_name in validated.model_fields:
-                setattr(instance, field_name, getattr(validated, field_name))
+            # Build query from tool_call arguments
+            full_query = self._build_query(tool_call)
 
-            # Build query with optional context fields
-            query_parts = []
-            for field_name in instance._fields.keys():
-                if field_name == 'query':
-                    continue
-                field_value = getattr(instance, field_name, None)
-                if field_value:
-                    query_parts.append(f"{field_name}: {field_value}")
-
-            # Add main query
-            query_parts.append(instance.query)
-            full_query = "\n\n".join(query_parts)
-
-            # Execute sub-agent
-            response = await instance._agent.execute_query_async(query=full_query)
+            # Execute on isolated copy
+            response = await agent_copy.execute_query_async(query=full_query)
 
             return ToolResult(
                 tool_name=tool_call.name,
@@ -103,6 +107,51 @@ class _SubAgentWrapper(ToolBase):
                 error=str(e),
                 execution_time=time.time() - start_time
             )
+
+    async def _execute_stateful(self, tool_call: ToolCall) -> ToolResult:
+        """Execute in stateful mode: serialized, preserves conversation_history."""
+        start_time = time.time()
+        try:
+            # Build query from tool_call arguments
+            full_query = self._build_query(tool_call)
+
+            # Execute on original agent (lock ensures serialization)
+            response = await self._agent.execute_query_async(query=full_query)
+
+            return ToolResult(
+                tool_name=tool_call.name,
+                tool_call_id=tool_call.id,
+                result=response.model_dump(),
+                status=ToolStatus.SUCCESS,
+                execution_time=time.time() - start_time
+            )
+        except Exception as e:
+            return ToolResult(
+                tool_name=tool_call.name,
+                tool_call_id=tool_call.id,
+                result=None,
+                status=ToolStatus.ERROR,
+                error=str(e),
+                execution_time=time.time() - start_time
+            )
+
+    def _build_query(self, tool_call: ToolCall) -> str:
+        """Build full query string from tool_call arguments."""
+        # Validate arguments and get values
+        validated = self._input_schema(**tool_call.arguments)
+
+        # Build query with optional context fields
+        query_parts = []
+        for field_name in self._fields.keys():
+            if field_name == 'query':
+                continue
+            field_value = getattr(validated, field_name, None)
+            if field_value:
+                query_parts.append(f"{field_name}: {field_value}")
+
+        # Add main query
+        query_parts.append(validated.query)
+        return "\n\n".join(query_parts)
 
     @classmethod
     def create_schema(cls) -> MCPToolSchema:

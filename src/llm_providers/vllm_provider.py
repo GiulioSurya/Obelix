@@ -1,4 +1,5 @@
 # src/llm_providers/vllm_provider.py
+import asyncio
 from typing import List, Optional, Dict, Any
 
 from src.llm_providers.llm_abstraction import AbstractLLMProvider
@@ -117,9 +118,12 @@ class VLLMProvider(AbstractLLMProvider):
 
         self.sampling_params = SamplingParams(**sampling_params_dict)
 
-    def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
+    async def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
         """
-        Invoke the vLLM model with standardized messages and tools
+        Invoke the vLLM model with standardized messages and tools (async).
+
+        Uses asyncio.to_thread() to run the sync vLLM engine without
+        blocking the event loop.
         """
         logger.debug(f"vLLM invoke: model={self.model_id}, messages={len(messages)}, tools={len(tools)}")
 
@@ -127,17 +131,19 @@ class VLLMProvider(AbstractLLMProvider):
         vllm_messages = self._convert_messages_to_provider_format(messages)
         vllm_tools = self._convert_tools_to_provider_format(tools)
 
-        # 2. Call vLLM with llm.chat()
+        # 2. Call vLLM with llm.chat() via thread pool to avoid blocking event loop
         try:
             if vllm_tools:
-                outputs = self.llm.chat(
+                outputs = await asyncio.to_thread(
+                    self.llm.chat,
                     vllm_messages,
                     sampling_params=self.sampling_params,
                     tools=vllm_tools,
                     use_tqdm=False
                 )
             else:
-                outputs = self.llm.chat(
+                outputs = await asyncio.to_thread(
+                    self.llm.chat,
                     vllm_messages,
                     sampling_params=self.sampling_params,
                     use_tqdm=False

@@ -1,4 +1,5 @@
 # src/llm_providers/oci_provider.py
+import asyncio
 import logging
 from typing import List, Optional
 
@@ -139,9 +140,13 @@ class OCILLm(AbstractLLMProvider):
             f"Supported prefixes: {[p for s in cls._STRATEGIES for p in s.get_supported_model_prefixes()]}"
         )
 
-    def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
+    async def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
         """
-        Call the OCI model with standardized messages and tools.
+        Call the OCI model with standardized messages and tools (async).
+
+        Uses asyncio.to_thread() to run the sync OCI SDK client without
+        blocking the event loop. This allows parallel agent execution.
+
         Uses the appropriate strategy (auto-detected or specified) for the entire flow.
         """
         # 1. The strategy converts messages and tools to provider-specific format
@@ -165,22 +170,23 @@ class OCILLm(AbstractLLMProvider):
             **self.strategy_kwargs
         )
 
-        # 3. Call OCI using client from connection
+        # 3. Call OCI using client from connection (via thread pool to not block event loop)
         from src.k8s_config import YamlConfig
         import os
         infra_config = YamlConfig(os.getenv("INFRASTRUCTURE_CONFIG_PATH"))
         oci_config = infra_config.get("llm_providers.oci")
 
         client = self.connection.get_client()
+        chat_details = ChatDetails(
+            compartment_id=oci_config["compartment_id"],
+            serving_mode=OnDemandServingMode(model_id=self.model_id),
+            chat_request=chat_request
+        )
 
         try:
-            response = client.chat(
-                chat_details=ChatDetails(
-                    compartment_id=oci_config["compartment_id"],
-                    serving_mode=OnDemandServingMode(model_id=self.model_id),
-                    chat_request=chat_request
-                )
-            )
+            #oci doesn't have ad async sdk
+            # Run sync client.chat() in thread pool to avoid blocking event loop
+            response = await asyncio.to_thread(client.chat, chat_details=chat_details)
             logger.info(f"OCI chat completed: {response.data.model_id}")
             logger.debug(f"OCI response total tokens: {response.data.chat_response.usage.total_tokens}")
         except Exception as e:

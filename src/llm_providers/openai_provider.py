@@ -64,9 +64,11 @@ class OpenAIProvider(AbstractLLMProvider):
         self.temperature = temperature
         self.top_p = top_p
 
-    def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
+    async def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
         """
-        Calls the OpenAI model with standardized messages and tools
+        Calls the OpenAI model with standardized messages and tools (async).
+
+        Uses AsyncOpenAI client for native async support.
         """
         logger.debug(f"OpenAI invoke: model={self.model_id}, messages={len(messages)}, tools={len(tools)}")
 
@@ -90,10 +92,10 @@ class OpenAIProvider(AbstractLLMProvider):
         if openai_tools:
             api_params["tools"] = openai_tools
 
-        # 4. Call OpenAI API using client from connection
+        # 4. Call OpenAI API using async client from connection
         try:
             client = self.connection.get_client()
-            response = client.chat.completions.create(**api_params)
+            response = await client.chat.completions.create(**api_params)
 
             logger.info(f"OpenAI chat completed: {self.model_id}")
 

@@ -40,11 +40,11 @@ class OpenAIConnection(AbstractLLMConnection):
 
     def get_client(self):
         """
-        Returns the configured OpenAI client.
+        Returns the configured async OpenAI client.
         Lazy initialization: creates client only on first access.
 
         Returns:
-            Configured OpenAI client
+            Configured AsyncOpenAI client
 
         Raises:
             ValueError: If OPENAI_API_KEY is not configured
@@ -57,21 +57,21 @@ class OpenAIConnection(AbstractLLMConnection):
 
     def _create_client(self):
         """
-        Creates and configures the OpenAI client.
+        Creates and configures the async OpenAI client.
 
         Returns:
-            Configured OpenAI client
+            Configured AsyncOpenAI client
 
         Raises:
             ImportError: If openai library is not installed
         """
         try:
-            from openai import OpenAI
+            from openai import AsyncOpenAI
         except ImportError:
             raise ImportError(
                 "openai is not installed. Install with: pip install openai"
             )
 
         if self._base_url:
-            return OpenAI(api_key=self._api_key, base_url=self._base_url)
-        return OpenAI(api_key=self._api_key)
+            return AsyncOpenAI(api_key=self._api_key, base_url=self._base_url)
+        return AsyncOpenAI(api_key=self._api_key)

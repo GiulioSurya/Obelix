@@ -279,7 +279,7 @@ class BaseAgent:
             # >>> HOOKS: BEFORE_LLM_CALL <<<
             await self._trigger_hooks(AgentEvent.BEFORE_LLM_CALL, iteration=iteration)
 
-            assistant_msg = self.provider.invoke(self.conversation_history, self.registered_tools)
+            assistant_msg = await self.provider.invoke(self.conversation_history, self.registered_tools)
 
             # >>> HOOKS: AFTER_LLM_CALL <<< (can transform assistant_msg)
             assistant_msg = await self._trigger_hooks(

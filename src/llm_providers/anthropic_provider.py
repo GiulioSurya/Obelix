@@ -77,9 +77,11 @@ class AnthropicProvider(AbstractLLMProvider):
         else:
             self.thinking_params = {"type": "disabled"}
 
-    def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
+    async def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
         """
-        Calls the Anthropic model with standardized messages and tools
+        Calls the Anthropic model with standardized messages and tools (async).
+
+        Uses AsyncAnthropic client for native async support.
         """
         logger.debug(f"Anthropic invoke: model={self.model_id}, messages={len(messages)}, tools={len(tools)}, thinking_mode={self.thinking_mode}")
 
@@ -115,10 +117,10 @@ class AnthropicProvider(AbstractLLMProvider):
         if anthropic_tools:
             api_params["tools"] = anthropic_tools
 
-        # 5. Call Anthropic API using client from connection
+        # 5. Call Anthropic API using async client from connection
         try:
             client = self.connection.get_client()
-            response = client.messages.create(**api_params)
+            response = await client.messages.create(**api_params)
 
             logger.info(f"Anthropic chat completed: {self.model_id}")
 

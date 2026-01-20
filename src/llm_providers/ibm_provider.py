@@ -1,4 +1,5 @@
 # src/llm_providers/ibm_provider.py
+import asyncio
 from typing import List, Dict, Any, Optional
 
 from src.llm_providers.llm_abstraction import AbstractLLMProvider
@@ -108,9 +109,12 @@ class IBMWatsonXLLm(AbstractLLMProvider):
             project_id=self.connection.get_project_id()
         )
 
-    def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
+    async def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
         """
-        Call the IBM Watson model with standardized messages and tools
+        Call the IBM Watson model with standardized messages and tools (async).
+
+        Uses asyncio.to_thread() to run the sync IBM SDK client without
+        blocking the event loop.
         """
         logger.debug(f"IBM Watson invoke: model={self.model_id}, messages={len(messages)}, tools={len(tools)}")
 
@@ -118,17 +122,19 @@ class IBMWatsonXLLm(AbstractLLMProvider):
         ibm_messages = self._convert_messages_to_provider_format(messages)
         ibm_tools = self._convert_tools_to_provider_format(tools)
 
-        # 2. Call IBM Watson
+        # 2. Call IBM Watson via thread pool to avoid blocking event loop
         # NOTE: tool_choice_option should be passed ONLY if tools are defined
         try:
             if ibm_tools:
-                response = self.client.chat(
+                response = await asyncio.to_thread(
+                    self.client.chat,
                     messages=ibm_messages,
                     tools=ibm_tools,
                     tool_choice_option="auto"
                 )
             else:
-                response = self.client.chat(
+                response = await asyncio.to_thread(
+                    self.client.chat,
                     messages=ibm_messages
                 )
 

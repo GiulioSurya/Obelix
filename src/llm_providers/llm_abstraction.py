@@ -43,9 +43,12 @@ class AbstractLLMProvider(ABC):
         pass
 
     @abstractmethod
-    def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
+    async def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
         """
-        Calls the LLM model with standardized messages and tools
+        Calls the LLM model with standardized messages and tools (async).
+
+        For providers with sync-only SDK clients, use asyncio.to_thread()
+        internally to avoid blocking the event loop.
 
         Args:
             messages: List of messages in StandardMessage format

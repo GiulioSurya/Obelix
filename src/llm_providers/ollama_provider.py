@@ -2,7 +2,7 @@
 from typing import List, Optional
 
 try:
-    from ollama import Client
+    from ollama import AsyncClient
 except ImportError:
     raise ImportError(
         "ollama is not installed. Install with: pip install ollama"
@@ -52,11 +52,11 @@ class OllamaProvider(AbstractLLMProvider):
         """
         self.model_id = model_id
 
-        # Initialize Ollama client
+        # Initialize async Ollama client
         if base_url:
-            self.client = Client(host=base_url)
+            self.client = AsyncClient(host=base_url)
         else:
-            self.client = Client()
+            self.client = AsyncClient()
 
         # Build options dict with only non-None parameters
         self.options = {}
@@ -75,9 +75,11 @@ class OllamaProvider(AbstractLLMProvider):
 
         self.keep_alive = keep_alive
 
-    def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
+    async def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
         """
-        Call the Ollama model with standardized messages and tools
+        Call the Ollama model with standardized messages and tools (async).
+
+        Uses AsyncClient for native async support.
         """
         logger.debug(f"Ollama invoke: model={self.model_id}, messages={len(messages)}, tools={len(tools)}")
 
@@ -100,9 +102,9 @@ class OllamaProvider(AbstractLLMProvider):
         if self.keep_alive is not None:
             chat_params["keep_alive"] = self.keep_alive
 
-        # 3. Call Ollama
+        # 3. Call Ollama with async client
         try:
-            response = self.client.chat(**chat_params)
+            response = await self.client.chat(**chat_params)
 
             logger.info(f"Ollama chat completed: {self.model_id}")
 

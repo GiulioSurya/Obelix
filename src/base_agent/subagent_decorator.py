@@ -21,7 +21,7 @@ from pydantic.fields import FieldInfo
 from src.messages.tool_message import MCPToolSchema
 
 
-def subagent(name: str = None, description: str = None):
+def subagent(name: str = None, description: str = None, stateless: bool = False):
     """
     Decorator that marks a BaseAgent as registrable by orchestrators.
 
@@ -32,6 +32,11 @@ def subagent(name: str = None, description: str = None):
     Args:
         name: Unique name for the sub-agent (REQUIRED)
         description: Description of what the sub-agent does (REQUIRED)
+        stateless: If True, allows parallel execution. Each call works on a
+                   copy of the agent (fork of current conversation_history),
+                   and the copy is discarded after execution.
+                   If False (default), calls are serialized with a lock and
+                   conversation_history is preserved across calls.
 
     Raises:
         ValueError: If name or description are missing (at import time)
@@ -55,6 +60,7 @@ def subagent(name: str = None, description: str = None):
         # 2. Add subagent metadata
         cls.subagent_name = name
         cls.subagent_description = description
+        cls.subagent_stateless = stateless
 
         # 3. Extract Fields from class and add hardcoded 'query'
         cls._subagent_fields = _extract_subagent_fields(cls)

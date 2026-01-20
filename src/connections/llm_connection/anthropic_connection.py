@@ -34,11 +34,11 @@ class AnthropicConnection(AbstractLLMConnection):
 
     def get_client(self):
         """
-        Returns the configured Anthropic client.
+        Returns the configured async Anthropic client.
         Lazy initialization: creates client only on first access.
 
         Returns:
-            Configured Anthropic client
+            Configured AsyncAnthropic client
 
         Raises:
             ValueError: If ANTHROPIC_API_KEY is not configured
@@ -51,19 +51,19 @@ class AnthropicConnection(AbstractLLMConnection):
 
     def _create_client(self):
         """
-        Creates and configures the Anthropic client.
+        Creates and configures the async Anthropic client.
 
         Returns:
-            Configured Anthropic client
+            Configured AsyncAnthropic client
 
         Raises:
             ImportError: If anthropic library is not installed
         """
         try:
-            from anthropic import Anthropic
+            from anthropic import AsyncAnthropic
         except ImportError:
             raise ImportError(
                 "anthropic is not installed. Install with: pip install anthropic"
             )
 
-        return Anthropic(api_key=self._api_key)
+        return AsyncAnthropic(api_key=self._api_key)

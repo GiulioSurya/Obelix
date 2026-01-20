@@ -12,7 +12,8 @@ A multi-provider LLM agent framework with tool support, hooks system, and seamle
 - **Sub-Agent Orchestration**: Compose hierarchical agent workflows with `@orchestrator` and `@subagent`
 - **Parallel Tool Calls**: Execute multiple tools concurrently for improved performance
 - **Hooks System**: Intercept and modify agent behavior at runtime
-- **Async/Sync Execution**: Support for both synchronous and asynchronous workflows
+- **Async-First Architecture**: All providers use async `invoke()` - native async clients (Anthropic, OpenAI, Ollama) or `asyncio.to_thread()` for sync SDKs (OCI, IBM, vLLM). Event loop never blocks.
+- **Thread-Safe Execution**: Parallel agent and tool calls don't share mutable state
 - **Loguru Logging**: Structured logging with rotation and color output
 
 ---
@@ -80,23 +81,6 @@ pip install -e ".[dev]"
 
 Obelix leverages [Pydantic](https://github.com/pydantic/pydantic) extensively for type safety, validation, and automatic schema generation throughout the framework.
 
-### Type-Safe Message System
-
-All messages in Obelix are Pydantic models with full validation:
-
-```python
-from src.messages import HumanMessage, AssistantMessage, ToolCall, ToolResult
-
-# Messages are validated at creation
-message = HumanMessage(content="Analyze this data")
-
-# Tool calls have typed arguments
-tool_call = ToolCall(
-    id="call_123",
-    name="calculator",
-    arguments={"operation": "add", "a": 5, "b": 3}
-)
-```
 
 ### Automatic Schema Generation for Tools
 
@@ -418,6 +402,33 @@ class SQLAnalyzerAgent(BaseAgent):
 - Define optional context fields using Pydantic `Field`
 - The `query` field is automatically added as the first parameter
 - Sub-agents are autonomous and can have their own tools and hooks
+
+#### Stateless vs Stateful Sub-Agents
+
+The `stateless` parameter controls how sub-agents handle concurrent calls and conversation history:
+
+```python
+# Stateless: allows parallel calls, each on isolated copy
+@subagent(name="translator", description="Translates text", stateless=True)
+class TranslatorAgent(BaseAgent):
+    ...
+
+# Stateful (default): calls serialized with lock, preserves conversation history
+@subagent(name="analyst", description="Analyzes data with context")
+class AnalystAgent(BaseAgent):
+    ...
+```
+
+| `stateless` | Parallel Calls | Conversation History | Use Case |
+|-------------|----------------|---------------------|----------|
+| `True` | Yes (concurrent) | Fork of current state, discarded after | One-shot tasks, translations, validations |
+| `False` (default) | No (serialized via lock) | Preserved across calls | Multi-turn analysis, agents needing context |
+
+**How stateless works**:
+- Each call creates a shallow copy of the agent with a forked `conversation_history`
+- The copy is discarded after execution (original agent unchanged)
+- `agent_usage` is still accumulated on the original agent
+- Multiple calls can run truly in parallel without state collision
 
 #### Creating an Orchestrator
 
