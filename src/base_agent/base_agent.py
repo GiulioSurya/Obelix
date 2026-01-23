@@ -522,9 +522,10 @@ class BaseAgent:
         logger.error(f"Registered tools: {[getattr(t, 'tool_name', t.__class__.__name__) for t in self.registered_tools]}")
         return None
 
-    def _collect_tool_results(self) -> List[ToolResult]:
+    def _collect_tool_results(self, history: Optional[List[StandardMessage]] = None) -> List[ToolResult]:
         results: List[ToolResult] = []
-        for message in self.conversation_history:
+        target_history = history if history is not None else self.conversation_history
+        for message in target_history:
             if isinstance(message, ToolMessage):
                 results.extend(message.tool_results)
         return results
@@ -536,7 +537,12 @@ class BaseAgent:
         if not self._tool_policy:
             return None, None
 
-        results = self._collect_tool_results()
+        cached = getattr(status, "_tool_policy_cache", None)
+        if cached is not None:
+            return cached
+
+        # Use status.agent to support stateless subagent copies
+        results = self._collect_tool_results(status.agent.conversation_history)
         logger.debug(
             f"Tool policy check: required={[r.tool_name for r in self._tool_policy]}, "
             f"results={[r.tool_name for r in results]}"
@@ -558,6 +564,15 @@ class BaseAgent:
                     if status.iteration >= status.agent.max_iterations
                     else HookDecision.RETRY
                 )
+                logger.warning(
+                    "Tool policy violation: tool={}, count={}, min_calls={}, require_success={}, decision={}",
+                    req.tool_name,
+                    len(matching),
+                    req.min_calls,
+                    req.require_success,
+                    decision.value,
+                )
+                status._tool_policy_cache = (decision, msg)
                 return decision, msg
 
             if req.require_success:
@@ -572,8 +587,18 @@ class BaseAgent:
                         if status.iteration >= status.agent.max_iterations
                         else HookDecision.RETRY
                     )
+                    logger.warning(
+                        "Tool policy violation: tool={}, success_count={}, min_calls={}, require_success={}, decision={}",
+                        req.tool_name,
+                        success_count,
+                        req.min_calls,
+                        req.require_success,
+                        decision.value,
+                    )
+                    status._tool_policy_cache = (decision, msg)
                     return decision, msg
 
+        status._tool_policy_cache = (None, None)
         return None, None
 
     def _tool_policy_should_retry(self, status: AgentStatus) -> bool:
