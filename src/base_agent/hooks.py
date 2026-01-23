@@ -1,18 +1,17 @@
 """
 Hook system for BaseAgent.
 
-Provides a fluent API to intercept agent lifecycle events,
-inject messages into conversation history, and transform results.
-
-Example:
-    agent.on(AgentEvent.ON_TOOL_ERROR) \
-        .when(lambda agent_status: "invalid identifier" in agent_status.error) \
-        .inject(lambda agent_status: HumanMessage(content="Schema: ..."))
+Provides a uniform API for intercepting agent lifecycle events.
+The API uses when(...) and handle(...) to define:
+- activation conditions
+- state effects via context
+- value transformations in the pipeline
+- flow decisions (CONTINUE/RETRY/FAIL/STOP)
 """
 
 from enum import Enum
 from dataclasses import dataclass
-from typing import Optional, Callable, Any, List, Union, TYPE_CHECKING
+from typing import Optional, Callable, Any, List, TYPE_CHECKING
 import asyncio
 
 from src.logging_config import get_logger
@@ -28,13 +27,6 @@ if TYPE_CHECKING:
 
 class AgentEvent(str, Enum):
     """Agent lifecycle events"""
-
-    # === Lifecycle ===
-    ON_QUERY_START = "on_query_start"
-    """Before starting query execution"""
-
-    ON_QUERY_END = "on_query_end"
-    """End of execution (success or error)"""
 
     # === LLM ===
     BEFORE_LLM_CALL = "before_llm_call"
@@ -54,8 +46,27 @@ class AgentEvent(str, Enum):
     ON_TOOL_ERROR = "on_tool_error"
     """When a tool returns an error (status == ERROR)"""
 
-    ON_MAX_ITERATIONS = "on_max_iterations"
-    """When iteration limit is reached"""
+    # === Finalization ===
+    BEFORE_FINAL_RESPONSE = "before_final_response"
+    """Before building the final response (validation/retry)"""
+
+    QUERY_END = "query_end"
+    """End of execution (success or error)"""
+
+
+class HookDecision(str, Enum):
+    """Hook decision for flow control"""
+    CONTINUE = "continue"
+    RETRY = "retry"
+    FAIL = "fail"
+    STOP = "stop"
+
+
+@dataclass
+class Outcome:
+    """Uniform result of a hook execution."""
+    decision: HookDecision
+    value: Any
 
 
 @dataclass
@@ -82,24 +93,17 @@ class AgentStatus:
 
 class Hook:
     """
-    Hook with fluent API to intercept agent events.
-
-    Supports:
-    - Activation conditions (.when())
-    - Message injection (.inject(), .inject_at())
-    - Value transformation (.transform())
-    - Generic actions (.do())
-
-    Example:
-        agent.on(AgentEvent.AFTER_TOOL_EXECUTION) \
-            .when(lambda agent_status: agent_status.tool_result.error) \
-            .transform(lambda result, agent_status: enrich_error(result))
+    Hook with fluent API:
+    - when(condition)
+    - handle(decision, value=None, effects=None)
     """
 
     def __init__(self, event: AgentEvent):
         self.event = event
         self._condition: Optional[Callable[[AgentStatus], bool]] = None
-        self._actions: List[Callable] = []
+        self._decision: HookDecision = HookDecision.CONTINUE
+        self._value: Optional[Callable[..., Any] | Any] = None
+        self._effects: List[Callable[[AgentStatus], Any]] = []
         logger.debug(f"Hook created for event: {event.value}")
 
     def when(self, condition: Callable[[AgentStatus], bool]) -> 'Hook':
@@ -118,126 +122,41 @@ class Hook:
         logger.debug(f"Hook [{self.event.value}] - condition set: {condition_name}")
         return self
 
-    def inject(
+    def handle(
         self,
-        message_factory: Callable[[AgentStatus], 'StandardMessage']
+        decision: HookDecision,
+        value: Optional[Callable[..., Any] | Any] = None,
+        effects: Optional[List[Callable[[AgentStatus], Any]]] = None,
     ) -> 'Hook':
         """
-        Inject a message at the end of conversation history (append).
+        Defines decision, value and effects for the hook.
 
         Args:
-            message_factory: Function that receives AgentStatus and returns
-                           the message to inject
+            decision: CONTINUE | RETRY | FAIL | STOP
+            value: direct value or function (status, current_value) -> new_value
+            effects: list of effect(status) -> None
 
         Returns:
             self for method chaining
         """
-        factory_name = getattr(message_factory, '__name__', str(message_factory))
-        logger.debug(f"Hook [{self.event.value}] - registered inject action: {factory_name}")
-
-        def action(agent_status: AgentStatus, current: Any) -> Any:
-            message = message_factory(agent_status)
-            logger.debug(f"Hook [{agent_status.event.value}] - inject executed, message type: {type(message).__name__}")
-            agent_status.agent.conversation_history.append(message)
-            return current
-
-        self._actions.append(action)
+        self._decision = decision
+        self._value = value
+        self._effects = effects or []
+        logger.debug(
+            f"Hook [{self.event.value}] - handle registered: "
+            f"decision={decision.value}, effects={len(self._effects)}"
+        )
         return self
 
-    def inject_at(
-        self,
-        position: Union[int, Callable[[AgentStatus], int]],
-        message_factory: Callable[[AgentStatus], 'StandardMessage']
-    ) -> 'Hook':
-        """
-        Inject a message at a specific position in conversation history.
-
-        Args:
-            position: Index to insert at, or function that calculates index.
-                     Negative values are relative to end (-1 = before last)
-            message_factory: Function that returns the message to inject
-
-        Returns:
-            self for method chaining
-        """
-        factory_name = getattr(message_factory, '__name__', str(message_factory))
-        pos_desc = position if isinstance(position, int) else getattr(position, '__name__', 'dynamic')
-        logger.debug(f"Hook [{self.event.value}] - registered inject_at action: {factory_name} @ pos={pos_desc}")
-
-        def action(agent_status: AgentStatus, current: Any) -> Any:
-            message = message_factory(agent_status)
-            pos = position(agent_status) if callable(position) else position
-            logger.debug(f"Hook [{agent_status.event.value}] - inject_at executed @ pos={pos}, message type: {type(message).__name__}")
-            agent_status.agent.conversation_history.insert(pos, message)
-
-        self._actions.append(action)
-        return self
-
-    def do(self, action: Callable[[AgentStatus], Any]) -> 'Hook':
-        """
-        Execute a generic action (logging, side effects, etc.).
-
-        The action does not modify the current value in the chain.
-
-        Args:
-            action: Function that receives AgentStatus. Can be sync or async.
-
-        Returns:
-            self for method chaining
-        """
-        action_name = getattr(action, '__name__', str(action))
-        logger.debug(f"Hook [{self.event.value}] - registered do action: {action_name}")
-
-        def wrapped(agent_status: AgentStatus, current: Any) -> Any:
-            logger.debug(f"Hook [{agent_status.event.value}] - do action executed: {action_name}")
-            action(agent_status)
-            return current
-
-        self._actions.append(wrapped)
-        return self
-
-    def transform(
-        self,
-        transformer: Callable[[Any, AgentStatus], Any]
-    ) -> 'Hook':
-        """
-        Transform the current value (ToolResult, AssistantMessage, ToolCall).
-
-        Useful with events like AFTER_TOOL_EXECUTION or AFTER_LLM_CALL.
-
-        Args:
-            transformer: Function (current_value, agent_status) -> new_value.
-                        Can be sync or async.
-
-        Returns:
-            self for method chaining
-        """
-        transformer_name = getattr(transformer, '__name__', str(transformer))
-        logger.debug(f"Hook [{self.event.value}] - registered transform action: {transformer_name}")
-
-        def action(agent_status: AgentStatus, current: Any) -> Any:
-            logger.debug(f"Hook [{agent_status.event.value}] - transform executed: {transformer_name}, input type: {type(current).__name__}")
-            result = transformer(current, agent_status)
-            logger.debug(f"Hook [{agent_status.event.value}] - transform completed, output type: {type(result).__name__}")
-            return result
-
-        self._actions.append(action)
-        return self
-
-    async def execute(self, agent_status: AgentStatus, current_value: Any = None) -> Any:
+    async def execute(self, agent_status: AgentStatus, current_value: Any = None) -> Outcome:
         """
         Execute the hook if condition is satisfied.
 
-        Args:
-            agent_status: Current agent state
-            current_value: Current value to pass to transformations
-
         Returns:
-            Transformed value or current_value if no transformation
+            Outcome with decision and value
         """
         logger.debug(f"Hook [{self.event.value}] - execute invoked, iteration={agent_status.iteration}")
 
-        # Check condition
         if self._condition is not None:
             condition_name = getattr(self._condition, '__name__', 'anonymous')
             logger.debug(f"Hook [{self.event.value}] - evaluating condition: {condition_name}")
@@ -246,20 +165,34 @@ class Hook:
                 cond_result = await cond_result
             if not cond_result:
                 logger.debug(f"Hook [{self.event.value}] - condition NOT satisfied, skip")
-                return current_value
-            logger.debug(f"Hook [{self.event.value}] - condition SATISFIED, executing {len(self._actions)} actions")
+                return Outcome(HookDecision.CONTINUE, current_value)
+            logger.debug(
+                f"Hook [{self.event.value}] - condition SATISFIED, effects={len(self._effects)}"
+            )
         else:
-            logger.debug(f"Hook [{self.event.value}] - no condition, executing {len(self._actions)} actions")
+            logger.debug(
+                f"Hook [{self.event.value}] - no condition, effects={len(self._effects)}"
+            )
 
-        # Execute all actions in sequence
-        result = current_value
-        for i, action in enumerate(self._actions):
-            logger.debug(f"Hook [{self.event.value}] - executing action {i+1}/{len(self._actions)}")
-            action_result = action(agent_status, result)
-            if asyncio.iscoroutine(action_result):
-                action_result = await action_result
-            if action_result is not None:
-                result = action_result
+        for i, effect in enumerate(self._effects):
+            logger.debug(
+                f"Hook [{self.event.value}] - executing effect {i+1}/{len(self._effects)}"
+            )
+            effect_result = effect(agent_status)
+            if asyncio.iscoroutine(effect_result):
+                await effect_result
 
-        logger.debug(f"Hook [{self.event.value}] - execute completed")
-        return result
+        new_value = current_value
+        if self._value is not None:
+            if callable(self._value):
+                value_result = self._value(agent_status, current_value)
+                if asyncio.iscoroutine(value_result):
+                    value_result = await value_result
+                new_value = value_result
+            else:
+                new_value = self._value
+
+        logger.debug(
+            f"Hook [{self.event.value}] - execute completed, decision={self._decision.value}"
+        )
+        return Outcome(self._decision, new_value)

@@ -18,6 +18,13 @@ class ToolStatus(str, Enum):
     TIMEOUT = "timeout"
 
 
+class ToolRequirement(BaseModel):
+    tool_name: str = Field(..., description="Tool name to enforce")
+    min_calls: int = Field(1, description="Minimum number of calls required")
+    require_success: bool = Field(False, description="Whether calls must be successful")
+    error_message: Optional[str] = Field(None, description="Custom error message")
+
+
 class ToolResult(BaseModel):
     tool_name: str = Field(..., description="Name of the tool")
     tool_call_id: str = Field(..., description="ID of the tool call")

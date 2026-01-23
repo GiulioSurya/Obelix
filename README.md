@@ -304,70 +304,110 @@ class ToolEquippedAgent(BaseAgent):
         self.register_tool(CalculatorTool())
 ```
 
-### Agent with Hooks
+### Hooks System
 
-Hooks allow intercepting events during the agent lifecycle. Each hook receives an `AgentStatus` with relevant information.
+Hooks intercept agent lifecycle events enabling **validation**, **error recovery**, **context injection**, and **flow control**. Each hook receives an `AgentStatus` and can return a `HookDecision` to control execution.
+
+**Common use cases:**
+- **Output validation**: Ensure LLM response contains required elements, retry if missing
+- **Error recovery**: Inject context (e.g., database schema) when tools fail
+- **Context injection**: Add plans or data before LLM calls
+- **Result enrichment**: Transform tool results (e.g., fetch docs for error codes)
 
 ```python
 from src.base_agent.base_agent import BaseAgent
-from src.base_agent.hooks import AgentEvent
-from src.messages.human_message import HumanMessage
+from src.base_agent.hooks import AgentEvent, HookDecision, AgentStatus
+from src.messages.system_message import SystemMessage
 
-class SmartAgent(BaseAgent):
+class ValidatingAgent(BaseAgent):
     def __init__(self):
-        super().__init__(
-            system_message="You are an intelligent assistant.",
-            agent_name="SmartAgent"
+        super().__init__(system_message="...", agent_name="ValidatingAgent")
+
+        # Validate output contains required tag, retry if missing
+        self.on(AgentEvent.BEFORE_FINAL_RESPONSE) \
+            .when(self._missing_answer_tag) \
+            .handle(
+                decision=HookDecision.RETRY,
+                effects=[self._inject_format_guidance]
+            )
+
+    def _missing_answer_tag(self, ctx: AgentStatus) -> bool:
+        content = ctx.assistant_message.content or ""
+        return "<answer>" not in content
+
+    def _inject_format_guidance(self, ctx: AgentStatus) -> None:
+        ctx.conversation_history.append(
+            SystemMessage(content="Your response must include <answer>...</answer> tags.")
         )
-        self._schema_injected = False
-
-        # Inject database schema on "invalid identifier" errors
-        self.on(AgentEvent.ON_TOOL_ERROR) \
-            .when(self._is_invalid_identifier) \
-            .inject(self._create_schema_message)
-
-    def _is_invalid_identifier(self, agent_status) -> bool:
-        # agent_status.error contains the error message from the tool
-        # agent_status.tool_result contains the full ToolResult object
-        return (
-            agent_status.error is not None and
-            "invalid identifier" in agent_status.error and
-            not self._schema_injected
-        )
-
-    def _create_schema_message(self, agent_status) -> HumanMessage:
-        self._schema_injected = True
-        # agent_status.agent gives access to the agent instance
-        # agent_status.conversation_history gives access to the full history
-        return HumanMessage(content="Database schema: ... Please correct the query.")
 ```
 
-### AgentStatus
+#### Hook Decisions
 
-The `AgentStatus` object provides access to the current state. Available fields depend on the event:
+| Decision | Effect |
+|----------|--------|
+| `CONTINUE` | Proceed normally (default) |
+| `RETRY` | Restart current LLM iteration |
+| `FAIL` | Raise RuntimeError |
+| `STOP` | Return immediately with provided value |
+
+#### AgentStatus Fields
 
 | Event | `iteration` | `tool_call` | `tool_result` | `assistant_message` | `error` |
 |-------|:-----------:|:-----------:|:-------------:|:-------------------:|:-------:|
-| `ON_QUERY_START` | 0 | - | - | - | - |
 | `BEFORE_LLM_CALL` | ✓ | - | - | - | - |
 | `AFTER_LLM_CALL` | ✓ | - | - | ✓ | - |
 | `BEFORE_TOOL_EXECUTION` | ✓ | ✓ | - | - | - |
 | `AFTER_TOOL_EXECUTION` | ✓ | - | ✓ | - | - |
 | `ON_TOOL_ERROR` | ✓ | - | ✓ | - | ✓ |
-| `ON_QUERY_END` | ✓ | - | - | - | - |
-| `ON_MAX_ITERATIONS` | ✓ | - | - | - | - |
+| `BEFORE_FINAL_RESPONSE` | ✓ | - | - | ✓ | - |
+| `QUERY_END` | ✓ | - | - | - | - |
 
-**Always available**: `agent_status.agent` (the agent instance), `agent_status.conversation_history` (list of messages)
+**Always available**: `ctx.agent`, `ctx.conversation_history`
 
-### Hook Methods
+#### Hook API
 
-| Method | Description |
-|--------|-------------|
-| `.when(fn)` | Condition to trigger the hook: `fn(agent_status) -> bool` |
-| `.inject(fn)` | Append a message to history: `fn(agent_status) -> Message` |
-| `.inject_at(pos, fn)` | Insert message at position: `fn(agent_status) -> Message` |
-| `.transform(fn)` | Transform the current value: `fn(value, agent_status) -> new_value` |
-| `.do(fn)` | Execute side effect: `fn(agent_status)` |
+```python
+self.on(AgentEvent.EVENT_NAME) \
+    .when(condition_fn) \           # fn(ctx) -> bool
+    .handle(
+        decision=HookDecision.X,    # CONTINUE | RETRY | FAIL | STOP
+        value=transform_fn,         # Optional: fn(ctx, current_value) -> new_value
+        effects=[effect_fn, ...]    # Optional: list of fn(ctx) -> None
+    )
+```
+
+📖 **Documentation**: [docs/hooks.md](docs/hooks.md) | [docs/base_agent.md](docs/base_agent.md)
+
+---
+
+### Tool Policy
+
+Tool policies enforce that specific tools must be called before the agent can respond. Useful for ensuring required actions are performed.
+
+```python
+from src.messages.tool_message import ToolRequirement
+
+agent = BaseAgent(
+    system_message="You are a SQL assistant.",
+    tool_policy=[
+        ToolRequirement(
+            tool_name="sql_executor",
+            min_calls=1,
+            require_success=True,
+            error_message="You must execute the SQL query before responding."
+        )
+    ]
+)
+```
+
+If violated: agent retries with guidance message, or fails at max iterations.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `tool_name` | `str` | required | Tool to enforce |
+| `min_calls` | `int` | `1` | Minimum calls required |
+| `require_success` | `bool` | `False` | Must succeed (not error) |
+| `error_message` | `str` | `None` | Custom guidance message |
 
 ### Sub-Agent Orchestration
 

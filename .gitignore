@@ -387,5 +387,3 @@ dist/
 build/
 *.whl
 
-# Documentation (Local/Working)
-docs/
