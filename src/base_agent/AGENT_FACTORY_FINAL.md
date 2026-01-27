@@ -69,7 +69,7 @@ factory.register(
     expose_as_subagent: bool = False,
     subagent_name: Optional[str] = None,
     subagent_description: Optional[str] = None,
-    stateless: bool = True,
+    stateless: bool = False,
     override_decorator: bool = False,
     defaults: Optional[Dict[str, Any]] = None,
 ) -> AgentFactory  # Returns self for chaining
@@ -84,7 +84,7 @@ factory.register(
 | `expose_as_subagent` | `bool` | No | `False` | If `True`, this agent can be used as a subagent in orchestrators. |
 | `subagent_name` | `str` | No | Same as `name` | The tool name exposed to the LLM when used as subagent. |
 | `subagent_description` | `str` | Conditional | — | Description of subagent capabilities for LLM. **Required if `expose_as_subagent=True` AND class is NOT already decorated with `@subagent`.** |
-| `stateless` | `bool` | No | `True` | If `True`, subagent executions are isolated (copy of agent, forked history). If `False`, executions are serialized and history is shared. |
+| `stateless` | `bool` | No | `False` | If `False` (default), executions are serialized and conversation history is preserved across calls. If `True`, subagent executions are isolated (copy of agent, forked history, discarded after). |
 | `override_decorator` | `bool` | No | `False` | If `True`, factory values (`subagent_name`, `subagent_description`, `stateless`) override any existing `@subagent` decorator on the class. If `False`, decorator values take precedence. |
 | `defaults` | `Dict[str, Any]` | No | `{}` | Default constructor arguments for this specific agent. Merged with `global_defaults`. |
 
@@ -101,8 +101,7 @@ factory.register("weather", WeatherAgent,
                  subagent_description="Provides weather forecasts")
        .register("sql", SQLAgent,
                  expose_as_subagent=True,
-                 subagent_description="Executes SQL queries",
-                 stateless=False)
+                 subagent_description="Executes SQL queries")
        .register("planner", PlannerAgent,
                  defaults={"max_iterations": 20})
 ```
@@ -351,7 +350,7 @@ class AgentSpec:
     expose_as_subagent: bool = False
     subagent_name: Optional[str] = None
     subagent_description: Optional[str] = None
-    stateless: bool = True
+    stateless: bool = False
     override_decorator: bool = False
     defaults: Dict[str, Any] = field(default_factory=dict)
 
@@ -382,7 +381,7 @@ class AgentFactory:
         expose_as_subagent: bool = False,
         subagent_name: Optional[str] = None,
         subagent_description: Optional[str] = None,
-        stateless: bool = True,
+        stateless: bool = False,
         override_decorator: bool = False,
         defaults: Optional[Dict[str, Any]] = None,
     ) -> 'AgentFactory':
@@ -583,8 +582,7 @@ factory.register("weather", WeatherAgent,
 
 factory.register("sql", SQLAgent,
                  expose_as_subagent=True,
-                 subagent_description="Executes SQL queries",
-                 stateless=False)
+                 subagent_description="Executes SQL queries")
 
 factory.register("planner", PlannerAgent)
 

@@ -332,6 +332,10 @@ class BaseAgent:
 
                 continue
 
+            # Add assistant message to history BEFORE validation hooks
+            # This allows hooks to see (and LLM to correct) the message on RETRY
+            self.conversation_history.append(assistant_msg)
+
             outcome = await self._run_hooks(
                 AgentEvent.BEFORE_FINAL_RESPONSE,
                 current_value=assistant_msg,
@@ -407,7 +411,11 @@ class BaseAgent:
 
         logger.info(f"Assistant response generated for agent {self.__class__.__name__}")
         logger.debug(f"Final response: tool_results count={len(collected_tool_results) if collected_tool_results else 0}")
-        self.conversation_history.append(assistant_msg)
+
+        # Avoid duplicates - message may already be in history from BEFORE_FINAL_RESPONSE
+        # Use identity check (is) because Pydantic __eq__ may have edge cases
+        if not any(msg is assistant_msg for msg in self.conversation_history):
+            self.conversation_history.append(assistant_msg)
 
         return AssistantResponse(
             agent_name=self.__class__.__name__,

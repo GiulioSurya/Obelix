@@ -191,3 +191,353 @@ Guideline: do not call an agent before its prerequisites have been executed.
 ## File Location
 This plan is stored at:
 `docs/shared_memory_plan.md`
+
+---
+
+# ADDENDUM: Integration with Agent Factory
+
+> This section was added after the Agent Factory design was finalized.
+> See: `src/base_agent/AGENT_FACTORY_FINAL.md`
+
+---
+
+## Factory as Central Integration Point
+
+The Agent Factory becomes the **single point** where shared memory is wired to agents. This simplifies integration and ensures consistency.
+
+### Key Design Decisions Resolved
+
+| Open Decision | Resolution |
+|---------------|------------|
+| How to identify `agent_id` | **Registry name** from `factory.register(name, ...)`. Each agent gets `agent_id = name`. |
+| How edges are defined | **On the SharedMemoryGraph directly**, before attaching to factory. Factory does not manage edges. |
+| Where memory_graph is attached | **In `factory.create()`**, automatically to all created agents (orchestrator and subagents). |
+
+---
+
+## Integration Flow
+
+### Step 1: Create and configure the SharedMemoryGraph
+
+```python
+from src.base_agent.shared_memory import SharedMemoryGraph
+
+# Create graph
+graph = SharedMemoryGraph()
+
+# Define agent nodes (optional, auto-created on first edge/publish)
+graph.add_agent("requirements")
+graph.add_agent("designer")
+graph.add_agent("implementer")
+
+# Define dependency edges
+graph.add_edge("requirements", "designer")      # requirements -> designer
+graph.add_edge("requirements", "implementer")   # requirements -> implementer
+graph.add_edge("designer", "implementer")       # designer -> implementer
+```
+
+### Step 2: Attach graph to factory
+
+```python
+from src.base_agent.agent_factory import AgentFactory
+
+factory = AgentFactory()
+
+# Attach memory graph - all agents created will receive it
+factory.with_memory_graph(graph)
+
+# Register agents (names MUST match graph node IDs)
+factory.register("requirements", RequirementsAgent, expose_as_subagent=True, ...)
+factory.register("designer", DesignerAgent, expose_as_subagent=True, ...)
+factory.register("implementer", ImplementerAgent, expose_as_subagent=True, ...)
+factory.register("coordinator", CoordinatorAgent)
+```
+
+### Step 3: Create orchestrator with subagents
+
+```python
+coordinator = factory.create(
+    "coordinator",
+    subagents=["requirements", "designer", "implementer"]
+)
+```
+
+**What happens internally:**
+
+1. Factory creates `CoordinatorAgent` instance
+2. Factory attaches: `coordinator.memory_graph = graph`
+3. Factory attaches: `coordinator.agent_id = "coordinator"`
+4. For each subagent name:
+   - Factory creates subagent instance (e.g., `RequirementsAgent`)
+   - Factory attaches: `subagent.memory_graph = graph` (same graph!)
+   - Factory attaches: `subagent.agent_id = "requirements"`
+   - Factory calls `coordinator.register_agent(subagent)`
+
+All agents share the **same** `SharedMemoryGraph` instance.
+
+---
+
+## Runtime Behavior
+
+### When subagent executes (e.g., "requirements")
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ RequirementsAgent.execute_query_async()                     │
+├─────────────────────────────────────────────────────────────┤
+│ 1. BEFORE_LLM_CALL hook fires                               │
+│    → Hook checks: agent.memory_graph exists?                │
+│    → Hook calls: graph.pull_for("requirements")             │
+│    → Returns: [] (no predecessors for requirements)         │
+│    → No injection needed                                    │
+├─────────────────────────────────────────────────────────────┤
+│ 2. LLM processes query, uses tools, produces response       │
+├─────────────────────────────────────────────────────────────┤
+│ 3. BEFORE_FINAL_RESPONSE hook fires                         │
+│    → Hook calls: graph.publish("requirements", content)     │
+│    → Graph stores: requirements.last_final = content        │
+├─────────────────────────────────────────────────────────────┤
+│ 4. Response returned to orchestrator                        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### When dependent subagent executes (e.g., "designer")
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ DesignerAgent.execute_query_async()                         │
+├─────────────────────────────────────────────────────────────┤
+│ 1. BEFORE_LLM_CALL hook fires                               │
+│    → Hook calls: graph.pull_for("designer")                 │
+│    → Returns: [MemoryItem(source="requirements", content=...)]│
+│    → Hook injects SystemMessage into conversation_history:  │
+│      "Shared context from requirements: ..."                │
+├─────────────────────────────────────────────────────────────┤
+│ 2. LLM sees injected context + current query                │
+│    → Produces response informed by requirements output      │
+├─────────────────────────────────────────────────────────────┤
+│ 3. BEFORE_FINAL_RESPONSE hook fires                         │
+│    → Hook calls: graph.publish("designer", content)         │
+├─────────────────────────────────────────────────────────────┤
+│ 4. Response returned to orchestrator                        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### When "implementer" executes (depends on both)
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ ImplementerAgent.execute_query_async()                      │
+├─────────────────────────────────────────────────────────────┤
+│ 1. BEFORE_LLM_CALL hook fires                               │
+│    → Hook calls: graph.pull_for("implementer")              │
+│    → Returns: [                                             │
+│        MemoryItem(source="requirements", content=...),      │
+│        MemoryItem(source="designer", content=...)           │
+│      ]                                                      │
+│    → Hook injects TWO SystemMessages                        │
+├─────────────────────────────────────────────────────────────┤
+│ 2. LLM sees context from BOTH predecessors                  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Factory Implementation Changes
+
+The factory already has a stub for `with_memory_graph()`. The full implementation:
+
+```python
+# In AgentFactory.create()
+def create(self, name: str, *, subagents=None, ...):
+    # ... existing logic ...
+
+    agent = self._create_agent(spec, config)  # or _create_orchestrator
+
+    # Attach memory graph if configured
+    if self._memory_graph:
+        agent.memory_graph = self._memory_graph
+        agent.agent_id = name
+
+    return agent
+
+# In AgentFactory._create_subagent_instance()
+def _create_subagent_instance(self, name: str, extra_config: Dict):
+    # ... existing logic ...
+
+    agent = cls(**config)
+
+    # Attach memory graph to subagent too
+    if self._memory_graph:
+        agent.memory_graph = self._memory_graph
+        agent.agent_id = name  # Uses registry name as agent_id
+
+    return agent
+```
+
+---
+
+## BaseAgent Changes Required
+
+Add optional attributes and hook registration:
+
+```python
+# In BaseAgent.__init__
+def __init__(self, ...):
+    # ... existing code ...
+
+    # Shared memory (set by factory, None if not using shared memory)
+    self.memory_graph: Optional['SharedMemoryGraph'] = None
+    self.agent_id: Optional[str] = None
+
+    # Auto-register memory hooks if memory will be attached later
+    # (hooks check for memory_graph presence at runtime)
+    self._register_memory_hooks()
+
+def _register_memory_hooks(self):
+    """Register hooks for shared memory injection/publishing."""
+
+    # Inject shared context before LLM call
+    self.on(AgentEvent.BEFORE_LLM_CALL).do(self._inject_shared_memory)
+
+    # Publish final response to graph
+    self.on(AgentEvent.BEFORE_FINAL_RESPONSE).do(self._publish_to_memory)
+
+def _inject_shared_memory(self, status: AgentStatus):
+    """Pull and inject memories from predecessors."""
+    if not self.memory_graph or not self.agent_id:
+        return
+
+    memories = self.memory_graph.pull_for(self.agent_id)
+    for mem in memories:
+        # Avoid duplicate injection (check if already injected this run)
+        if self._is_memory_already_injected(mem):
+            continue
+
+        msg = SystemMessage(
+            content=f"Shared context from {mem.source_id}:\n{mem.content}",
+            metadata={"shared_memory": True, "source": mem.source_id}
+        )
+        # Insert after system message, before user messages
+        self.conversation_history.insert(1, msg)
+
+def _publish_to_memory(self, status: AgentStatus):
+    """Publish final response to memory graph."""
+    if not self.memory_graph or not self.agent_id:
+        return
+
+    # Get the final response content (from assistant_message in status)
+    content = status.assistant_message.content
+    if content:
+        self.memory_graph.publish(self.agent_id, content)
+```
+
+---
+
+## Orchestrator Awareness Message
+
+The orchestrator receives a system message about dependency ordering. This is injected by the factory when creating an orchestrator with a memory graph:
+
+```python
+# In AgentFactory._create_orchestrator(), after registering subagents:
+if self._memory_graph and subagent_names:
+    # Build dependency message from graph
+    edges = self._memory_graph.get_edges_for_nodes(subagent_names)
+    if edges:
+        dep_msg = self._build_dependency_message(edges)
+        agent.conversation_history.insert(1, SystemMessage(content=dep_msg))
+
+def _build_dependency_message(self, edges: List[Tuple[str, str]]) -> str:
+    lines = ["You are coordinating sub-agents with dependencies.", ""]
+    lines.append("Dependency order (call upstream before downstream):")
+    for src, dst in edges:
+        lines.append(f"  {src} -> {dst}")
+    lines.append("")
+    lines.append("Respect this order: do not call an agent before its prerequisites.")
+    return "\n".join(lines)
+```
+
+---
+
+## Validation
+
+The factory validates that subagent names match graph nodes:
+
+```python
+# In AgentFactory.create(), if memory_graph is set:
+if self._memory_graph and subagents:
+    for sub in subagents:
+        if isinstance(sub, str):
+            if not self._memory_graph.has_node(sub):
+                logger.warning(
+                    f"Subagent '{sub}' not found in memory graph. "
+                    "It will not participate in shared memory."
+                )
+```
+
+This is a **warning**, not an error, because not all subagents need to be in the graph.
+
+---
+
+## Complete Example
+
+```python
+from src.base_agent.agent_factory import AgentFactory
+from src.base_agent.shared_memory import SharedMemoryGraph
+
+# 1. Create memory graph with dependencies
+graph = SharedMemoryGraph()
+graph.add_edge("requirements", "designer")
+graph.add_edge("requirements", "implementer")
+graph.add_edge("designer", "implementer")
+
+# 2. Create factory with memory
+factory = AgentFactory()
+factory.with_memory_graph(graph)
+
+# 3. Register agents
+factory.register("requirements", RequirementsAgent,
+                 expose_as_subagent=True,
+                 subagent_description="Extracts and analyzes requirements")
+factory.register("designer", DesignerAgent,
+                 expose_as_subagent=True,
+                 subagent_description="Designs system architecture")
+factory.register("implementer", ImplementerAgent,
+                 expose_as_subagent=True,
+                 subagent_description="Implements the solution")
+factory.register("coordinator", CoordinatorAgent)
+
+# 4. Create orchestrator
+coordinator = factory.create(
+    "coordinator",
+    subagents=["requirements", "designer", "implementer"]
+)
+
+# 5. Execute
+response = await coordinator.execute_query_async(
+    "Build a user authentication system with OAuth support"
+)
+
+# Flow:
+# - Orchestrator sees dependency message in system prompt
+# - Orchestrator calls "requirements" first
+# - requirements publishes its output to graph
+# - Orchestrator calls "designer"
+# - designer receives requirements' output via injection
+# - designer publishes its output
+# - Orchestrator calls "implementer"
+# - implementer receives BOTH requirements and designer outputs
+# - Final response returned
+```
+
+---
+
+## Summary: What Changes Where
+
+| Component | Change |
+|-----------|--------|
+| `SharedMemoryGraph` | New module (`src/base_agent/shared_memory.py`) |
+| `AgentFactory` | Implement `with_memory_graph()`, attach to agents, inject dependency message |
+| `BaseAgent` | Add `memory_graph`, `agent_id` attributes; add memory hooks |
+| Hooks | Use existing `BEFORE_LLM_CALL` and `BEFORE_FINAL_RESPONSE` |
+| Decorators | No changes needed |
