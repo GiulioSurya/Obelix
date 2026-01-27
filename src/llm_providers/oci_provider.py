@@ -221,10 +221,14 @@ class OCILLm(AbstractLLMProvider):
                 hasattr(response.data.chat_response, 'choices') and
                 response.data.chat_response.choices and
                 response.data.chat_response.choices[0].message.content):
-            content = "".join([
-                c.text for c in response.data.chat_response.choices[0].message.content
-                if hasattr(c, 'text') and c.type == "TEXT"
-            ])
+            parts = []
+            for c in response.data.chat_response.choices[0].message.content:
+                if getattr(c, "type", None) == "TEXT":
+                    text = getattr(c, "text", None)
+                    if text is None:
+                        continue
+                    parts.append(str(text))
+            content = "".join(parts)
         # Try Cohere format
         elif (hasattr(response, 'data') and
               hasattr(response.data, 'chat_response') and

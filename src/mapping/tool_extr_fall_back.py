@@ -99,8 +99,10 @@ def _extract_structured_tool_calls(resp):
             continue
 
         arguments = _parse_double_encoded_json(call.arguments)
+        # OCI Generic may omit tool call id or set it to None; ensure a valid string
+        tool_id = getattr(call, "id", None) or str(uuid.uuid4())
         structured_calls.append(ToolCall(
-            id=call.id,
+            id=tool_id,
             name=call.name,
             arguments=arguments
         ))

@@ -23,6 +23,32 @@ from src.logging_config import get_logger, format_message_for_trace
 logger = get_logger(__name__)
 
 
+def _inline_schema_refs(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Inline JSON Schema $ref using local $defs to avoid OCI Generic rejection.
+
+    OCI Generic (Gemini) rejects $defs/$ref in tool parameters, so we resolve
+    local references and drop $defs in the output.
+    """
+    defs = schema.get("$defs", {})
+
+    def resolve(node: Any) -> Any:
+        if isinstance(node, dict):
+            if "$ref" in node:
+                ref = node["$ref"]
+                if isinstance(ref, str) and ref.startswith("#/$defs/"):
+                    key = ref.split("/")[-1]
+                    resolved = defs.get(key, {})
+                    return resolve(resolved)
+                return node
+            return {k: resolve(v) for k, v in node.items() if k != "$defs"}
+        if isinstance(node, list):
+            return [resolve(x) for x in node]
+        return node
+
+    return resolve(schema)
+
+
 class GenericRequestStrategy(OCIRequestStrategy):
     """
     Strategy for models using the GENERIC API format.
@@ -70,7 +96,12 @@ class GenericRequestStrategy(OCIRequestStrategy):
         mapping = self.get_mapping()
         tool_mapper = mapping["tool_input"]["tool_schema"]
 
-        converted_tools = [tool_mapper(tool.create_schema()) for tool in tools]
+        converted_tools = []
+        for tool in tools:
+            schema = tool.create_schema()
+            if isinstance(schema.inputSchema, dict) and schema.inputSchema:
+                schema.inputSchema = _inline_schema_refs(schema.inputSchema)
+            converted_tools.append(tool_mapper(schema))
         logger.debug(f"Converted {len(converted_tools)} tools to OCI GENERIC format")
 
         return converted_tools
