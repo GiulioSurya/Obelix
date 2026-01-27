@@ -361,6 +361,9 @@ test-results/
 CLAUDE.md
 src/base_agent/subagent_implementation_plan.md
 src/base_agent/blackboard.md
+src/base_agent/AGENT_FACTORY.md
+src/base_agent/AGENT_FACTORY_FINAL.md
+docs/shared_memory_plan.md
 
 # ============================================================================
 # Miscellaneous

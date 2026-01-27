@@ -9,7 +9,7 @@ A multi-provider LLM agent framework with tool support, hooks system, and seamle
 
 - **Multi-Provider Support**: OpenAI, Anthropic, Oracle Cloud (OCI), IBM Watson, Ollama, vLLM
 - **Tool System**: Declarative tool creation with automatic validation
-- **Sub-Agent Orchestration**: Compose hierarchical agent workflows with `@orchestrator` and `@subagent`
+- **Sub-Agent Orchestration**: Compose hierarchical agent workflows with the Agent Factory
 - **Parallel Tool Calls**: Execute multiple tools concurrently for improved performance
 - **Hooks System**: Intercept and modify agent behavior at runtime
 - **Async-First Architecture**: All providers use async `invoke()` - native async clients (Anthropic, OpenAI, Ollama) or `asyncio.to_thread()` for sync SDKs (OCI, IBM, vLLM). Event loop never blocks.
@@ -409,127 +409,85 @@ If violated: agent retries with guidance message, or fails at max iterations.
 | `require_success` | `bool` | `False` | Must succeed (not error) |
 | `error_message` | `str` | `None` | Custom guidance message |
 
-### Sub-Agent Orchestration
+### Sub-Agent Orchestration with Agent Factory
 
-Obelix supports hierarchical agent composition through the `@orchestrator` and `@subagent` decorators. An orchestrator agent can register other agents as "virtual tools", delegating specialized tasks through function calling.
+Obelix supports hierarchical agent composition through the **Agent Factory**. An orchestrator agent can coordinate multiple sub-agents, delegating specialized tasks through function calling.
 
-#### Creating a Sub-Agent
-
-Sub-agents are specialized agents that can be registered and invoked by orchestrators:
+#### Basic Setup
 
 ```python
-from src.base_agent.subagent_decorator import subagent
-from src.base_agent.base_agent import BaseAgent
+from src.base_agent import BaseAgent
+from src.base_agent.agent_factory import AgentFactory
 from pydantic import Field
 
-@subagent(name="sql_analyzer", description="Analyzes SQL errors and suggests fixes")
+# 1. Define your agent classes (plain BaseAgent subclasses)
 class SQLAnalyzerAgent(BaseAgent):
-    # Optional context fields (in addition to mandatory 'query')
+    # Optional context fields for sub-agent input
     error_context: str = Field(default="", description="Error context from database")
-    schema_info: str = Field(default="", description="Optional schema information")
 
-    def __init__(self):
+    def __init__(self, **kwargs):
         super().__init__(
-            system_message="You are a SQL expert that analyzes errors and suggests fixes.",
-            agent_name="SQLAnalyzer"
+            system_message="You are a SQL expert.",
+            **kwargs
         )
-        # Sub-agents can have their own tools
         self.register_tool(SQLQueryTool())
-```
 
-**Key points**:
-- `@subagent` requires `name` and `description` (validated at import time)
-- Define optional context fields using Pydantic `Field`
-- The `query` field is automatically added as the first parameter
-- Sub-agents are autonomous and can have their own tools and hooks
 
-#### Stateless vs Stateful Sub-Agents
-
-The `stateless` parameter controls how sub-agents handle concurrent calls and conversation history:
-
-```python
-# Stateless: allows parallel calls, each on isolated copy
-@subagent(name="translator", description="Translates text", stateless=True)
-class TranslatorAgent(BaseAgent):
-    ...
-
-# Stateful (default): calls serialized with lock, preserves conversation history
-@subagent(name="analyst", description="Analyzes data with context")
-class AnalystAgent(BaseAgent):
-    ...
-```
-
-| `stateless` | Parallel Calls | Conversation History | Use Case |
-|-------------|----------------|---------------------|----------|
-| `True` | Yes (concurrent) | Fork of current state, discarded after | One-shot tasks, translations, validations |
-| `False` (default) | No (serialized via lock) | Preserved across calls | Multi-turn analysis, agents needing context |
-
-**How stateless works**:
-- Each call creates a shallow copy of the agent with a forked `conversation_history`
-- The copy is discarded after execution (original agent unchanged)
-- `agent_usage` is still accumulated on the original agent
-- Multiple calls can run truly in parallel without state collision
-
-#### Creating an Orchestrator
-
-Orchestrators coordinate multiple sub-agents:
-
-```python
-from src.base_agent.orchestrator_decorator import orchestrator
-from src.base_agent.base_agent import BaseAgent
-
-@orchestrator(name="db_coordinator", description="Coordinates database operations")
-class DatabaseCoordinator(BaseAgent):
-    def __init__(self):
+class CoordinatorAgent(BaseAgent):
+    def __init__(self, **kwargs):
         super().__init__(
-            system_message="You coordinate database tasks and delegate to specialists.",
-            agent_name="DBCoordinator"
+            system_message="You coordinate database tasks.",
+            **kwargs
         )
-        # Orchestrators can have their own tools
-        self.register_tool(DatabaseConnectionTool())
 
-# Create orchestrator and register sub-agents
-coordinator = DatabaseCoordinator()
-coordinator.register_agent(SQLAnalyzerAgent())
-coordinator.register_agent(QueryOptimizerAgent())
+
+# 2. Create factory and register agents
+factory = AgentFactory()
+
+factory.register("sql_analyzer", SQLAnalyzerAgent,
+                 expose_as_subagent=True,
+                 subagent_description="Analyzes SQL errors and suggests fixes")
+
+factory.register("coordinator", CoordinatorAgent)
+
+
+# 3. Create orchestrator with sub-agents (one line!)
+coordinator = factory.create("coordinator", subagents=["sql_analyzer"])
+
+# 4. Execute
+response = coordinator.execute_query("Why is this query failing? Error: ORA-00942")
 ```
 
-**Key points**:
-- `@orchestrator` adds the `register_agent()` method
-- Only agents decorated with `@subagent` can be registered
-- Sub-agents are wrapped as tools and appear in the LLM's tool schema
-- Orchestrators can mix regular tools and sub-agents
+#### Key Concepts
 
-#### How Sub-Agents are Invoked
+- **No decorators needed**: The factory handles all wiring automatically
+- **`expose_as_subagent=True`**: Marks an agent as usable by orchestrators
+- **`subagents=["name"]`**: Creates an orchestrator with the listed sub-agents
+- **Parallel execution**: Multiple sub-agents can run concurrently
+- **Per-subagent config**: Customize each sub-agent at creation time
 
-When the LLM calls a registered sub-agent, it provides arguments like a regular tool:
+#### Stateless vs Stateful
 
-```json
-{
-  "tool_calls": [{
-    "name": "sql_analyzer",
-    "arguments": {
-      "query": "Why is this query failing?",
-      "error_context": "ORA-00942: table or view does not exist",
-      "schema_info": "Tables: users, orders, products"
-    }
-  }]
-}
+| `stateless` | Behavior |
+|-------------|----------|
+| `False` (default) | Conversation history preserved across calls |
+| `True` | Each call isolated, allows parallel execution |
+
+```python
+factory.register("translator", TranslatorAgent,
+                 expose_as_subagent=True,
+                 subagent_description="Translates text",
+                 stateless=True)  # Parallel-safe
 ```
-
-The framework automatically:
-1. Validates arguments against the sub-agent's schema
-2. Combines `query` and context fields into a complete query
-3. Executes the sub-agent in isolation (thread-safe copy)
-4. Returns the result as a `ToolResult` to the orchestrator
 
 #### Benefits
 
-- **Separation of concerns**: Each sub-agent focuses on a specific task
-- **Reusability**: Sub-agents can be registered with multiple orchestrators
-- **Parallel execution**: Multiple sub-agents can run concurrently
-- **No coupling**: Sub-agents don't know about orchestrators
-- **Declarative composition**: Build complex workflows with simple decorators
+- **Centralized configuration**: All agent setup in one place
+- **No boilerplate**: Factory handles decorator application internally
+- **Flexible composition**: Mix standalone agents and orchestrators
+- **Runtime customization**: Override settings per-instance with `subagent_config`
+
+📖 **Full Documentation**: [docs/agent_factory.md](docs/agent_factory.md)
 
 ### Constructor Parameters
 
@@ -761,9 +719,8 @@ obelix/
 ├── src/
 │   ├── base_agent/                # Agent infrastructure
 │   │   ├── base_agent.py          # BaseAgent class
+│   │   ├── agent_factory.py       # AgentFactory for agent creation
 │   │   ├── hooks.py               # Hooks system
-│   │   ├── orchestrator_decorator.py  # @orchestrator decorator
-│   │   ├── subagent_decorator.py      # @subagent decorator
 │   │   └── agents/                # Concrete agent implementations
 │   ├── tools/                     # Tool implementations
 │   │   ├── tool_base.py           # Abstract ToolBase

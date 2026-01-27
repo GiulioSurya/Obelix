@@ -184,6 +184,36 @@ ProviderRegistry.register(Providers.OCI_GENERATIVE_AI, OCI_GENERATIVE_AI)
 # ===== MAPPINGS SPECIFICI PER STRATEGY =====
 # Questi non vengono registrati in ProviderRegistry, sono usati direttamente dalle strategy
 
+# TODO: BUG with Gemini and parallel tool calls
+# ==============================================
+# PROBLEM:
+#   When the LLM (e.g. google.gemini-2.5-flash) generates N tool_calls in a single turn
+#   (e.g. 2 subagents called in parallel), Gemini expects responses in a specific format.
+#
+# OCI ERROR:
+#   "Please ensure that the number of function response parts is equal to the number
+#   of function call parts of the function call turn."
+#
+# ROOT CAUSE:
+#   The "tool_message" mapping below converts 1 ToolMessage (with N tool_results) into
+#   N separate OCIToolMessage objects. This works for GPT but NOT for Gemini.
+#
+#   Example with 2 parallel tool_calls:
+#   - Input:  ToolMessage(tool_results=[result_1, result_2])
+#   - Output: [OCIToolMessage(result_1), OCIToolMessage(result_2)]  <-- 2 separate messages
+#
+#   Gemini expects responses aggregated in the same "turn" as the tool_calls.
+#
+# POSSIBLE SOLUTIONS:
+#   1. Create a Gemini-specific mapping that aggregates responses differently
+#   2. Modify the generic strategy to handle the Gemini case
+#   3. Check OCI/Gemini documentation for correct function response format
+#
+# CURRENT WORKAROUND:
+#   Use GPT models (e.g. openai.gpt-oss-120b) instead of Gemini for orchestrators
+#   that make parallel subagent calls.
+# ==============================================
+
 OCI_GENERATIVE_AI_GENERIC = {
     "tool_input": {
         "tool_schema": lambda tool_schema: FunctionDefinition(
