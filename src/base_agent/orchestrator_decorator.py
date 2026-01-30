@@ -94,10 +94,11 @@ class _SubAgentWrapper(ToolBase):
             return ToolResult(
                 tool_name=tool_call.name,
                 tool_call_id=tool_call.id,
-                result=response.model_dump(),
+                result=response.content,
                 status=ToolStatus.SUCCESS,
                 execution_time=time.time() - start_time
             )
+        #todo use validation pydantic? evaluate
         except Exception as e:
             return ToolResult(
                 tool_name=tool_call.name,
@@ -121,7 +122,7 @@ class _SubAgentWrapper(ToolBase):
             return ToolResult(
                 tool_name=tool_call.name,
                 tool_call_id=tool_call.id,
-                result=response.model_dump(),
+                result=response.content,
                 status=ToolStatus.SUCCESS,
                 execution_time=time.time() - start_time
             )

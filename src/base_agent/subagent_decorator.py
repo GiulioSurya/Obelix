@@ -77,16 +77,8 @@ def subagent(name: str = None, description: str = None, stateless: bool = False)
                 description=cls_inner.subagent_description,
                 inputSchema=cls_inner._subagent_input_schema.model_json_schema(),
                 outputSchema={
-                    "type": "object",
-                    "properties": {
-                        "agent_name": {"type": "string"},
-                        "content": {"type": "string"},
-                        "tool_results": {
-                            "type": "array",
-                            "items": {"type": "object"}
-                        },
-                        "error": {"type": "string", "nullable": True}
-                    }
+                    "type": "string",
+                    "description": "Final response content from the sub-agent."
                 }
             )
 
