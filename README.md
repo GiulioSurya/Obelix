@@ -12,7 +12,7 @@ A multi-provider LLM agent framework with tool support, hooks system, and seamle
 - **Sub-Agent Orchestration**: Compose hierarchical agent workflows with the Agent Factory
 - **Parallel Tool Calls**: Execute multiple tools concurrently for improved performance
 - **Hooks System**: Intercept and modify agent behavior at runtime
-- **Async-First Architecture**: All providers use async `invoke()` - native async clients (Anthropic, OpenAI, Ollama) or `asyncio.to_thread()` for sync SDKs (OCI, IBM, vLLM). Event loop never blocks.
+- **Async-First Architecture**: All providers use async `invoke()` - native async clients (Anthropic, OpenAI, Ollama, OCI) or `asyncio.to_thread()` for sync SDKs (IBM, vLLM). Event loop never blocks.
 - **Thread-Safe Execution**: Parallel agent and tool calls don't share mutable state
 - **Loguru Logging**: Structured logging with rotation and color output
 

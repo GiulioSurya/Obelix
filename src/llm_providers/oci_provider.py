@@ -1,5 +1,4 @@
 # src/llm_providers/oci_provider.py
-import asyncio
 import logging
 from typing import List, Optional
 
@@ -144,9 +143,7 @@ class OCILLm(AbstractLLMProvider):
         """
         Call the OCI model with standardized messages and tools (async).
 
-        Uses asyncio.to_thread() to run the sync OCI SDK client without
-        blocking the event loop. This allows parallel agent execution.
-
+        Uses native async HTTP client (httpx) for non-blocking I/O.
         Uses the appropriate strategy (auto-detected or specified) for the entire flow.
         """
         # 1. The strategy converts messages and tools to provider-specific format
@@ -170,7 +167,7 @@ class OCILLm(AbstractLLMProvider):
             **self.strategy_kwargs
         )
 
-        # 3. Call OCI using client from connection (via thread pool to not block event loop)
+        # 3. Call OCI using async client from connection (native async, no thread blocking)
         from src.k8s_config import YamlConfig
         import os
         infra_config = YamlConfig(os.getenv("INFRASTRUCTURE_CONFIG_PATH"))
@@ -184,9 +181,8 @@ class OCILLm(AbstractLLMProvider):
         )
 
         try:
-            #oci doesn't have ad async sdk
-            # Run sync client.chat() in thread pool to avoid blocking event loop
-            response = await asyncio.to_thread(client.chat, chat_details=chat_details)
+            # Native async call - no thread blocking
+            response = await client.chat(chat_details)
             logger.info(f"OCI chat completed: {response.data.model_id}")
             logger.debug(f"OCI response total tokens: {response.data.chat_response.usage.total_tokens}")
         except Exception as e:
@@ -216,24 +212,31 @@ class OCILLm(AbstractLLMProvider):
         content = ""
 
         # Try Generic format first
-        if (hasattr(response, 'data') and
-                hasattr(response.data, 'chat_response') and
-                hasattr(response.data.chat_response, 'choices') and
-                response.data.chat_response.choices and
-                response.data.chat_response.choices[0].message.content):
-            parts = []
-            for c in response.data.chat_response.choices[0].message.content:
-                if getattr(c, "type", None) == "TEXT":
-                    text = getattr(c, "text", None)
-                    if text is None:
-                        continue
-                    parts.append(str(text))
-            content = "".join(parts)
-        # Try Cohere format
-        elif (hasattr(response, 'data') and
-              hasattr(response.data, 'chat_response') and
-              hasattr(response.data.chat_response, 'text')):
-            content = response.data.chat_response.text
+        chat_response = response.data.chat_response if response.data else None
+        choices = chat_response.choices if chat_response else None
+
+        if choices and len(choices) > 0:
+            message = choices[0].message
+            msg_content = message.content if message else None
+            if msg_content:
+                parts = []
+                for c in msg_content:
+                    c_type = c.type if hasattr(c, 'type') else (c.get("type") if isinstance(c, dict) else None)
+                    if c_type == "TEXT":
+                        text = c.text if hasattr(c, 'text') else (c.get("text") if isinstance(c, dict) else None)
+                        if text:
+                            parts.append(str(text))
+                content = "".join(parts)
+
+        # Try Cohere format if no content yet
+        if not content and chat_response:
+            cohere_text = chat_response.text
+            if cohere_text:
+                content = str(cohere_text)
+
+        # Ensure content is never None
+        if content is None:
+            content = ""
 
         # Extract usage from OCI response
         usage = None
