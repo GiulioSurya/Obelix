@@ -19,7 +19,7 @@ from src.config import GlobalConfig
 
 logger = get_logger(__name__)
 
-#todo work on max attempt updating type of error in providers (using api)
+
 class BaseAgent:
     def __init__(
         self,
@@ -27,14 +27,12 @@ class BaseAgent:
         provider: Optional[AbstractLLMProvider] = None,
         agent_comment: bool = True,
         max_iterations: int = 15,
-        max_attempts: int = 5,
         tools: Optional[Union[ToolBase, Type[ToolBase], List[Union[Type[ToolBase], ToolBase]]]] = None,
         tool_policy: Optional[List[ToolRequirement]] = None,
     ):
         self.system_message = SystemMessage(content=system_message)
         self.agent_comment = agent_comment
         self.max_iterations = max_iterations
-        self.max_attempts = max_attempts
 
         self.provider = provider or GlobalConfig().get_current_provider_instance()
 
@@ -176,24 +174,7 @@ class BaseAgent:
         Execute query asynchronously (for FastAPI).
         """
         self._validate_query_input(query)
-        original_history = self.conversation_history.copy()
-
-        for attempt in range(self.max_attempts):
-            try:
-                return await self._async_execute_query(query)
-            except (ValueError, TypeError):
-                raise
-            except Exception as e:
-                if attempt == self.max_attempts - 1:
-                    raise RuntimeError(
-                        f"Execution failed after {self.max_attempts} attempts. "
-                        f"Last error: {e}"
-                    )
-                self.conversation_history = original_history.copy()
-                logger.warning(f"Attempt {attempt + 1}/{self.max_attempts} failed: {e}. Retrying in 5 seconds...")
-                await asyncio.sleep(5)
-
-        raise RuntimeError("Execution failed for unknown reasons")
+        return await self._async_execute_query(query)
 
     def execute_query(
         self,

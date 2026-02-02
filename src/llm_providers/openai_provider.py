@@ -1,5 +1,22 @@
 # src/llm_providers/openai_provider.py
+import logging
 from typing import List, Dict, Any, Optional
+
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    before_sleep_log,
+)
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    RateLimitError,
+    InternalServerError,
+    ConflictError,
+    APIResponseValidationError,
+)
 
 from src.llm_providers.llm_abstraction import AbstractLLMProvider
 from src.messages.assistant_message import AssistantMessage
@@ -64,11 +81,26 @@ class OpenAIProvider(AbstractLLMProvider):
         self.temperature = temperature
         self.top_p = top_p
 
+    @retry(
+        retry=retry_if_exception_type((
+            APIConnectionError,
+            APITimeoutError,
+            RateLimitError,
+            InternalServerError,
+            ConflictError,
+            APIResponseValidationError,
+        )),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True,
+    )
     async def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
         """
         Calls the OpenAI model with standardized messages and tools (async).
 
         Uses AsyncOpenAI client for native async support.
+        Retries automatically on transient errors (connection, timeout, rate limit, server errors).
         """
         logger.debug(f"OpenAI invoke: model={self.model_id}, messages={len(messages)}, tools={len(tools)}")
 
@@ -93,19 +125,14 @@ class OpenAIProvider(AbstractLLMProvider):
             api_params["tools"] = openai_tools
 
         # 4. Call OpenAI API using async client from connection
-        try:
-            client = self.connection.get_client()
-            response = await client.chat.completions.create(**api_params)
+        client = self.connection.get_client()
+        response = await client.chat.completions.create(**api_params)
 
-            logger.info(f"OpenAI chat completed: {self.model_id}")
+        logger.info(f"OpenAI chat completed: {self.model_id}")
 
-            # Log usage
-            if hasattr(response, 'usage') and response.usage:
-                logger.debug(f"OpenAI tokens: input={response.usage.prompt_tokens}, output={response.usage.completion_tokens}, total={response.usage.total_tokens}")
-
-        except Exception as e:
-            logger.error(f"OpenAI request failed: {e}")
-            raise
+        # Log usage
+        if hasattr(response, 'usage') and response.usage:
+            logger.debug(f"OpenAI tokens: input={response.usage.prompt_tokens}, output={response.usage.completion_tokens}, total={response.usage.total_tokens}")
 
         # 5. Convert response to standardized AssistantMessage
         assistant_message = self._convert_response_to_assistant_message(response)

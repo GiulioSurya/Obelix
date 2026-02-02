@@ -1,5 +1,20 @@
 # src/llm_providers/anthropic_provider.py
+import logging
 from typing import List, Dict, Any, Optional
+
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    before_sleep_log,
+)
+from anthropic import (
+    APIConnectionError,
+    APITimeoutError,
+    RateLimitError,
+    InternalServerError,
+)
 
 from src.llm_providers.llm_abstraction import AbstractLLMProvider
 from src.messages.assistant_message import AssistantMessage
@@ -77,11 +92,24 @@ class AnthropicProvider(AbstractLLMProvider):
         else:
             self.thinking_params = {"type": "disabled"}
 
+    @retry(
+        retry=retry_if_exception_type((
+            APIConnectionError,
+            APITimeoutError,
+            RateLimitError,
+            InternalServerError,
+        )),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True,
+    )
     async def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
         """
         Calls the Anthropic model with standardized messages and tools (async).
 
         Uses AsyncAnthropic client for native async support.
+        Retries automatically on transient errors (connection, timeout, rate limit, server errors).
         """
         logger.debug(f"Anthropic invoke: model={self.model_id}, messages={len(messages)}, tools={len(tools)}, thinking_mode={self.thinking_mode}")
 
@@ -118,19 +146,14 @@ class AnthropicProvider(AbstractLLMProvider):
             api_params["tools"] = anthropic_tools
 
         # 5. Call Anthropic API using async client from connection
-        try:
-            client = self.connection.get_client()
-            response = await client.messages.create(**api_params)
+        client = self.connection.get_client()
+        response = await client.messages.create(**api_params)
 
-            logger.info(f"Anthropic chat completed: {self.model_id}")
+        logger.info(f"Anthropic chat completed: {self.model_id}")
 
-            # Log usage
-            if hasattr(response, 'usage'):
-                logger.debug(f"Anthropic tokens: input={response.usage.input_tokens}, output={response.usage.output_tokens}, total={response.usage.input_tokens + response.usage.output_tokens}")
-
-        except Exception as e:
-            logger.error(f"Anthropic request failed: {e}")
-            raise
+        # Log usage
+        if hasattr(response, 'usage'):
+            logger.debug(f"Anthropic tokens: input={response.usage.input_tokens}, output={response.usage.output_tokens}, total={response.usage.input_tokens + response.usage.output_tokens}")
 
         # 6. Convert response to standardized AssistantMessage
         assistant_message = self._convert_response_to_assistant_message(response)

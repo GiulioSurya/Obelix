@@ -2,6 +2,15 @@
 import logging
 from typing import List, Optional
 
+import httpx
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    before_sleep_log,
+)
+
 try:
     import oci
     from oci.generative_ai_inference.models import (
@@ -20,6 +29,11 @@ from src.messages.usage import Usage
 from src.tools.tool_base import ToolBase
 from src.providers import Providers
 from src.connections.llm_connection import OCIConnection
+from src.connections.llm_connection.oci_connection import (
+    OCIRateLimitError,
+    OCIServerError,
+    OCIIncorrectStateError,
+)
 from src.logging_config import get_logger
 
 # Import strategies
@@ -139,12 +153,26 @@ class OCILLm(AbstractLLMProvider):
             f"Supported prefixes: {[p for s in cls._STRATEGIES for p in s.get_supported_model_prefixes()]}"
         )
 
+    @retry(
+        retry=retry_if_exception_type((
+            OCIRateLimitError,
+            OCIServerError,
+            OCIIncorrectStateError,
+            httpx.TimeoutException,
+            httpx.ConnectError,
+        )),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True,
+    )
     async def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
         """
         Call the OCI model with standardized messages and tools (async).
 
         Uses native async HTTP client (httpx) for non-blocking I/O.
         Uses the appropriate strategy (auto-detected or specified) for the entire flow.
+        Retries automatically on transient errors (rate limit, server errors, timeout, connection errors).
         """
         # 1. The strategy converts messages and tools to provider-specific format
         converted_messages = self.strategy.convert_messages(messages)
@@ -180,17 +208,10 @@ class OCILLm(AbstractLLMProvider):
             chat_request=chat_request
         )
 
-        try:
-            # Native async call - no thread blocking
-            response = await client.chat(chat_details)
-            logger.info(f"OCI chat completed: {response.data.model_id}")
-            logger.debug(f"OCI response total tokens: {response.data.chat_response.usage.total_tokens}")
-        except Exception as e:
-            # Log error with message dump for debugging "Unsafe Text detected"
-            logger.error(f"OCI request failed: {e}")
-            for i, msg in enumerate(converted_messages):
-                logger.error(f"msg[{i}]: {getattr(msg, 'content', 'N/A')}")
-            raise
+        # Native async call - no thread blocking
+        response = await client.chat(chat_details)
+        logger.info(f"OCI chat completed: {response.data.model_id}")
+        logger.debug(f"OCI response total tokens: {response.data.chat_response.usage.total_tokens}")
 
         # 4. Convert response to standardized AssistantMessage
         assistant_message = self._convert_response_to_assistant_message(response)

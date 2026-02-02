@@ -192,6 +192,24 @@ class OCIServerError(Exception):
     pass
 
 
+class OCIIncorrectStateError(Exception):
+    """Incorrect state error (409 with code=IncorrectState) - retryable."""
+    pass
+
+
+class OCIContentModerationError(Exception):
+    """Content moderation error (400 with 'Unsafe Text detected') - NOT retryable."""
+
+    USER_MESSAGE = (
+        "The request contains content that the moderation system flagged as potentially "
+        "problematic. Please try rephrasing your message."
+    )
+
+    def __init__(self, technical_message: str):
+        self.technical_message = technical_message
+        super().__init__(self.USER_MESSAGE)
+
+
 
 class OCIAsyncHttpClient:
     """
@@ -349,6 +367,21 @@ class OCIAsyncHttpClient:
             raise OCIRateLimitError(f"Rate limit exceeded: {response.text}")
         if 500 <= response.status_code < 600:
             raise OCIServerError(f"Server error {response.status_code}: {response.text}")
+        if response.status_code == 409:
+            try:
+                error_data = response.json()
+                if error_data.get("code") == "IncorrectState":
+                    raise OCIIncorrectStateError(f"Incorrect state: {response.text}")
+            except json.JSONDecodeError:
+                pass  # Non è JSON, lascia passare a raise_for_status
+
+        if response.status_code == 400:
+            try:
+                error_data = response.json()
+                if "Unsafe Text detected" in error_data.get("message", ""):
+                    raise OCIContentModerationError(f"OCI Content Moderation: {response.text}")
+            except json.JSONDecodeError:
+                pass  # Non è JSON, lascia passare a raise_for_status
 
         response.raise_for_status()
         return response.json()
