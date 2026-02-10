@@ -1,4 +1,4 @@
-# src/llm_providers/oci_strategies/cohere_strategy.py
+# src/client_adapters/oci_strategies/cohere_strategy.py
 """
 Cohere Request Strategy for OCI Generative AI.
 
@@ -9,7 +9,7 @@ no external mapping dependencies.
 
 Key difference: Cohere separates the last user message from chat_history:
 - message: str (the LAST user message)
-- chat_history: List[CohereMessage] (all PREVIOUS messages)
+- chat_history: List[CohereMessage] (all PREVIOUS obelix_types)
 """
 import json
 import uuid
@@ -30,13 +30,13 @@ from oci.generative_ai_inference.models import (
     CohereToolCall
 )
 
-from src.llm_providers.oci_strategies.base_strategy import OCIRequestStrategy
-from src.llm_providers.oci_strategies.generic_strategy import ToolCallExtractionError
-from src.messages.standard_message import StandardMessage
-from src.messages.human_message import HumanMessage
-from src.messages.system_message import SystemMessage
-from src.messages.assistant_message import AssistantMessage
-from src.messages.tool_message import ToolMessage, ToolCall
+from src.client_adapters.oci_strategies.base_strategy import OCIRequestStrategy
+from src.client_adapters.oci_strategies.generic_strategy import ToolCallExtractionError
+from src.obelix_types.standard_message import StandardMessage
+from src.obelix_types.human_message import HumanMessage
+from src.obelix_types.system_message import SystemMessage
+from src.obelix_types.assistant_message import AssistantMessage
+from src.obelix_types.tool_message import ToolMessage, ToolCall
 from src.tools.tool_base import ToolBase
 from src.logging_config import get_logger, format_message_for_trace
 
@@ -59,16 +59,16 @@ class CohereRequestStrategy(OCIRequestStrategy):
 
         Cohere Architecture:
         - message: str (the LAST user message - REQUIRED)
-        - chat_history: List[CohereMessage] (all PREVIOUS messages, NO ToolMessages)
+        - chat_history: List[CohereMessage] (all PREVIOUS obelix_types, NO ToolMessages)
         - tool_results: List[CohereToolResult] (SEPARATE field for tool results)
 
         Returns:
             Dict with:
                 - message: str (last user message content)
-                - chat_history: List[CohereMessage] (previous messages without tools)
+                - chat_history: List[CohereMessage] (previous obelix_types without tools)
                 - tool_results: List[CohereToolResult] (tool results in separate field)
         """
-        logger.debug(f"Converting {len(messages)} messages to OCI COHERE format")
+        logger.debug(f"Converting {len(messages)} obelix_types to OCI COHERE format")
 
         chat_history = []
         tool_results = []

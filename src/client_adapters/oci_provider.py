@@ -1,4 +1,4 @@
-# src/llm_providers/oci_provider.py
+# src/client_adapters/oci_provider.py
 """
 OCI Generative AI Provider.
 
@@ -28,14 +28,13 @@ except ImportError:
         "oci is not installed. Install with: pip install oci"
     )
 
-from src.llm_providers.llm_abstraction import AbstractLLMProvider
-from src.messages import SystemMessage, StandardMessage, AssistantMessage
-from src.messages.usage import Usage
+from src.client_adapters.llm_abstraction import AbstractLLMProvider
+from src.obelix_types import SystemMessage, StandardMessage, AssistantMessage
+from src.obelix_types.usage import Usage
 from src.tools.tool_base import ToolBase
 from src.providers import Providers
 from src.connections.llm_connection import OCIConnection
 from src.connections.llm_connection.oci_connection import (
-    OCIServiceError,
     OCIRateLimitError,
     OCIServerError,
     OCIIncorrectStateError,
@@ -43,13 +42,12 @@ from src.connections.llm_connection.oci_connection import (
 from src.logging_config import get_logger
 
 # Import strategies
-from src.llm_providers.oci_strategies.base_strategy import OCIRequestStrategy
-from src.llm_providers.oci_strategies.generic_strategy import (
+from src.client_adapters.oci_strategies.base_strategy import OCIRequestStrategy
+from src.client_adapters.oci_strategies.generic_strategy import (
     GenericRequestStrategy,
     ToolCallExtractionError,
 )
-from src.llm_providers.oci_strategies.gemini_strategy import GeminiRequestStrategy
-from src.llm_providers.oci_strategies.cohere_strategy import CohereRequestStrategy
+from src.client_adapters.oci_strategies.cohere_strategy import CohereRequestStrategy
 
 logger = get_logger(__name__)
 
@@ -62,11 +60,10 @@ class OCILLm(AbstractLLMProvider):
     No external mapping dependencies.
     """
 
-    # Available strategies (order matters: first match on model prefix wins)
+    # Available strategies
     _STRATEGIES = [
-        GeminiRequestStrategy(),
         GenericRequestStrategy(),
-        CohereRequestStrategy(),
+        CohereRequestStrategy()
     ]
 
     @property
@@ -167,27 +164,27 @@ class OCILLm(AbstractLLMProvider):
     )
     async def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
         """
-        Call the OCI model with standardized messages and tools.
+        Call the OCI model with standardized obelix_types and tools.
 
-        Uses the strategy for all format conversion (messages, tools, response).
+        Uses the strategy for all format conversion (obelix_types, tools, response).
         If tool call extraction fails, retries with error feedback to LLM.
         """
         from src.k8s_config import YamlConfig
         import os
         #todo, questo andra eliminato
         infra_config = YamlConfig(os.getenv("INFRASTRUCTURE_CONFIG_PATH"))
-        oci_config = infra_config.get("llm_providers.oci")
+        oci_config = infra_config.get("client_adapters.oci")
         client = self.connection.get_client()
 
-        # Work with a copy of messages for retry loop
+        # Work with a copy of obelix_types for retry loop
         working_messages = list(messages)
         converted_tools = self.strategy.convert_tools(tools)
 
         for attempt in range(1, self.MAX_EXTRACTION_RETRIES + 1):
-            # 1. Convert messages using strategy
+            # 1. Convert obelix_types using strategy
             converted_messages = self.strategy.convert_messages(working_messages)
 
-            logger.debug(f"OCI invoke: model={self.model_id}, messages={len(working_messages)}, tools={len(converted_tools)}, attempt={attempt}")
+            logger.debug(f"OCI invoke: model={self.model_id}, obelix_types={len(working_messages)}, tools={len(converted_tools)}, attempt={attempt}")
 
             # 2. Build request using strategy
             chat_request = self.strategy.build_request(
@@ -211,16 +208,6 @@ class OCILLm(AbstractLLMProvider):
                 chat_request=chat_request
             )
 
-            # TODO: remove after debugging Gemini parallel tool calls
-            from src.connections.llm_connection.oci_connection import _serialize_oci_model
-            serialized = _serialize_oci_model(chat_details)
-            msgs = serialized.get("chatRequest", {}).get("messages", [])
-            for idx, m in enumerate(msgs):
-                logger.trace(f"OCI serialized msg[{idx}]: role={m.get('role')} "
-                             f"content={m.get('content', 'ABSENT')} "
-                             f"toolCalls={len(m.get('toolCalls') or [])} "
-                             f"toolCallId={m.get('toolCallId', '-')}")
-
             response = await client.chat(chat_details)
             logger.info(f"OCI chat completed: {response.data.model_id}")
             logger.debug(f"OCI response total tokens: {response.data.chat_response.usage.total_tokens}")
@@ -235,7 +222,7 @@ class OCILLm(AbstractLLMProvider):
 
                 logger.warning(f"Tool call extraction failed (attempt {attempt}): {e}")
 
-                # Add error feedback to messages for retry
+                # Add error feedback to obelix_types for retry
                 error_feedback = SystemMessage(
                     content=f"ERROR: Your tool call was malformed.\n{e}\nPlease retry with valid JSON arguments."
                 )

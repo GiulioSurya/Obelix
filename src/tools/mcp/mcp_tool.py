@@ -3,7 +3,7 @@ import time
 from typing import Any
 
 from src.tools.tool_base import ToolBase
-from src.messages.tool_message import ToolCall, ToolResult, ToolStatus, MCPToolSchema
+from src.obelix_types.tool_message import ToolCall, ToolResult, ToolStatus, MCPToolSchema
 from src.tools.mcp.run_time_manager import MCPRuntimeManager
 
 

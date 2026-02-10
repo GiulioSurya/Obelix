@@ -1,4 +1,4 @@
-# src/messages/usage.py
+# src/obelix_types/usage.py
 from pydantic import BaseModel, Field
 
 

@@ -27,7 +27,7 @@ from typing import Type, get_type_hints
 from pydantic import create_model, ValidationError
 from pydantic.fields import FieldInfo
 
-from src.messages.tool_message import ToolCall, ToolResult, ToolStatus, MCPToolSchema
+from src.obelix_types.tool_message import ToolCall, ToolResult, ToolStatus, MCPToolSchema
 
 
 # Validation utilities moved to src/utility/pydantic_validation.py

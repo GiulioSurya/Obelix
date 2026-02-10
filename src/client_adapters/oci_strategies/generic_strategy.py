@@ -1,4 +1,4 @@
-# src/llm_providers/oci_strategies/generic_strategy.py
+# src/client_adapters/oci_strategies/generic_strategy.py
 """
 Generic Request Strategy for OCI Generative AI.
 
@@ -28,12 +28,12 @@ from oci.generative_ai_inference.models import (
     ToolChoiceNone
 )
 
-from src.llm_providers.oci_strategies.base_strategy import OCIRequestStrategy
-from src.messages.standard_message import StandardMessage
-from src.messages.human_message import HumanMessage
-from src.messages.system_message import SystemMessage
-from src.messages.assistant_message import AssistantMessage
-from src.messages.tool_message import ToolMessage, ToolCall
+from src.client_adapters.oci_strategies.base_strategy import OCIRequestStrategy
+from src.obelix_types.standard_message import StandardMessage
+from src.obelix_types.human_message import HumanMessage
+from src.obelix_types.system_message import SystemMessage
+from src.obelix_types.assistant_message import AssistantMessage
+from src.obelix_types.tool_message import ToolMessage, ToolCall
 from src.tools.tool_base import ToolBase
 from src.logging_config import get_logger, format_message_for_trace
 
@@ -91,7 +91,7 @@ class GenericRequestStrategy(OCIRequestStrategy):
         - AssistantMessage -> AssistantMessage(content=[TextContent], tool_calls=[FunctionCall])
         - ToolMessage -> [ToolMessage(content=[TextContent], tool_call_id=...)]
         """
-        logger.debug(f"Converting {len(messages)} messages to OCI GENERIC format")
+        logger.debug(f"Converting {len(messages)} obelix_types to OCI GENERIC format")
 
         converted_messages = []
 
@@ -119,7 +119,7 @@ class GenericRequestStrategy(OCIRequestStrategy):
                     self._convert_tool_message(message)
                 )
 
-        logger.debug(f"Converted {len(converted_messages)} messages to OCI GENERIC format")
+        logger.debug(f"Converted {len(converted_messages)} obelix_types to OCI GENERIC format")
         return converted_messages
 
     def _convert_assistant_message(self, msg: AssistantMessage) -> OCIAssistantMessage:
@@ -269,7 +269,7 @@ class GenericRequestStrategy(OCIRequestStrategy):
         """
         request_params = {
             "api_format": BaseChatRequest.API_FORMAT_GENERIC,
-            "messages": converted_messages,
+            "obelix_types": converted_messages,
             "tools": converted_tools,
             "max_tokens": max_tokens,
             "temperature": temperature,

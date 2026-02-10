@@ -20,9 +20,9 @@ logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from src.base_agent.base_agent import BaseAgent
-    from src.messages.tool_message import ToolCall, ToolResult
-    from src.messages.assistant_message import AssistantMessage
-    from src.messages.standard_message import StandardMessage
+    from src.obelix_types.tool_message import ToolCall, ToolResult
+    from src.obelix_types.assistant_message import AssistantMessage
+    from src.obelix_types.standard_message import StandardMessage
 
 
 class AgentEvent(str, Enum):

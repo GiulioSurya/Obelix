@@ -1,10 +1,10 @@
-# src/messages/tool_messages.py
+# src/obelix_types/tool_messages.py
 from pydantic import BaseModel, Field
 from typing import List, Any, Optional, Dict
 from enum import Enum
 from datetime import datetime
 
-from src.messages.roles import  MessageRole
+from src.obelix_types.roles import  MessageRole
 
 class ToolCall(BaseModel):
     id: str = Field(..., description="Unique ID of the tool call")
@@ -43,7 +43,7 @@ class ToolResult(BaseModel):
     @staticmethod
     def _truncate_error_if_needed(error_msg: str, max_length: int = 2000) -> str:
         """
-        Truncate error messages that are too long while preserving beginning and end
+        Truncate error obelix_types that are too long while preserving beginning and end
 
         Args:
             error_msg: The original error message

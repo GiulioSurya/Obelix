@@ -1,9 +1,9 @@
 
 from pydantic import Field, BaseModel
 from typing import List, Optional, Dict, Any
-from src.messages.roles import MessageRole
-from src.messages.tool_message import ToolCall, ToolResult
-from src.messages.usage import Usage
+from src.obelix_types.roles import MessageRole
+from src.obelix_types.tool_message import ToolCall, ToolResult
+from src.obelix_types.usage import Usage
 from datetime import datetime
 
 

@@ -1,4 +1,4 @@
-# src/llm_providers/oci_strategies/base_strategy.py
+# src/client_adapters/oci_strategies/base_strategy.py
 """
 Base Strategy for OCI Request Strategies.
 
@@ -13,8 +13,8 @@ from typing import List, Any, Dict, Optional, Union
 
 from oci.generative_ai_inference.models import BaseChatRequest, Message
 
-from src.messages.standard_message import StandardMessage
-from src.messages.tool_message import ToolCall
+from src.obelix_types.standard_message import StandardMessage
+from src.obelix_types.tool_message import ToolCall
 from src.tools.tool_base import ToolBase
 
 

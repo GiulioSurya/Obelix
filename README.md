@@ -317,19 +317,20 @@ Hooks intercept agent lifecycle events enabling **validation**, **error recovery
 ```python
 from src.base_agent.base_agent import BaseAgent
 from src.base_agent.hooks import AgentEvent, HookDecision, AgentStatus
-from src.messages.system_message import SystemMessage
+from src.obelix_types.system_message import SystemMessage
+
 
 class ValidatingAgent(BaseAgent):
     def __init__(self):
         super().__init__(system_message="...", agent_name="ValidatingAgent")
 
         # Validate output contains required tag, retry if missing
-        self.on(AgentEvent.BEFORE_FINAL_RESPONSE) \
-            .when(self._missing_answer_tag) \
+        self.on(AgentEvent.BEFORE_FINAL_RESPONSE)
+            .when(self._missing_answer_tag)
             .handle(
-                decision=HookDecision.RETRY,
-                effects=[self._inject_format_guidance]
-            )
+            decision=HookDecision.RETRY,
+            effects=[self._inject_format_guidance]
+        )
 
     def _missing_answer_tag(self, ctx: AgentStatus) -> bool:
         content = ctx.assistant_message.content or ""
@@ -385,7 +386,7 @@ self.on(AgentEvent.EVENT_NAME) \
 Tool policies enforce that specific tools must be called before the agent can respond. Useful for ensuring required actions are performed.
 
 ```python
-from src.messages.tool_message import ToolRequirement
+from src.obelix_types.tool_message import ToolRequirement
 
 agent = BaseAgent(
     system_message="You are a SQL assistant.",
@@ -542,7 +543,7 @@ Obelix uses a layered architecture: **Connection → Provider → Agent**.
 
 ```python
 from src.connections.llm_connection import AnthropicConnection
-from src.llm_providers.anthropic_provider import AnthropicProvider
+from src.client_adapters.anthropic_provider import AnthropicProvider
 from src.base_agent.base_agent import BaseAgent
 
 # 1. Create connection (reads ANTHROPIC_API_KEY from env)

@@ -12,11 +12,11 @@ from src.tools import ToolBase, tool
 from src.config import GlobalConfig
 from src.providers import Providers
 from src.connections.llm_connection import OpenAIConnection, AnthropicConnection, OCIConnection
-from src.llm_providers.openai_provider import OpenAIProvider
-from src.llm_providers.anthropic_provider import AnthropicProvider
-from src.llm_providers.oci_provider import OCILLm
+from src.client_adapters.openai_provider import OpenAIProvider
+from src.client_adapters.anthropic_provider import AnthropicProvider
+from src.client_adapters.oci_provider import OCILLm
 from src.k8s_config import YamlConfig
-from src.messages.tool_message import ToolRequirement
+from src.obelix_types.tool_message import ToolRequirement
 from src.logging_config import setup_logging
 from src.tools.tool.ask_user_question_tool import AskUserQuestionTool
 import os
@@ -39,7 +39,7 @@ openai_connection = OpenAIConnection(
 anthropic_connection = AnthropicConnection(api_key=api_key)
 
 infra_config = YamlConfig(os.getenv("INFRASTRUCTURE_CONFIG_PATH"))
-oci_provider_config = infra_config.get("llm_providers.oci")
+oci_provider_config = infra_config.get("client_adapters.oci")
 
 oci_config = {
     'user': oci_provider_config["user_id"],
@@ -112,7 +112,11 @@ class CoordinatorAgent(BaseAgent):
     def __init__(self, **kwargs):
         # Allow provider override via kwargs, with default
         if 'provider' not in kwargs:
-            kwargs['provider'] = OCILLm(connection=oci_connection, model_id="google.gemini-2.5-flash")
+            kwargs['provider'] = (
+                #OpenAIProvider(openai_connection, model_id="claude-haiku-4-5-20251001")
+                #AnthropicProvider(connection=anthropic_connection)
+                OCILLm(connection=oci_connection, model_id="openai.gpt-oss-120b")
+            )
 
         # Allow system_message override, with default
         if 'system_message' not in kwargs:

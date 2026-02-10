@@ -1,16 +1,15 @@
-# src/messages/human_messages.py
-from pydantic import Field, BaseModel
 
+from pydantic import BaseModel, Field
 from typing import Dict, Any
+
 from datetime import datetime
 
+from src.obelix_types.roles import MessageRole
 
-from src.messages.roles import MessageRole
 
-
-class HumanMessage(BaseModel):
-    """Message from human user"""
-    role: MessageRole = Field(default=MessageRole.HUMAN)
+class SystemMessage(BaseModel):
+    """System message for LLM instructions"""
+    role: MessageRole = Field(default=MessageRole.SYSTEM)
     content: str = Field(default="", description="Textual content of the message")
     timestamp: datetime = Field(default_factory=datetime.now, description="Creation timestamp")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")

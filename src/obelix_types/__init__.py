@@ -3,17 +3,17 @@ Messages module - Message definitions for communication with LLM.
 """
 
 
-from src.messages.system_message import SystemMessage
-from src.messages.human_message import HumanMessage
-from src.messages.assistant_message import AssistantMessage, AssistantResponse
-from src.messages.tool_message import (
+from src.obelix_types.system_message import SystemMessage
+from src.obelix_types.human_message import HumanMessage
+from src.obelix_types.assistant_message import AssistantMessage, AssistantResponse
+from src.obelix_types.tool_message import (
     ToolCall,
     ToolResult,
     ToolStatus,
     ToolMessage
 )
-from src.messages.standard_message import StandardMessage
-from src.messages.usage import Usage, AgentUsage
+from src.obelix_types.standard_message import StandardMessage
+from src.obelix_types.usage import Usage, AgentUsage
 
 __all__ = [
     "SystemMessage",

@@ -2,51 +2,7 @@ import json
 import uuid
 
 
-from src.messages.tool_message import ToolCall
-
-
-def _extract_tool_calls_anthropic(response):
-    """
-    Extract tool calls from Anthropic Claude response.
-
-    Anthropic returns content as a list of blocks. Tool calls are blocks with:
-    - type="tool_use"
-    - id: unique identifier
-    - name: tool name
-    - input: arguments (dict)
-
-    Args:
-        response: Anthropic Message response object with .content attribute
-
-    Returns:
-        List of ToolCall objects extracted from tool_use blocks
-    """
-    tool_calls = []
-
-    if not hasattr(response, "content"):
-        return []
-
-    for block in response.content:
-        # Handles both dict and object notation
-        block_type = (
-            block.get("type") if isinstance(block, dict)
-            else getattr(block, "type", None)
-        )
-
-        if block_type == "tool_use":
-            tool_id = block.get("id") if isinstance(block, dict) else block.id
-            tool_name = block.get("name") if isinstance(block, dict) else block.name
-            tool_input = block.get("input") if isinstance(block, dict) else block.input
-
-            tool_calls.append(
-                ToolCall(
-                    id=tool_id,
-                    name=tool_name,
-                    arguments=tool_input
-                )
-            )
-
-    return tool_calls
+from src.obelix_types.tool_message import ToolCall
 
 
 
@@ -471,61 +427,5 @@ def _extract_tool_calls_vllm(output, tools):
     return _parse_tool_call_from_content(content)
 
 
-def _extract_tool_calls_openai(response):
-    """
-    Extract tool calls from OpenAI ChatCompletion response.
-
-    OpenAI returns response.choices[0].message.tool_calls as a list of objects:
-    - id: unique identifier
-    - type: "function"
-    - function.name: tool name
-    - function.arguments: JSON string of arguments
-
-    Args:
-        response: OpenAI ChatCompletion response object
-
-    Returns:
-        List of ToolCall objects extracted from tool_calls
-    """
-    # 1. First try: structured tool calls
-    structured_calls = []
-
-    if (hasattr(response, 'choices') and
-            response.choices and
-            hasattr(response.choices[0], 'message') and
-            hasattr(response.choices[0].message, 'tool_calls') and
-            response.choices[0].message.tool_calls):
-
-        for call in response.choices[0].message.tool_calls:
-            if call.type != "function":
-                continue
-
-            # Arguments is a JSON string in OpenAI API
-            arguments = call.function.arguments
-            if isinstance(arguments, str):
-                try:
-                    arguments = json.loads(arguments)
-                except json.JSONDecodeError:
-                    arguments = {}
-
-            structured_calls.append(ToolCall(
-                id=call.id,
-                name=call.function.name,
-                arguments=arguments
-            ))
-
-    if structured_calls:
-        return structured_calls
-
-    # 2. Fallback: parse from content
-    content = ""
-    if (hasattr(response, 'choices') and
-            response.choices and
-            hasattr(response.choices[0], 'message') and
-            response.choices[0].message.content):
-        content = response.choices[0].message.content
-
-    if not content:
-        return []
-
-    return _parse_tool_call_from_content(content)
+# NOTE: _extract_tool_calls_openai removed - provider is now self-contained
+# (see src/client_adapters/openai_provider.py)

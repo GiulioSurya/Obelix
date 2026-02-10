@@ -18,7 +18,7 @@ from typing import Type, get_type_hints, Dict, Any
 from pydantic import Field, create_model
 from pydantic.fields import FieldInfo
 
-from src.messages.tool_message import MCPToolSchema
+from src.obelix_types.tool_message import MCPToolSchema
 
 
 def subagent(name: str = None, description: str = None, stateless: bool = False):

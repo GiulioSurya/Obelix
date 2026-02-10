@@ -548,14 +548,14 @@ class MCPClientManager:
             arguments: Dictionary of arguments for the prompt
 
         Returns:
-            PromptResult: Result with messages formatted for LLM
+            PromptResult: Result with obelix_types formatted for LLM
 
         Raises:
             RuntimeError: If not connected to server
 
         Examples:
             result = await manager.get_prompt("greet_user", {"name": "Alice"})
-            for message in result.messages:
+            for message in result.obelix_types:
                 print(message.content)
         """
         if not self._connected:

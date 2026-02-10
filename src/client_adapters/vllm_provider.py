@@ -1,10 +1,11 @@
-# src/llm_providers/vllm_provider.py
+# src/client_adapters/vllm_provider.py
 import asyncio
 from typing import List, Optional, Dict, Any
 
-from src.llm_providers.llm_abstraction import AbstractLLMProvider
-from src.messages.assistant_message import AssistantMessage
-from src.messages.standard_message import StandardMessage
+from src.client_adapters.llm_abstraction import AbstractLLMProvider
+from src.client_adapters._legacy_mapping_mixin import LegacyMappingMixin
+from src.obelix_types.assistant_message import AssistantMessage
+from src.obelix_types.standard_message import StandardMessage
 from src.tools.tool_base import ToolBase
 from src.providers import Providers
 from src.logging_config import get_logger
@@ -21,7 +22,7 @@ except ImportError:
     )
 
 
-class VLLMProvider(AbstractLLMProvider):
+class VLLMProvider(LegacyMappingMixin, AbstractLLMProvider):
     """Provider for vLLM with configurable parameters for offline inference"""
 
     @property
@@ -120,14 +121,14 @@ class VLLMProvider(AbstractLLMProvider):
 
     async def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
         """
-        Invoke the vLLM model with standardized messages and tools (async).
+        Invoke the vLLM model with standardized obelix_types and tools (async).
 
         Uses asyncio.to_thread() to run the sync vLLM engine without
         blocking the event loop.
         """
-        logger.debug(f"vLLM invoke: model={self.model_id}, messages={len(messages)}, tools={len(tools)}")
+        logger.debug(f"vLLM invoke: model={self.model_id}, obelix_types={len(messages)}, tools={len(tools)}")
 
-        # 1. Convert messages and tools to vLLM format (use base class methods)
+        # 1. Convert obelix_types and tools to vLLM format (use base class methods)
         vllm_messages = self._convert_messages_to_provider_format(messages)
         vllm_tools = self._convert_tools_to_provider_format(tools)
 

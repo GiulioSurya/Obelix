@@ -110,7 +110,7 @@ Loguru starts with a default handler (stderr). To customize:
         retention,      # How long to keep old files: "7 days", "1 week"
         colorize,       # True/False for colors (console only)
         serialize,      # True for JSON output
-        filter,         # Function to filter messages
+        filter,         # Function to filter obelix_types
     )
 
 The add() method returns an ID you can use to remove the handler:
@@ -280,8 +280,8 @@ def format_message_for_trace(message, max_chars: int = 2500) -> str:
     msg_type = type(message).__name__
 
     # Import here to avoid circular imports
-    from src.messages.assistant_message import AssistantMessage
-    from src.messages.tool_message import ToolMessage
+    from src.obelix_types.assistant_message import AssistantMessage
+    from src.obelix_types.tool_message import ToolMessage
 
     if isinstance(message, AssistantMessage):
         parts = []

@@ -1,4 +1,4 @@
-# src/llm_providers/oci_strategies/__init__.py
+# src/client_adapters/oci_strategies/__init__.py
 """
 OCI Request Strategy Module
 
@@ -9,7 +9,7 @@ Strategies:
 - CohereRequestStrategy: For Cohere Command models
 
 Usage:
-    from src.llm_providers.oci_provider import OCILLm
+    from src.client_adapters.oci_provider import OCILLm
 
     # Auto-detection based on model_id
     provider = OCILLm(model_id="meta.llama-3.3-70b-instruct")
@@ -28,9 +28,9 @@ Usage:
     )
 """
 
-from src.llm_providers.oci_strategies.base_strategy import OCIRequestStrategy
-from src.llm_providers.oci_strategies.generic_strategy import GenericRequestStrategy
-from src.llm_providers.oci_strategies.cohere_strategy import CohereRequestStrategy
+from src.client_adapters.oci_strategies.base_strategy import OCIRequestStrategy
+from src.client_adapters.oci_strategies.generic_strategy import GenericRequestStrategy
+from src.client_adapters.oci_strategies.cohere_strategy import CohereRequestStrategy
 
 __all__ = [
     "OCIRequestStrategy",

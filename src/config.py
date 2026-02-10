@@ -104,22 +104,22 @@ class GlobalConfig:
             Provider instance
         """
         if provider == Providers.OCI_GENERATIVE_AI:
-            from src.llm_providers.oci_provider import OCILLm
+            from src.client_adapters.oci_provider import OCILLm
             return OCILLm(connection, **kwargs)
         elif provider == Providers.IBM_WATSON:
-            from src.llm_providers.ibm_provider import IBMWatsonXLLm
+            from src.client_adapters.ibm_provider import IBMWatsonXLLm
             return IBMWatsonXLLm(connection, **kwargs)
         elif provider == Providers.ANTHROPIC:
-            from src.llm_providers.anthropic_provider import AnthropicProvider
+            from src.client_adapters.anthropic_provider import AnthropicProvider
             return AnthropicProvider(connection, **kwargs)
         elif provider == Providers.OLLAMA:
-            from src.llm_providers.ollama_provider import OllamaProvider
+            from src.client_adapters.ollama_provider import OllamaProvider
             return OllamaProvider(**kwargs)
         elif provider == Providers.VLLM:
-            from src.llm_providers.vllm_provider import VLLMProvider
+            from src.client_adapters.vllm_provider import VLLMProvider
             return VLLMProvider(**kwargs)
         elif provider == Providers.OPENAI:
-            from src.llm_providers.openai_provider import OpenAIProvider
+            from src.client_adapters.openai_provider import OpenAIProvider
             return OpenAIProvider(connection, **kwargs)
         else:
             raise ValueError(f"Provider {provider} not supported")

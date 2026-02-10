@@ -1,10 +1,11 @@
-# src/llm_providers/ibm_provider.py
+# src/client_adapters/ibm_provider.py
 import asyncio
 from typing import List, Dict, Any, Optional
 
-from src.llm_providers.llm_abstraction import AbstractLLMProvider
-from src.messages.assistant_message import AssistantMessage
-from src.messages.standard_message import StandardMessage
+from src.client_adapters.llm_abstraction import AbstractLLMProvider
+from src.client_adapters._legacy_mapping_mixin import LegacyMappingMixin
+from src.obelix_types.assistant_message import AssistantMessage
+from src.obelix_types.standard_message import StandardMessage
 from src.tools.tool_base import ToolBase
 from src.providers import Providers
 from src.connections.llm_connection import IBMConnection
@@ -21,7 +22,7 @@ except ImportError:
 # Logger for IBM Watson X provider
 logger = get_logger(__name__)
 
-class IBMWatsonXLLm(AbstractLLMProvider):
+class IBMWatsonXLLm(LegacyMappingMixin, AbstractLLMProvider):
     """Provider for IBM Watson X with configurable parameters"""
 
     @property
@@ -111,14 +112,14 @@ class IBMWatsonXLLm(AbstractLLMProvider):
 
     async def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
         """
-        Call the IBM Watson model with standardized messages and tools (async).
+        Call the IBM Watson model with standardized obelix_types and tools (async).
 
         Uses asyncio.to_thread() to run the sync IBM SDK client without
         blocking the event loop.
         """
-        logger.debug(f"IBM Watson invoke: model={self.model_id}, messages={len(messages)}, tools={len(tools)}")
+        logger.debug(f"IBM Watson invoke: model={self.model_id}, obelix_types={len(messages)}, tools={len(tools)}")
 
-        # 1. Convert messages and tools to IBM format (use base class methods)
+        # 1. Convert obelix_types and tools to IBM format (use base class methods)
         ibm_messages = self._convert_messages_to_provider_format(messages)
         ibm_tools = self._convert_tools_to_provider_format(tools)
 

@@ -5,16 +5,16 @@ import time
 from typing import List, Optional, Dict, Any, Union, Type, Tuple, Set
 
 from src.logging_config import get_logger
-from src.messages.system_message import SystemMessage
-from src.messages.human_message import HumanMessage
-from src.messages.assistant_message import AssistantMessage, AssistantResponse
-from src.messages.tool_message import ToolMessage, ToolCall, ToolResult, ToolStatus, ToolRequirement
+from src.obelix_types.system_message import SystemMessage
+from src.obelix_types.human_message import HumanMessage
+from src.obelix_types.assistant_message import AssistantMessage, AssistantResponse
+from src.obelix_types.tool_message import ToolMessage, ToolCall, ToolResult, ToolStatus, ToolRequirement
 from src.base_agent.hooks import AgentEvent, Hook, AgentStatus, HookDecision, Outcome
 from src.base_agent.event_contracts import EventContract, get_event_contracts
-from src.messages.standard_message import StandardMessage
-from src.messages.usage import AgentUsage
+from src.obelix_types.standard_message import StandardMessage
+from src.obelix_types.usage import AgentUsage
 from src.tools.tool_base import ToolBase
-from src.llm_providers.llm_abstraction import AbstractLLMProvider
+from src.client_adapters.llm_abstraction import AbstractLLMProvider
 from src.config import GlobalConfig
 
 logger = get_logger(__name__)

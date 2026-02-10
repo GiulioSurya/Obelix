@@ -1,4 +1,4 @@
-# src/llm_providers/ollama_provider.py
+# src/client_adapters/ollama_provider.py
 from typing import List, Optional
 
 try:
@@ -8,9 +8,10 @@ except ImportError:
         "ollama is not installed. Install with: pip install ollama"
     )
 
-from src.llm_providers.llm_abstraction import AbstractLLMProvider
-from src.messages.assistant_message import AssistantMessage
-from src.messages.standard_message import StandardMessage
+from src.client_adapters.llm_abstraction import AbstractLLMProvider
+from src.client_adapters._legacy_mapping_mixin import LegacyMappingMixin
+from src.obelix_types.assistant_message import AssistantMessage
+from src.obelix_types.standard_message import StandardMessage
 from src.tools.tool_base import ToolBase
 from src.providers import Providers
 from src.logging_config import get_logger
@@ -19,7 +20,7 @@ from src.logging_config import get_logger
 logger = get_logger(__name__)
 
 
-class OllamaProvider(AbstractLLMProvider):
+class OllamaProvider(LegacyMappingMixin, AbstractLLMProvider):
     """Provider for Ollama with configurable parameters"""
 
     @property
@@ -77,20 +78,20 @@ class OllamaProvider(AbstractLLMProvider):
 
     async def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
         """
-        Call the Ollama model with standardized messages and tools (async).
+        Call the Ollama model with standardized obelix_types and tools (async).
 
         Uses AsyncClient for native async support.
         """
-        logger.debug(f"Ollama invoke: model={self.model_id}, messages={len(messages)}, tools={len(tools)}")
+        logger.debug(f"Ollama invoke: model={self.model_id}, obelix_types={len(messages)}, tools={len(tools)}")
 
-        # 1. Convert messages and tools to Ollama format (use base class methods)
+        # 1. Convert obelix_types and tools to Ollama format (use base class methods)
         ollama_messages = self._convert_messages_to_provider_format(messages)
         ollama_tools = self._convert_tools_to_provider_format(tools)
 
         # 2. Build call parameters
         chat_params = {
             "model": self.model_id,
-            "messages": ollama_messages,
+            "obelix_types": ollama_messages,
         }
 
         if ollama_tools:

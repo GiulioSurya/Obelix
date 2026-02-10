@@ -2,8 +2,8 @@ from dataclasses import dataclass
 from typing import Any, Dict
 
 from src.base_agent.hooks import AgentEvent
-from src.messages.assistant_message import AssistantMessage, AssistantResponse
-from src.messages.tool_message import ToolCall, ToolResult
+from src.obelix_types.assistant_message import AssistantMessage, AssistantResponse
+from src.obelix_types.tool_message import ToolCall, ToolResult
 
 
 @dataclass(frozen=True)

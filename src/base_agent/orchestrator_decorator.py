@@ -22,7 +22,7 @@ import time
 from typing import Type, TYPE_CHECKING
 
 from src.tools.tool_base import ToolBase
-from src.messages.tool_message import ToolCall, ToolResult, ToolStatus, MCPToolSchema
+from src.obelix_types.tool_message import ToolCall, ToolResult, ToolStatus, MCPToolSchema
 from src.logging_config import get_logger
 
 if TYPE_CHECKING:
