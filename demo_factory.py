@@ -112,7 +112,7 @@ class CoordinatorAgent(BaseAgent):
     def __init__(self, **kwargs):
         # Allow provider override via kwargs, with default
         if 'provider' not in kwargs:
-            kwargs['provider'] = OCILLm(connection=oci_connection, model_id="openai.gpt-oss-120b")
+            kwargs['provider'] = OCILLm(connection=oci_connection, model_id="google.gemini-2.5-flash")
 
         # Allow system_message override, with default
         if 'system_message' not in kwargs:
@@ -122,6 +122,7 @@ REGOLE OBBLIGATORIE:
 - NON puoi chiamare il Math Agent senza aver prima usato ask_user_question.
 - Se mancano o sono ambigue informazioni, fermati e chiedi chiarimenti.
 - Solo dopo la risposta dell'utente puoi chiamare il Math Agent.
+utilizza almeno una volta il tool ask user question
 """
 
         # Allow tools override, with default

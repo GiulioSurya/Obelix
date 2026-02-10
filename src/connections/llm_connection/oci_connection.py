@@ -22,6 +22,9 @@ from urllib.parse import urlparse
 import httpx
 
 from src.connections.llm_connection.base_llm_connection import AbstractLLMConnection
+from src.logging_config import get_logger
+
+_logger = get_logger(__name__)
 
 DEFAULT_OCI_CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".oci", "config")
 
@@ -91,51 +94,51 @@ class DotDict:
     """
 
     def __init__(self, data: Any):
-        self._data = data
+        self.data = data
 
     def __getattr__(self, key: str) -> Any:
-        if key.startswith('_'):
-            return object.__getattribute__(self, key)
+        if key == 'data':
+            return object.__getattribute__(self, 'data')
 
-        data = object.__getattribute__(self, '_data')
+        raw_data = object.__getattribute__(self, 'data')
 
-        if not isinstance(data, dict):
+        if not isinstance(raw_data, dict):
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{key}'")
 
         # Try exact key first
-        if key in data:
-            return self._wrap(data[key])
+        if key in raw_data:
+            return self._wrap(raw_data[key])
 
         # Try camelCase version
         camel_key = _snake_to_camel(key)
-        if camel_key in data:
-            return self._wrap(data[camel_key])
+        if camel_key in raw_data:
+            return self._wrap(raw_data[camel_key])
 
         return None
 
     def __getitem__(self, key: Any) -> Any:
-        data = object.__getattribute__(self, '_data')
-        if isinstance(data, (list, dict)):
-            return self._wrap(data[key])
+        raw_data = object.__getattribute__(self, 'data')
+        if isinstance(raw_data, (list, dict)):
+            return self._wrap(raw_data[key])
         raise TypeError(f"'{type(self).__name__}' object is not subscriptable")
 
     def __len__(self) -> int:
-        return len(object.__getattribute__(self, '_data'))
+        return len(object.__getattribute__(self, 'data'))
 
     def __iter__(self):
-        data = object.__getattribute__(self, '_data')
-        if isinstance(data, list):
-            for item in data:
+        raw_data = object.__getattribute__(self, 'data')
+        if isinstance(raw_data, list):
+            for item in raw_data:
                 yield self._wrap(item)
-        elif isinstance(data, dict):
-            for key in data:
+        elif isinstance(raw_data, dict):
+            for key in raw_data:
                 yield key
 
     def __bool__(self) -> bool:
-        return bool(object.__getattribute__(self, '_data'))
+        return bool(object.__getattribute__(self, 'data'))
 
     def __repr__(self) -> str:
-        return f"DotDict({object.__getattribute__(self, '_data')!r})"
+        return f"DotDict({object.__getattribute__(self, 'data')!r})"
 
     def _wrap(self, value: Any) -> Any:
         """Wrap nested dicts/lists in DotDict."""
@@ -182,22 +185,46 @@ class OCIResponse:
 
 
 
-class OCIRateLimitError(Exception):
+class OCIServiceError(Exception):
+    """
+    Base OCI service error with full response details.
+
+    Mirrors the OCI SDK's ServiceError pattern: captures status, code, message,
+    opc-request-id, and response headers so no error information is ever lost.
+    """
+
+    def __init__(self, status: int, code: str | None, message: str,
+                 opc_request_id: str | None = None, headers: dict | None = None):
+        self.status = status
+        self.code = code
+        self.message = message
+        self.opc_request_id = opc_request_id
+        self.headers = headers or {}
+        super().__init__(self._format_message())
+
+    def _format_message(self) -> str:
+        parts = [f"({self.status}) {self.code}: {self.message}"]
+        if self.opc_request_id:
+            parts.append(f"opc-request-id: {self.opc_request_id}")
+        return " | ".join(parts)
+
+
+class OCIRateLimitError(OCIServiceError):
     """Rate limit error (429) - retryable."""
     pass
 
 
-class OCIServerError(Exception):
+class OCIServerError(OCIServiceError):
     """Server error (5xx) - retryable."""
     pass
 
 
-class OCIIncorrectStateError(Exception):
+class OCIIncorrectStateError(OCIServiceError):
     """Incorrect state error (409 with code=IncorrectState) - retryable."""
     pass
 
 
-class OCIContentModerationError(Exception):
+class OCIContentModerationError(OCIServiceError):
     """Content moderation error (400 with 'Unsafe Text detected') - NOT retryable."""
 
     USER_MESSAGE = (
@@ -205,9 +232,9 @@ class OCIContentModerationError(Exception):
         "problematic. Please try rephrasing your message."
     )
 
-    def __init__(self, technical_message: str):
-        self.technical_message = technical_message
-        super().__init__(self.USER_MESSAGE)
+    def __init__(self, status: int, code: str | None, message: str, **kwargs):
+        self.technical_message = message
+        super().__init__(status, code, self.USER_MESSAGE, **kwargs)
 
 
 
@@ -363,28 +390,63 @@ class OCIAsyncHttpClient:
             content=body_bytes,
         )
 
-        if response.status_code == 429:
-            raise OCIRateLimitError(f"Rate limit exceeded: {response.text}")
-        if 500 <= response.status_code < 600:
-            raise OCIServerError(f"Server error {response.status_code}: {response.text}")
-        if response.status_code == 409:
-            try:
-                error_data = response.json()
-                if error_data.get("code") == "IncorrectState":
-                    raise OCIIncorrectStateError(f"Incorrect state: {response.text}")
-            except json.JSONDecodeError:
-                pass  # Non è JSON, lascia passare a raise_for_status
+        if response.status_code >= 400:
+            self._raise_for_status(response)
 
-        if response.status_code == 400:
-            try:
-                error_data = response.json()
-                if "Unsafe Text detected" in error_data.get("message", ""):
-                    raise OCIContentModerationError(f"OCI Content Moderation: {response.text}")
-            except json.JSONDecodeError:
-                pass  # Non è JSON, lascia passare a raise_for_status
-
-        response.raise_for_status()
         return response.json()
+
+    @staticmethod
+    def _raise_for_status(response: httpx.Response) -> None:
+        """
+        Parse error response and raise the appropriate OCIServiceError subclass.
+
+        Follows the OCI SDK pattern: extracts code, message, and opc-request-id
+        from every error response so no diagnostic information is lost.
+        """
+        status = response.status_code
+        headers = dict(response.headers)
+        opc_request_id = headers.get("opc-request-id")
+
+        # Parse body — JSON when possible, raw text as fallback.
+        # Handles both OCI format {"code": ..., "message": ...}
+        # and Gemini nested format {"error": {"code": ..., "message": ..., "status": ...}}
+        code: str | None = None
+        message: str = response.text or f"HTTP {status}"
+        try:
+            error_data = response.json()
+            if "error" in error_data and isinstance(error_data["error"], dict):
+                error_data = error_data["error"]
+            code = str(error_data["code"]) if "code" in error_data else None
+            message = error_data.get("message") or message
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        error_kwargs = dict(
+            status=status,
+            code=code or f"HTTP_{status}",
+            message=message,
+            opc_request_id=opc_request_id,
+            headers=headers,
+        )
+
+        _logger.error(
+            "OCI API error: status=%s code=%s opc-request-id=%s message=%s",
+            status, error_kwargs["code"], opc_request_id, message,
+        )
+
+        if status == 429:
+            raise OCIRateLimitError(**error_kwargs)
+
+        if status >= 500:
+            raise OCIServerError(**error_kwargs)
+
+        if status == 409 and code == "IncorrectState":
+            raise OCIIncorrectStateError(**error_kwargs)
+
+        if status == 400 and "Unsafe Text detected" in message:
+            raise OCIContentModerationError(**error_kwargs)
+
+        raise OCIServiceError(**error_kwargs)
 
     async def chat(self, chat_details: Any) -> OCIResponse:
         """Call the chat endpoint. Returns OCIResponse compatible with SDK access."""

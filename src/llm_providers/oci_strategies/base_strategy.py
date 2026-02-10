@@ -1,21 +1,29 @@
 # src/llm_providers/oci_strategies/base_strategy.py
+"""
+Base Strategy for OCI Request Strategies.
+
+Each strategy handles a specific API format (GENERIC or COHERE) and is self-contained:
+- Convert StandardMessage to provider-specific message format
+- Convert ToolBase to provider-specific tool format
+- Extract tool calls from response (with validation)
+- Build provider-specific chat request
+"""
 from abc import ABC, abstractmethod
 from typing import List, Any, Dict, Optional, Union
+
 from oci.generative_ai_inference.models import BaseChatRequest, Message
 
 from src.messages.standard_message import StandardMessage
+from src.messages.tool_message import ToolCall
 from src.tools.tool_base import ToolBase
 
 
 class OCIRequestStrategy(ABC):
     """
     Abstract base class for OCI request strategies.
+
     Each strategy handles a specific API format (GENERIC or COHERE).
-    Responsibilities:
-    - Convert StandardMessage to provider-specific message format
-    - Convert ToolBase to provider-specific tool format
-    - Build provider-specific chat request
-    - Provide mapping for tool_calls extraction
+    Strategies are self-contained - no external mapping dependencies.
     """
 
     @abstractmethod
@@ -24,11 +32,11 @@ class OCIRequestStrategy(ABC):
         Convert StandardMessage objects to provider-specific message format.
 
         Args:
-            messages: List of StandardMessage objects (HumanMessage, SystemMessage, AssistantMessage, ToolMessage)
+            messages: List of StandardMessage objects
 
         Returns:
-            GenericStrategy: List[Message] (UserMessage, SystemMessage, AssistantMessage, ToolMessage)
-            CohereStrategy: Dict with {message: str, chat_history: List[CohereMessage]}
+            GenericStrategy: List[Message]
+            CohereStrategy: Dict with {message, chat_history, tool_results}
         """
         pass
 
@@ -43,6 +51,22 @@ class OCIRequestStrategy(ABC):
         Returns:
             GenericStrategy: List[FunctionDefinition]
             CohereStrategy: List[CohereTool]
+        """
+        pass
+
+    @abstractmethod
+    def extract_tool_calls(self, response) -> List[ToolCall]:
+        """
+        Extract and validate tool calls from OCI response.
+
+        Args:
+            response: OCI chat response
+
+        Returns:
+            List[ToolCall]: Validated tool calls
+
+        Raises:
+            ToolCallExtractionError: If JSON parsing or validation fails
         """
         pass
 
@@ -83,22 +107,12 @@ class OCIRequestStrategy(ABC):
         pass
 
     @abstractmethod
-    def get_mapping(self) -> Dict[str, Any]:
-        """
-        Get the provider mapping for this strategy.
-
-        Returns:
-            Dict: Mapping dictionary with tool_input, tool_output, message_input
-        """
-        pass
-
-    @abstractmethod
     def get_api_format(self) -> str:
         """
         Get the API format for this strategy.
 
         Returns:
-            str: Either BaseChatRequest.API_FORMAT_GENERIC or BaseChatRequest.API_FORMAT_COHERE
+            str: Either API_FORMAT_GENERIC or API_FORMAT_COHERE
         """
         pass
 

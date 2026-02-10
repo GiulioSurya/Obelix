@@ -1,18 +1,45 @@
 # src/llm_providers/oci_strategies/cohere_strategy.py
+"""
+Cohere Request Strategy for OCI Generative AI.
+
+Supports: Cohere Command A, Command R, Command R+
+
+This strategy is self-contained - all conversion logic is inline,
+no external mapping dependencies.
+
+Key difference: Cohere separates the last user message from chat_history:
+- message: str (the LAST user message)
+- chat_history: List[CohereMessage] (all PREVIOUS messages)
+"""
+import json
+import uuid
 from typing import List, Any, Optional, Dict
-from oci.generative_ai_inference.models import CohereChatRequest, BaseChatRequest
+
+from pydantic import ValidationError
+
+from oci.generative_ai_inference.models import (
+    CohereChatRequest,
+    BaseChatRequest,
+    CohereUserMessage,
+    CohereSystemMessage,
+    CohereChatBotMessage,
+    CohereToolMessage as OCICohereToolMessage,
+    CohereTool,
+    CohereParameterDefinition,
+    CohereToolResult,
+    CohereToolCall
+)
 
 from src.llm_providers.oci_strategies.base_strategy import OCIRequestStrategy
+from src.llm_providers.oci_strategies.generic_strategy import ToolCallExtractionError
 from src.messages.standard_message import StandardMessage
 from src.messages.human_message import HumanMessage
 from src.messages.system_message import SystemMessage
 from src.messages.assistant_message import AssistantMessage
-from src.messages.tool_message import ToolMessage
+from src.messages.tool_message import ToolMessage, ToolCall
 from src.tools.tool_base import ToolBase
-from src.mapping.provider_mapping import OCI_GENERATIVE_AI_COHERE
 from src.logging_config import get_logger, format_message_for_trace
 
-# Logger for CohereRequestStrategy
 logger = get_logger(__name__)
 
 
@@ -21,10 +48,10 @@ class CohereRequestStrategy(OCIRequestStrategy):
     Strategy for models using the COHERE API format.
     Supports: Cohere Command A, Command R, Command R+
 
-    Key difference: Cohere separates the last user message from chat_history:
-    - message: str (the LAST user message)
-    - chat_history: List[CohereMessage] (all PREVIOUS messages)
+    Self-contained: all conversion logic is inline.
     """
+
+    # ========== MESSAGE CONVERSION ==========
 
     def convert_messages(self, messages: List[StandardMessage]) -> Dict[str, Any]:
         """
@@ -43,75 +70,58 @@ class CohereRequestStrategy(OCIRequestStrategy):
         """
         logger.debug(f"Converting {len(messages)} messages to OCI COHERE format")
 
-        from oci.generative_ai_inference.models import CohereToolResult, CohereToolCall
-
-        mapping = self.get_mapping()
-        message_converters = mapping["message_input"]
-
         chat_history = []
         tool_results = []
         last_user_message = None
         last_assistant_tool_calls = {}  # Map tool_call_id -> ToolCall
 
-        # Process messages
         for i, message in enumerate(messages):
-            msg_type = type(message).__name__
-
-            # TRACE: full message content with tool_calls/tool_results
             logger.trace(f"msg[{i}] {format_message_for_trace(message)}")
+
             if isinstance(message, HumanMessage):
-                # Store user messages; last one goes to 'message' field
                 if last_user_message is not None:
-                    # Add previous user message to history
-                    chat_history.append(message_converters["human_message"](
-                        HumanMessage(content=last_user_message)
-                    ))
+                    chat_history.append(
+                        CohereUserMessage(message=last_user_message)
+                    )
                 last_user_message = message.content
 
             elif isinstance(message, SystemMessage):
-                chat_history.append(message_converters["system_message"](message))
+                chat_history.append(
+                    CohereSystemMessage(message=message.content)
+                )
 
             elif isinstance(message, AssistantMessage):
-                # Add assistant messages to history
-                chat_history.append(message_converters["assistant_message"](message))
-
-                # Track tool calls for matching with tool results later
+                chat_history.append(
+                    CohereChatBotMessage(message=message.content if message.content else "")
+                )
                 if message.tool_calls:
                     for tool_call in message.tool_calls:
                         last_assistant_tool_calls[tool_call.id] = tool_call
 
             elif isinstance(message, ToolMessage):
-                # Convert ToolMessage to CohereToolResult format
-                # Match tool results with original tool calls to get parameters
                 for result in message.tool_results:
                     original_call = last_assistant_tool_calls.get(result.tool_call_id)
 
-                    # Create CohereToolCall with name and parameters
                     cohere_call = CohereToolCall(
                         name=result.tool_name,
                         parameters=original_call.arguments if original_call else {}
                     )
 
-                    # Create CohereToolResult with call and outputs
                     cohere_result = CohereToolResult(
                         call=cohere_call,
                         outputs=[{
                             "text": str(result.result) if result.result else result.error
                         }]
                     )
-
                     tool_results.append(cohere_result)
 
         # Determine final message value
-        # IMPORTANT Cohere Rule: In multistep mode (when tool_results present), CANNOT specify message
+        # IMPORTANT: In multistep mode (when tool_results present), CANNOT specify message
         if tool_results:
-            # When tool_results are present, message must be None (multistep mode rule)
             final_message = None
         elif last_user_message is not None and last_user_message.strip():
-            # Use last user message if not empty
             final_message = last_user_message
         else:
-            # No valid user message found - use placeholder
             final_message = "continue"
 
         logger.debug(
@@ -125,9 +135,11 @@ class CohereRequestStrategy(OCIRequestStrategy):
             "tool_results": tool_results if tool_results else None
         }
 
-    def convert_tools(self, tools: List[ToolBase]) -> List[Any]:
+    # ========== TOOL CONVERSION ==========
+
+    def convert_tools(self, tools: List[ToolBase]) -> List[CohereTool]:
         """
-        Convert ToolBase objects to CohereTool format
+        Convert ToolBase objects to CohereTool format.
         """
         if not tools:
             logger.debug("No tools to convert for OCI COHERE format")
@@ -135,13 +147,78 @@ class CohereRequestStrategy(OCIRequestStrategy):
 
         logger.debug(f"Converting {len(tools)} tools to OCI COHERE format")
 
-        mapping = self.get_mapping()
-        tool_mapper = mapping["tool_input"]["tool_schema"]
+        converted_tools = []
+        for tool in tools:
+            schema = tool.create_schema()
 
-        converted_tools = [tool_mapper(tool.create_schema()) for tool in tools]
+            parameter_definitions = {}
+            input_schema = schema.inputSchema or {}
+            properties = input_schema.get("properties", {})
+            required_params = input_schema.get("required", [])
+
+            for param_name, param_props in properties.items():
+                parameter_definitions[param_name] = CohereParameterDefinition(
+                    description=param_props.get("description", ""),
+                    type=param_props.get("type", "string").upper(),
+                    is_required=param_name in required_params
+                )
+
+            converted_tools.append(
+                CohereTool(
+                    name=schema.name,
+                    description=schema.description,
+                    parameter_definitions=parameter_definitions
+                )
+            )
+
         logger.debug(f"Converted {len(converted_tools)} tools to OCI COHERE format")
-
         return converted_tools
+
+    # ========== TOOL CALL EXTRACTION ==========
+
+    def extract_tool_calls(self, response) -> List[ToolCall]:
+        """
+        Extract tool calls from OCI Cohere response.
+
+        Path: response.data.chat_response.tool_calls
+
+        Raises:
+            ToolCallExtractionError: If validation fails
+        """
+        chat_response = response.data.chat_response if response.data else None
+        if not chat_response:
+            return []
+
+        raw_tool_calls = getattr(chat_response, 'tool_calls', None)
+        if not raw_tool_calls:
+            return []
+
+        tool_calls = []
+        errors = []
+
+        for call in raw_tool_calls:
+            try:
+                # Cohere uses 'name' and 'parameters' (not 'arguments')
+                tool_call = ToolCall(
+                    id=str(uuid.uuid4()),  # Cohere doesn't provide ID
+                    name=call.name if hasattr(call, 'name') else "",
+                    arguments=call.parameters if hasattr(call, 'parameters') else {}
+                )
+                tool_calls.append(tool_call)
+
+            except ValidationError as e:
+                errors.append(
+                    f"Tool '{getattr(call, 'name', 'unknown')}': {e.errors()[0]['msg']}"
+                )
+
+        if errors:
+            raise ToolCallExtractionError(
+                f"Failed to extract tool calls:\n" + "\n".join(f"  - {err}" for err in errors)
+            )
+
+        return tool_calls
+
+    # ========== REQUEST BUILDING ==========
 
     def build_request(
         self,
@@ -159,21 +236,6 @@ class CohereRequestStrategy(OCIRequestStrategy):
     ) -> BaseChatRequest:
         """
         Build a CohereChatRequest for Cohere Command models.
-
-        Args:
-            converted_messages: Dict from convert_messages() with {message: str, chat_history: List}
-            converted_tools: List[CohereTool] from convert_tools()
-
-        Additional kwargs supported:
-            - preamble_override: str (custom system preamble)
-            - documents: list (contextual reference documents)
-            - safety_mode: str (content safety level)
-            - citation_quality: str (FAST, ACCURATE)
-            - prompt_truncation: str (OFF, AUTO)
-            - raw_prompting: bool
-            - search_queries_only: bool
-            - is_force_single_step: bool
-            - response_format: dict
         """
         request_params = {
             "api_format": BaseChatRequest.API_FORMAT_COHERE,
@@ -181,24 +243,19 @@ class CohereRequestStrategy(OCIRequestStrategy):
             "temperature": temperature,
         }
 
-        # Add message field (required by Cohere)
+        # Add message field
         message_value = converted_messages.get("message")
-        # Python SDK requires message to be present (not None), but when tool_results are present,
-        # use empty string to satisfy SDK while letting server handle the multistep mode correctly
         if message_value is None:
             request_params["message"] = ""
         else:
             request_params["message"] = message_value
 
-        # Add chat_history if present
         if converted_messages.get("chat_history"):
             request_params["chat_history"] = converted_messages["chat_history"]
 
-        # Add tool_results if present (SEPARATE field from chat_history)
         if converted_messages.get("tool_results"):
             request_params["tool_results"] = converted_messages["tool_results"]
 
-        # Add tools
         if converted_tools:
             request_params["tools"] = converted_tools
 
@@ -235,9 +292,7 @@ class CohereRequestStrategy(OCIRequestStrategy):
 
         return CohereChatRequest(**request_params)
 
-    def get_mapping(self) -> Dict[str, Any]:
-        """Returns the OCI_GENERATIVE_AI_COHERE mapping"""
-        return OCI_GENERATIVE_AI_COHERE
+    # ========== METADATA ==========
 
     def get_api_format(self) -> str:
         """Returns API_FORMAT_COHERE"""
@@ -246,8 +301,5 @@ class CohereRequestStrategy(OCIRequestStrategy):
     def get_supported_model_prefixes(self) -> List[str]:
         """
         Returns model ID prefixes supported by COHERE format.
-
-        Supported models:
-        - cohere.* (Command A, Command R, Command R+)
         """
         return ["cohere."]

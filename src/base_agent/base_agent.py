@@ -2,7 +2,7 @@
 import asyncio
 import inspect
 import time
-from typing import List, Optional, Dict, Any, Union, Type, Tuple
+from typing import List, Optional, Dict, Any, Union, Type, Tuple, Set
 
 from src.logging_config import get_logger
 from src.messages.system_message import SystemMessage
@@ -25,14 +25,14 @@ class BaseAgent:
         self,
         system_message: str,
         provider: Optional[AbstractLLMProvider] = None,
-        agent_comment: bool = True,
         max_iterations: int = 15,
         tools: Optional[Union[ToolBase, Type[ToolBase], List[Union[Type[ToolBase], ToolBase]]]] = None,
         tool_policy: Optional[List[ToolRequirement]] = None,
+        exit_on_success: Optional[List[str]] = None,
     ):
         self.system_message = SystemMessage(content=system_message)
-        self.agent_comment = agent_comment
         self.max_iterations = max_iterations
+        self._exit_on_success: Set[str] = set(exit_on_success) if exit_on_success else set()
 
         self.provider = provider or GlobalConfig().get_current_provider_instance()
 
@@ -289,11 +289,11 @@ class BaseAgent:
                 return response
 
             if assistant_msg.tool_calls:
-                execution_error = await self._process_tool_calls(
+                execution_error, iteration_results = await self._process_tool_calls(
                     assistant_msg, collected_tool_results, execution_error, iteration
                 )
 
-                if not self.agent_comment and execution_error is None:
+                if self._should_exit_on_success(iteration_results) and execution_error is None:
                     outcome = await self._run_hooks(
                         AgentEvent.BEFORE_FINAL_RESPONSE,
                         current_value=assistant_msg,
@@ -344,7 +344,7 @@ class BaseAgent:
         collected_tool_results: List[ToolResult],
         execution_error: Optional[str],
         iteration: int
-    ) -> Optional[str]:
+    ) -> Tuple[Optional[str], List[ToolResult]]:
         logger.debug(f"Processing {len(assistant_msg.tool_calls)} tool call(s)")
         logger.debug(f"Tool names: {[tc.name for tc in assistant_msg.tool_calls]}")
 
@@ -380,7 +380,13 @@ class BaseAgent:
 
         logger.debug(f"Added {len(tool_results)} tool result(s) to conversation history")
 
-        return execution_error
+        return execution_error, tool_results
+
+    def _should_exit_on_success(self, iteration_results: List[ToolResult]) -> bool:
+        if not self._exit_on_success:
+            return False
+        called_tools = {r.tool_name for r in iteration_results}
+        return called_tools.issubset(self._exit_on_success)
 
     def _build_final_response(
         self,
