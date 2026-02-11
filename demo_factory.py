@@ -6,19 +6,22 @@ Compare with demo_subagent.py which uses decorators directly.
 from dotenv import load_dotenv
 from pydantic import Field
 
-from src.base_agent import BaseAgent
-from src.base_agent.agent_factory import AgentFactory
-from src.tools import ToolBase, tool
-from src.config import GlobalConfig
-from src.providers import Providers
-from src.connections.llm_connection import OpenAIConnection, AnthropicConnection, OCIConnection
-from src.client_adapters.openai_provider import OpenAIProvider
-from src.client_adapters.anthropic_provider import AnthropicProvider
-from src.client_adapters.oci_provider import OCILLm
-from src.k8s_config import YamlConfig
-from src.obelix_types.tool_message import ToolRequirement
-from src.logging_config import setup_logging
-from src.tools.tool.ask_user_question_tool import AskUserQuestionTool
+from src.domain.agent import BaseAgent
+from src.domain.agent.agent_factory import AgentFactory
+from src.domain.tool.tool_base import ToolBase
+from src.domain.tool.tool_decorator import tool
+from src.infrastructure.config import GlobalConfig
+from src.infrastructure.providers import Providers
+from src.adapters.outbound.openai.connection import OpenAIConnection
+from src.adapters.outbound.anthropic.connection import AnthropicConnection
+from src.adapters.outbound.oci.connection import OCIConnection
+from src.adapters.outbound.openai.provider import OpenAIProvider
+from src.adapters.outbound.anthropic.provider import AnthropicProvider
+from src.adapters.outbound.oci.provider import OCILLm
+from src.infrastructure.k8s import YamlConfig
+from src.domain.model.tool_message import ToolRequirement
+from src.infrastructure.logging import setup_logging
+from src.plugins.builtin.ask_user_question_tool import AskUserQuestionTool
 import os
 
 load_dotenv()
@@ -39,7 +42,7 @@ openai_connection = OpenAIConnection(
 anthropic_connection = AnthropicConnection(api_key=api_key)
 
 infra_config = YamlConfig(os.getenv("INFRASTRUCTURE_CONFIG_PATH"))
-oci_provider_config = infra_config.get("client_adapters.oci")
+oci_provider_config = infra_config.get("llm_providers.oci")
 
 oci_config = {
     'user': oci_provider_config["user_id"],
