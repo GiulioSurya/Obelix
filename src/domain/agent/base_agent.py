@@ -617,6 +617,39 @@ class BaseAgent:
         return self.conversation_history.copy()
 
 
+    def register_agent(
+        self,
+        agent: 'BaseAgent',
+        *,
+        name: str,
+        description: str,
+        stateless: bool = False,
+    ) -> None:
+        """
+        Register a sub-agent as a tool on this agent.
+
+        Any agent can register sub-agents - no decorator needed.
+
+        Args:
+            agent: BaseAgent instance to register as sub-agent.
+            name: Tool name the LLM will use to call this sub-agent.
+            description: Description of what the sub-agent does (shown to LLM).
+            stateless: If True, each call executes on an isolated copy (parallel-safe).
+                If False (default), calls are serialized and conversation history is shared.
+        """
+        from src.domain.agent.subagent_wrapper import SubAgentWrapper
+
+        wrapper = SubAgentWrapper(
+            agent,
+            name=name,
+            description=description,
+            stateless=stateless,
+        )
+        self.registered_tools.append(wrapper)
+        logger.info(
+            f"Agent {self.__class__.__name__}: sub-agent '{name}' registered"
+        )
+
     def clear_conversation_history(self, keep_system_message: bool = True):
         """
         Clear the conversation history

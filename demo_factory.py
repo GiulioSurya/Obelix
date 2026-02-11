@@ -1,7 +1,6 @@
 # demo_factory.py - Demo of Agent Factory
 """
-This demo shows how to use the AgentFactory to create agents.
-Compare with demo_subagent.py which uses decorators directly.
+This demo shows how to use the AgentFactory to create and compose agents.
 """
 from dotenv import load_dotenv
 from pydantic import Field
@@ -78,65 +77,45 @@ class CalculatorTool(ToolBase):
         return {"result": result}
 
 
-# ========== AGENT CLASSES (no decorators!) ==========
+# ========== AGENT CLASSES ==========
 class MathAgent(BaseAgent):
-    """Math expert agent. Note: NO @subagent decorator needed with factory."""
+    """Math expert agent."""
 
-    # Extra field for subagent input (factory will extract this)
     context: str = Field(default="", description="usa questo campo per dare istruzioni più specifiche")
 
-    def __init__(self, **kwargs):
-        # Allow provider override via kwargs, with default
-        if 'provider' not in kwargs:
-            kwargs['provider'] = OCILLm(connection=oci_connection, model_id="openai.gpt-oss-120b")
-
-        # Allow system_message override, with default
-        if 'system_message' not in kwargs:
-            kwargs['system_message'] = "sei un esperto di matematica dotato di tool per fare calcoli, usalo per risolverli."
-
-        # Set tool_policy if not provided
-        if 'tool_policy' not in kwargs:
-            kwargs['tool_policy'] = [
+    def __init__(self):
+        super().__init__(
+            system_message="sei un esperto di matematica dotato di tool per fare calcoli, usalo per risolverli.",
+            provider=OCILLm(connection=oci_connection, model_id="openai.gpt-oss-120b"),
+            tool_policy=[
                 ToolRequirement(
                     tool_name="calculator",
                     require_success=True,
                     min_calls=1,
                     error_message="you have to use the calculator tool to solve the equation"
                 )
-            ]
-
-        super().__init__(**kwargs)
+            ],
+        )
         self.register_tool(CalculatorTool())
 
 
 class CoordinatorAgent(BaseAgent):
-    """Coordinator agent. Note: NO @orchestrator decorator needed with factory."""
+    """Coordinator agent."""
 
-    def __init__(self, **kwargs):
-        # Allow provider override via kwargs, with default
-        if 'provider' not in kwargs:
-            kwargs['provider'] = (
-                #OpenAIProvider(openai_connection, model_id="claude-haiku-4-5-20251001")
-                #AnthropicProvider(connection=anthropic_connection)
-                OCILLm(connection=oci_connection, model_id="openai.gpt-oss-120b")
-            )
-
-        # Allow system_message override, with default
-        if 'system_message' not in kwargs:
-            kwargs['system_message'] = """Sei un agente orchestratore con un Math Agent.
-REGOLE OBBLIGATORIE:
-- Devi SEMPRE usare ask_user_question per raccogliere o confermare input.
-- NON puoi chiamare il Math Agent senza aver prima usato ask_user_question.
-- Se mancano o sono ambigue informazioni, fermati e chiedi chiarimenti.
-- Solo dopo la risposta dell'utente puoi chiamare il Math Agent.
-utilizza almeno una volta il tool ask user question
-"""
-
-        # Allow tools override, with default
-        if 'tools' not in kwargs:
-            kwargs['tools'] = AskUserQuestionTool
-
-        super().__init__(**kwargs)
+    def __init__(self):
+        super().__init__(
+            system_message=(
+                "Sei un agente orchestratore con un Math Agent.\n"
+                "REGOLE OBBLIGATORIE:\n"
+                "- Devi SEMPRE usare ask_user_question per raccogliere o confermare input.\n"
+                "- NON puoi chiamare il Math Agent senza aver prima usato ask_user_question.\n"
+                "- Se mancano o sono ambigue informazioni, fermati e chiedi chiarimenti.\n"
+                "- Solo dopo la risposta dell'utente puoi chiamare il Math Agent.\n"
+                "utilizza almeno una volta il tool ask user question"
+            ),
+            provider=OCILLm(connection=oci_connection, model_id="openai.gpt-oss-120b"),
+            tools=AskUserQuestionTool,
+        )
 
 
 # ========== FACTORY SETUP ==========
@@ -144,16 +123,13 @@ def create_factory() -> AgentFactory:
     """Create and configure the agent factory."""
     factory = AgentFactory()
 
-    # Register MathAgent as subagent
     factory.register(
         name="math_agent",
         cls=MathAgent,
-        expose_as_subagent=True,
         subagent_description="A math expert that can perform calculations",
-        stateless=True,  # Each call gets fresh history
+        stateless=True,
     )
 
-    # Register CoordinatorAgent (not as subagent, it's the orchestrator)
     factory.register(
         name="coordinator",
         cls=CoordinatorAgent,
