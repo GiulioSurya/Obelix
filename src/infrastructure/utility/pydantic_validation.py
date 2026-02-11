@@ -1,10 +1,10 @@
-# src/utility/pydantic_validation.py
+# src/infrastructure/utility/pydantic_validation.py
 """
 Shared Pydantic validation utilities.
 
 Provides consistent error formatting for ValidationError across:
 - Tool argument validation (tool_decorator.py)
-- ToolCall creation (tool_extr_fall_back.py)
+- ToolCall creation (provider-level extraction)
 - Structured output validation (future)
 """
 from pydantic import ValidationError

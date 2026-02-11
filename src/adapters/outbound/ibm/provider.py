@@ -1,15 +1,28 @@
-# src/client_adapters/ibm_provider.py
+# src/adapters/outbound/ibm/provider.py
+"""
+IBM Watson X Provider.
+
+Self-contained provider with inline message/tool conversion.
+No external mapping dependencies.
+
+Uses OpenAI-compatible format (dict-based responses).
+IBM SDK has built-in retry for transport errors (429, 503, 504, 520),
+so tenacity is NOT needed here - only ToolCallExtractionError retry loop.
+"""
 import asyncio
+import json
 from typing import List, Dict, Any, Optional
 
+from pydantic import ValidationError
+
 from src.ports.outbound.llm_provider import AbstractLLMProvider
-from src.adapters.outbound._legacy.mapping_mixin import LegacyMappingMixin
-from src.domain.model.assistant_message import AssistantMessage
-from src.domain.model.standard_message import StandardMessage
+from src.domain.model import SystemMessage, HumanMessage, AssistantMessage, ToolMessage, StandardMessage
+from src.domain.model.tool_message import ToolCall
+from src.domain.model.usage import Usage
 from src.domain.tool.tool_base import ToolBase
 from src.infrastructure.providers import Providers
 from src.adapters.outbound.ibm.connection import IBMConnection
-from src.infrastructure.logging import get_logger
+from src.infrastructure.logging import get_logger, format_message_for_trace
 
 try:
     from ibm_watsonx_ai.foundation_models import ModelInference
@@ -19,11 +32,23 @@ except ImportError:
         "ibm-watsonx-ai is not installed. Install with: pip install ibm-watsonx-ai"
     )
 
-# Logger for IBM Watson X provider
 logger = get_logger(__name__)
 
-class IBMWatsonXLLm(LegacyMappingMixin, AbstractLLMProvider):
-    """Provider for IBM Watson X with configurable parameters"""
+
+class ToolCallExtractionError(Exception):
+    """Raised when tool call extraction or validation fails."""
+    pass
+
+
+class IBMWatsonXLLm(AbstractLLMProvider):
+    """
+    Provider for IBM Watson X with configurable parameters.
+
+    Self-contained: all conversion logic is inline.
+    Uses OpenAI-compatible dict format for messages and responses.
+    """
+
+    MAX_EXTRACTION_RETRIES = 3
 
     @property
     def provider_type(self) -> Providers:
@@ -44,7 +69,7 @@ class IBMWatsonXLLm(LegacyMappingMixin, AbstractLLMProvider):
                  n: Optional[int] = None,
                  logit_bias: Optional[Dict[int, float]] = None):
         """
-        Initialize the IBM Watson X provider with dependency injection of connection
+        Initialize the IBM Watson X provider with dependency injection of connection.
 
         Args:
             connection: IBMConnection singleton (default: None, reuse from GlobalConfig if provider matches)
@@ -64,7 +89,6 @@ class IBMWatsonXLLm(LegacyMappingMixin, AbstractLLMProvider):
         Raises:
             ValueError: If connection=None and GlobalConfig does not have IBM_WATSON set
         """
-        # Dependency injection of connection with fallback to GlobalConfig
         if connection is None:
             connection = self._get_connection_from_global_config(
                 Providers.IBM_WATSON,
@@ -72,8 +96,6 @@ class IBMWatsonXLLm(LegacyMappingMixin, AbstractLLMProvider):
             )
 
         self.connection = connection
-
-        # Save model_id
         self.model_id = model_id
 
         # Build parameters
@@ -110,63 +132,240 @@ class IBMWatsonXLLm(LegacyMappingMixin, AbstractLLMProvider):
             project_id=self.connection.get_project_id()
         )
 
+    # ========== INVOKE ==========
+
     async def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
         """
-        Call the IBM Watson model with standardized messages and tools (async).
+        Call the IBM Watson model with standardized messages and tools.
 
         Uses asyncio.to_thread() to run the sync IBM SDK client without
-        blocking the event loop.
+        blocking the event loop. IBM SDK handles transport retries internally.
+        If tool call extraction fails, retries with error feedback to LLM.
         """
-        logger.debug(f"IBM Watson invoke: model={self.model_id}, messages={len(messages)}, tools={len(tools)}")
+        working_messages = list(messages)
+        converted_tools = self._convert_tools(tools)
 
-        # 1. Convert messages and tools to IBM format (use base class methods)
-        ibm_messages = self._convert_messages_to_provider_format(messages)
-        ibm_tools = self._convert_tools_to_provider_format(tools)
+        for attempt in range(1, self.MAX_EXTRACTION_RETRIES + 1):
+            logger.debug(f"IBM Watson invoke: model={self.model_id}, messages={len(working_messages)}, tools={len(converted_tools)}, attempt={attempt}")
 
-        # 2. Call IBM Watson via thread pool to avoid blocking event loop
-        # NOTE: tool_choice_option should be passed ONLY if tools are defined
-        try:
-            if ibm_tools:
+            converted_messages = self._convert_messages(working_messages)
+
+            if converted_tools:
                 response = await asyncio.to_thread(
                     self.client.chat,
-                    messages=ibm_messages,
-                    tools=ibm_tools,
+                    messages=converted_messages,
+                    tools=converted_tools,
                     tool_choice_option="auto"
                 )
             else:
                 response = await asyncio.to_thread(
                     self.client.chat,
-                    messages=ibm_messages
+                    messages=converted_messages
                 )
 
             logger.info(f"IBM Watson chat completed: {self.model_id}")
 
-            # Log usage if available
             usage = response.get("usage", {})
             if usage:
                 logger.debug(f"IBM Watson tokens: input={usage.get('prompt_tokens')}, output={usage.get('completion_tokens')}, total={usage.get('total_tokens')}")
 
-        except Exception as e:
-            logger.error(f"IBM Watson request failed: {e}")
-            raise
+            try:
+                return self._convert_response_to_assistant_message(response)
+            except ToolCallExtractionError as e:
+                if attempt >= self.MAX_EXTRACTION_RETRIES:
+                    logger.error(f"Tool call extraction failed after {attempt} attempts: {e}")
+                    raise
 
-        # 3. Convert response to standardized AssistantMessage
-        assistant_message = self._convert_response_to_assistant_message(response)
-        return assistant_message
+                logger.warning(f"Tool call extraction failed (attempt {attempt}): {e}")
 
-    def _convert_response_to_assistant_message(self, response) -> AssistantMessage:
+                error_feedback = HumanMessage(
+                    content=f"ERROR: Your tool call was malformed.\n{e}\nPlease retry with valid JSON arguments."
+                )
+                working_messages.append(error_feedback)
+
+        raise RuntimeError("Unexpected end of invoke loop")
+
+    # ========== MESSAGE CONVERSION ==========
+
+    def _convert_messages(self, messages: List[StandardMessage]) -> List[dict]:
         """
-        Convert IBM Watson response to standardized AssistantMessage
+        Convert standardized messages to IBM Watson format (OpenAI-compatible dicts).
         """
-        # Extract tool_calls using centralized method
+        converted = []
+
+        for i, msg in enumerate(messages):
+            logger.trace(f"msg[{i}] {format_message_for_trace(msg)}")
+
+            if isinstance(msg, SystemMessage):
+                converted.append({
+                    "role": "system",
+                    "content": msg.content
+                })
+
+            elif isinstance(msg, HumanMessage):
+                converted.append({
+                    "role": "user",
+                    "content": msg.content
+                })
+
+            elif isinstance(msg, AssistantMessage):
+                assistant_msg: Dict[str, Any] = {"role": "assistant"}
+
+                if msg.content:
+                    assistant_msg["content"] = msg.content
+
+                if msg.tool_calls:
+                    assistant_msg["tool_calls"] = [
+                        {
+                            "type": "function",
+                            "id": tc.id,
+                            "function": {
+                                "name": tc.name,
+                                "arguments": json.dumps(tc.arguments)
+                            }
+                        }
+                        for tc in msg.tool_calls
+                    ]
+
+                if not msg.content and not msg.tool_calls:
+                    assistant_msg["content"] = ""
+
+                converted.append(assistant_msg)
+
+            elif isinstance(msg, ToolMessage):
+                for result in msg.tool_results:
+                    converted.append({
+                        "role": "tool",
+                        "tool_call_id": result.tool_call_id,
+                        "content": str(result.result) if result.result is not None else (result.error or "No result")
+                    })
+
+        logger.debug(f"Converted {len(messages)} messages to {len(converted)} IBM Watson messages")
+        return converted
+
+    # ========== TOOL CONVERSION ==========
+
+    def _convert_tools(self, tools: List[ToolBase]) -> List[dict]:
+        """Convert tool list to OpenAI-compatible function format."""
+        if not tools:
+            return []
+
+        converted = []
+        for tool in tools:
+            schema = tool.create_schema()
+            converted.append({
+                "type": "function",
+                "function": {
+                    "name": schema.name,
+                    "description": schema.description,
+                    "parameters": schema.inputSchema
+                }
+            })
+
+        logger.debug(f"Converted {len(tools)} tools to IBM Watson format")
+        return converted
+
+    # ========== TOOL CALL EXTRACTION ==========
+
+    def _extract_tool_calls(self, response: dict) -> List[ToolCall]:
+        """
+        Extract and validate tool calls from IBM Watson response.
+
+        Path: response["choices"][0]["message"]["tool_calls"]
+        IBM returns dict-based responses (not objects like OpenAI SDK).
+
+        Raises:
+            ToolCallExtractionError: If JSON parsing or validation fails
+        """
+        choices = response.get("choices")
+        if not choices:
+            return []
+
+        message = choices[0].get("message", {})
+        raw_tool_calls = message.get("tool_calls")
+        if not raw_tool_calls:
+            return []
+
+        tool_calls = []
+        errors = []
+
+        for call in raw_tool_calls:
+            if call.get("type") != "function":
+                continue
+
+            try:
+                function = call.get("function", {})
+                arguments = function.get("arguments", "{}")
+
+                if isinstance(arguments, str):
+                    arguments = json.loads(arguments, strict=False)
+
+                # Handle double-encoding
+                while isinstance(arguments, str):
+                    arguments = json.loads(arguments, strict=False)
+
+                tool_call = ToolCall(
+                    id=call["id"],
+                    name=function["name"],
+                    arguments=arguments
+                )
+                tool_calls.append(tool_call)
+
+            except json.JSONDecodeError as e:
+                errors.append(
+                    f"Tool '{call.get('function', {}).get('name', 'unknown')}': Invalid JSON in arguments - {e.msg}"
+                )
+            except (ValidationError, KeyError) as e:
+                errors.append(
+                    f"Tool '{call.get('function', {}).get('name', 'unknown')}': {e}"
+                )
+
+        if errors:
+            raise ToolCallExtractionError(
+                "Failed to extract tool calls:\n" + "\n".join(f"  - {err}" for err in errors)
+            )
+
+        return tool_calls
+
+    # ========== RESPONSE EXTRACTION ==========
+
+    def _extract_content(self, response: dict) -> str:
+        """Extract text content from IBM Watson response."""
+        choices = response.get("choices")
+        if not choices:
+            return ""
+
+        return choices[0].get("message", {}).get("content", "") or ""
+
+    def _extract_usage(self, response: dict) -> Optional[Usage]:
+        """Extract usage information from IBM Watson response."""
+        usage = response.get("usage")
+        if not usage:
+            return None
+
+        return Usage(
+            input_tokens=usage.get("prompt_tokens", 0),
+            output_tokens=usage.get("completion_tokens", 0),
+            total_tokens=usage.get("total_tokens", 0)
+        )
+
+    def _convert_response_to_assistant_message(self, response: dict) -> AssistantMessage:
+        """
+        Convert IBM Watson response to standardized AssistantMessage.
+
+        Raises:
+            ToolCallExtractionError: If tool call extraction fails
+        """
         tool_calls = self._extract_tool_calls(response)
+        content = self._extract_content(response)
+        usage = self._extract_usage(response)
 
-        # Extract text content
-        content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
-
-        logger.debug(f"IBM Watson response: content_length={len(content)}, tool_calls={len(tool_calls)}")
+        logger.debug(
+            f"IBM Watson response: content_length={len(content)}, tool_calls={len(tool_calls)}"
+        )
 
         return AssistantMessage(
             content=content,
-            tool_calls=tool_calls
+            tool_calls=tool_calls,
+            usage=usage
         )

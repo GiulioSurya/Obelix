@@ -31,15 +31,3 @@ class Providers(Enum):
             from src.adapters.outbound.openai.provider import OpenAIProvider
             return OpenAIProvider()
         raise ValueError(f"Provider {self} not supported")
-
-
-class ProviderRegistry:
-    _mappings = {}
-
-    @classmethod
-    def register(cls, provider: Providers, mapping):
-        cls._mappings[provider.value] = mapping
-
-    @classmethod
-    def get_mapping(cls, provider: Providers):
-        return cls._mappings[provider.value]

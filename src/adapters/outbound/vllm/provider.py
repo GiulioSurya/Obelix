@@ -1,17 +1,27 @@
-# src/client_adapters/vllm_provider.py
+# src/adapters/outbound/vllm/provider.py
+"""
+vLLM Provider.
+
+Self-contained provider with inline message/tool conversion.
+No external mapping dependencies.
+
+Offline inference engine - no HTTP calls, no transport retry needed.
+Uses asyncio.to_thread() to run the sync vLLM engine without blocking.
+Tool calls are text-based: parsed from JSON in generated output text.
+"""
 import asyncio
-from typing import List, Optional, Dict, Any
+import json
+import uuid
+from typing import List, Dict, Any, Optional
+
+from pydantic import ValidationError
 
 from src.ports.outbound.llm_provider import AbstractLLMProvider
-from src.adapters.outbound._legacy.mapping_mixin import LegacyMappingMixin
-from src.domain.model.assistant_message import AssistantMessage
-from src.domain.model.standard_message import StandardMessage
+from src.domain.model import SystemMessage, HumanMessage, AssistantMessage, ToolMessage, StandardMessage
+from src.domain.model.tool_message import ToolCall
 from src.domain.tool.tool_base import ToolBase
 from src.infrastructure.providers import Providers
-from src.infrastructure.logging import get_logger
-
-# Logger for vLLM provider
-logger = get_logger(__name__)
+from src.infrastructure.logging import get_logger, format_message_for_trace
 
 try:
     from vllm import LLM
@@ -21,9 +31,24 @@ except ImportError:
         "vLLM is not installed. Install with: pip install vllm"
     )
 
+logger = get_logger(__name__)
 
-class VLLMProvider(LegacyMappingMixin, AbstractLLMProvider):
-    """Provider for vLLM with configurable parameters for offline inference"""
+
+class ToolCallExtractionError(Exception):
+    """Raised when tool call extraction or validation fails."""
+    pass
+
+
+class VLLMProvider(AbstractLLMProvider):
+    """
+    Provider for vLLM offline inference with configurable parameters.
+
+    Self-contained: all conversion logic is inline.
+    Uses OpenAI-compatible dict format for messages.
+    Tool calls are extracted from generated text (JSON parsing).
+    """
+
+    MAX_EXTRACTION_RETRIES = 3
 
     @property
     def provider_type(self) -> Providers:
@@ -50,7 +75,7 @@ class VLLMProvider(LegacyMappingMixin, AbstractLLMProvider):
                  trust_remote_code: bool = False,
                  **kwargs):
         """
-        Initialize the vLLM provider for offline inference
+        Initialize the vLLM provider for offline inference.
 
         Args:
             model_id: Model ID to load (default: "meta-llama/Llama-3.2-1B-Instruct")
@@ -70,12 +95,12 @@ class VLLMProvider(LegacyMappingMixin, AbstractLLMProvider):
             gpu_memory_utilization: Fraction of GPU memory to use (default: 0.9)
             max_model_len: Maximum context length (default: None, uses model config)
             trust_remote_code: Allow execution of remote code (default: False)
-            **kwargs: Other parameters to pass to vLLM
+            **kwargs: Other parameters to pass to vLLM engine
         """
         self.model_id = model_id
 
         # Initialize the vLLM model
-        llm_kwargs = {
+        llm_kwargs: Dict[str, Any] = {
             "model": model_id,
             "tensor_parallel_size": tensor_parallel_size,
             "dtype": dtype,
@@ -88,13 +113,12 @@ class VLLMProvider(LegacyMappingMixin, AbstractLLMProvider):
         if max_model_len is not None:
             llm_kwargs["max_model_len"] = max_model_len
 
-        # Add any extra parameters
         llm_kwargs.update(kwargs)
 
         self.llm = LLM(**llm_kwargs)
 
         # Build sampling parameters
-        sampling_params_dict = {}
+        sampling_params_dict: Dict[str, Any] = {}
 
         if temperature is not None:
             sampling_params_dict["temperature"] = temperature
@@ -119,72 +143,259 @@ class VLLMProvider(LegacyMappingMixin, AbstractLLMProvider):
 
         self.sampling_params = SamplingParams(**sampling_params_dict)
 
+    # ========== INVOKE ==========
+
     async def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
         """
-        Invoke the vLLM model with standardized messages and tools (async).
+        Call the vLLM model with standardized messages and tools.
 
         Uses asyncio.to_thread() to run the sync vLLM engine without
-        blocking the event loop.
+        blocking the event loop. Offline inference - no transport retry needed.
+        If tool call extraction fails, retries with error feedback to LLM.
         """
-        logger.debug(f"vLLM invoke: model={self.model_id}, messages={len(messages)}, tools={len(tools)}")
+        working_messages = list(messages)
+        converted_tools = self._convert_tools(tools)
 
-        # 1. Convert messages and tools to vLLM format (use base class methods)
-        vllm_messages = self._convert_messages_to_provider_format(messages)
-        vllm_tools = self._convert_tools_to_provider_format(tools)
+        for attempt in range(1, self.MAX_EXTRACTION_RETRIES + 1):
+            logger.debug(f"vLLM invoke: model={self.model_id}, messages={len(working_messages)}, tools={len(converted_tools)}, attempt={attempt}")
 
-        # 2. Call vLLM with llm.chat() via thread pool to avoid blocking event loop
-        try:
-            if vllm_tools:
+            converted_messages = self._convert_messages(working_messages)
+
+            if converted_tools:
                 outputs = await asyncio.to_thread(
                     self.llm.chat,
-                    vllm_messages,
+                    converted_messages,
                     sampling_params=self.sampling_params,
-                    tools=vllm_tools,
+                    tools=converted_tools,
                     use_tqdm=False
                 )
             else:
                 outputs = await asyncio.to_thread(
                     self.llm.chat,
-                    vllm_messages,
+                    converted_messages,
                     sampling_params=self.sampling_params,
                     use_tqdm=False
                 )
 
             logger.info(f"vLLM chat completed: {self.model_id}")
 
-            # Log usage if available
             if outputs and hasattr(outputs[0], 'metrics'):
-                metrics = outputs[0].metrics
-                logger.debug(f"vLLM metrics: {metrics}")
+                logger.debug(f"vLLM metrics: {outputs[0].metrics}")
 
-        except Exception as e:
-            logger.error(f"vLLM request failed: {e}")
-            raise
+            try:
+                return self._convert_response_to_assistant_message(outputs[0], has_tools=bool(converted_tools))
+            except ToolCallExtractionError as e:
+                if attempt >= self.MAX_EXTRACTION_RETRIES:
+                    logger.error(f"Tool call extraction failed after {attempt} attempts: {e}")
+                    raise
 
-        # 3. Convert response to standardized AssistantMessage
-        assistant_message = self._convert_response_to_assistant_message(outputs[0], vllm_tools)
-        return assistant_message
+                logger.warning(f"Tool call extraction failed (attempt {attempt}): {e}")
 
-    def _convert_response_to_assistant_message(self, output, tools: List[Dict[str, Any]]) -> AssistantMessage:
+                error_feedback = HumanMessage(
+                    content=f"ERROR: Your tool call was malformed.\n{e}\nPlease retry with valid JSON arguments."
+                )
+                working_messages.append(error_feedback)
+
+        raise RuntimeError("Unexpected end of invoke loop")
+
+    # ========== MESSAGE CONVERSION ==========
+
+    def _convert_messages(self, messages: List[StandardMessage]) -> List[dict]:
         """
-        Convert vLLM response to standardized AssistantMessage
-
-        Args:
-            output: RequestOutput from vLLM
-            tools: List of tools passed to the request (to determine if tool calls are expected)
+        Convert standardized messages to vLLM format (OpenAI-compatible dicts).
         """
-        # Extract tool_calls using centralized method (vLLM extractor requires tools)
-        tool_calls = self._extract_tool_calls(output, tools=tools)
+        converted = []
 
-        # Extract text content
-        content = ""
+        for i, msg in enumerate(messages):
+            logger.trace(f"msg[{i}] {format_message_for_trace(msg)}")
+
+            if isinstance(msg, SystemMessage):
+                converted.append({
+                    "role": "system",
+                    "content": msg.content
+                })
+
+            elif isinstance(msg, HumanMessage):
+                converted.append({
+                    "role": "user",
+                    "content": msg.content
+                })
+
+            elif isinstance(msg, AssistantMessage):
+                assistant_msg: Dict[str, Any] = {"role": "assistant"}
+
+                if msg.content:
+                    assistant_msg["content"] = msg.content
+
+                if msg.tool_calls:
+                    assistant_msg["tool_calls"] = [
+                        {
+                            "type": "function",
+                            "id": tc.id,
+                            "function": {
+                                "name": tc.name,
+                                "arguments": json.dumps(tc.arguments)
+                            }
+                        }
+                        for tc in msg.tool_calls
+                    ]
+
+                if not msg.content and not msg.tool_calls:
+                    assistant_msg["content"] = ""
+
+                converted.append(assistant_msg)
+
+            elif isinstance(msg, ToolMessage):
+                for result in msg.tool_results:
+                    converted.append({
+                        "role": "tool",
+                        "tool_call_id": result.tool_call_id,
+                        "content": str(result.result) if result.result is not None else (result.error or "No result")
+                    })
+
+        logger.debug(f"Converted {len(messages)} messages to {len(converted)} vLLM messages")
+        return converted
+
+    # ========== TOOL CONVERSION ==========
+
+    def _convert_tools(self, tools: List[ToolBase]) -> List[dict]:
+        """Convert tool list to OpenAI-compatible function format."""
+        if not tools:
+            return []
+
+        converted = []
+        for tool in tools:
+            schema = tool.create_schema()
+            converted.append({
+                "type": "function",
+                "function": {
+                    "name": schema.name,
+                    "description": schema.description,
+                    "parameters": schema.inputSchema
+                }
+            })
+
+        logger.debug(f"Converted {len(tools)} tools to vLLM format")
+        return converted
+
+    # ========== TOOL CALL EXTRACTION ==========
+
+    def _extract_tool_calls(self, output, has_tools: bool) -> List[ToolCall]:
+        """
+        Extract tool calls from vLLM output by parsing JSON from generated text.
+
+        vLLM outputs tool calls as JSON text in outputs[0].text.
+        Supports: JSON array of tool calls, single tool call object.
+
+        Raises:
+            ToolCallExtractionError: If JSON parsing or validation fails
+        """
+        if not has_tools:
+            return []
+
+        content = self._extract_raw_text(output)
+        if not content:
+            return []
+
+        # Try parsing as JSON (array or single object)
+        try:
+            parsed = json.loads(content, strict=False)
+        except json.JSONDecodeError:
+            # Try finding JSON within the text
+            return self._extract_tool_calls_from_text(content)
+
+        if isinstance(parsed, list):
+            return self._parse_tool_call_list(parsed)
+
+        if isinstance(parsed, dict) and "name" in parsed:
+            return self._parse_single_tool_call(parsed)
+
+        return []
+
+    def _parse_tool_call_list(self, items: list) -> List[ToolCall]:
+        """Parse a list of tool call dicts."""
+        tool_calls = []
+        errors = []
+
+        for item in items:
+            if not isinstance(item, dict) or "name" not in item:
+                continue
+
+            try:
+                arguments = item.get("arguments", item.get("parameters", {}))
+                tool_call = ToolCall(
+                    id=item.get("id", str(uuid.uuid4())),
+                    name=item["name"],
+                    arguments=arguments
+                )
+                tool_calls.append(tool_call)
+            except (ValidationError, KeyError) as e:
+                errors.append(f"Tool '{item.get('name', 'unknown')}': {e}")
+
+        if errors and not tool_calls:
+            raise ToolCallExtractionError(
+                "Failed to extract tool calls:\n" + "\n".join(f"  - {err}" for err in errors)
+            )
+
+        return tool_calls
+
+    def _parse_single_tool_call(self, obj: dict) -> List[ToolCall]:
+        """Parse a single tool call dict."""
+        try:
+            arguments = obj.get("arguments", obj.get("parameters", {}))
+            tool_call = ToolCall(
+                id=obj.get("id", str(uuid.uuid4())),
+                name=obj["name"],
+                arguments=arguments
+            )
+            return [tool_call]
+        except (ValidationError, KeyError) as e:
+            raise ToolCallExtractionError(
+                f"Failed to extract tool call '{obj.get('name', 'unknown')}': {e}"
+            )
+
+    def _extract_tool_calls_from_text(self, content: str) -> List[ToolCall]:
+        """Fallback: find and parse JSON object from text content."""
+        start_pos = content.find('{')
+        if start_pos == -1:
+            return []
+
+        json_content = content[start_pos:].replace("\\'", "'")
+
+        try:
+            decoder = json.JSONDecoder()
+            obj, _ = decoder.raw_decode(json_content, 0)
+
+            if isinstance(obj, dict) and "name" in obj:
+                return self._parse_single_tool_call(obj)
+        except json.JSONDecodeError:
+            pass
+
+        return []
+
+    # ========== RESPONSE EXTRACTION ==========
+
+    def _extract_raw_text(self, output) -> str:
+        """Extract raw text from vLLM RequestOutput."""
         if hasattr(output, 'outputs') and output.outputs:
-            # output.outputs is a list of CompletionOutput
             first_output = output.outputs[0]
             if hasattr(first_output, 'text'):
-                content = first_output.text.strip()
+                return first_output.text.strip()
+        return ""
 
-        logger.debug(f"vLLM response: content_length={len(content)}, tool_calls={len(tool_calls)}")
+    def _convert_response_to_assistant_message(self, output, has_tools: bool) -> AssistantMessage:
+        """
+        Convert vLLM output to standardized AssistantMessage.
+
+        Raises:
+            ToolCallExtractionError: If tool call extraction fails
+        """
+        tool_calls = self._extract_tool_calls(output, has_tools)
+        content = self._extract_raw_text(output) if not tool_calls else ""
+
+        logger.debug(
+            f"vLLM response: content_length={len(content)}, tool_calls={len(tool_calls)}"
+        )
 
         return AssistantMessage(
             content=content,
