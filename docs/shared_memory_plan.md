@@ -418,7 +418,7 @@ def _inject_shared_memory(self, status: AgentStatus):
             content=f"Shared context from {mem.source_id}:\n{mem.content}",
             metadata={"shared_memory": True, "source": mem.source_id}
         )
-        # Insert after system message, before user messages
+        # Insert after system message, before user obelix_types
         self.conversation_history.insert(1, msg)
 
 def _publish_to_memory(self, status: AgentStatus):

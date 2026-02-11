@@ -38,6 +38,9 @@ setup(
 
         # Core - Configuration
         "pyyaml>=6.0.0",
+
+        # Core - Retry/Resilience
+        "tenacity>=9.0.0",
     ],
     extras_require={
         # LLM Providers (optional)

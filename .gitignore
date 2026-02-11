@@ -359,12 +359,9 @@ test-results/
 
 # Claude Code instructions and planning docs
 CLAUDE.md
-src/base_agent/subagent_implementation_plan.md
-src/base_agent/blackboard.md
-src/base_agent/AGENT_FACTORY.md
-src/base_agent/AGENT_FACTORY_FINAL.md
 docs/shared_memory_plan.md
-src/base_agent/STRUCTURED_OUTPUT_PLAN.md
+docs/INBOUND_ARCHITECTURE_PLAN.md
+
 
 
 # ============================================================================
