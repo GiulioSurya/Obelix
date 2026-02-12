@@ -13,6 +13,7 @@ from src.infrastructure.config import GlobalConfig
 from src.infrastructure.providers import Providers
 from src.adapters.outbound.openai.connection import OpenAIConnection
 from src.adapters.outbound.anthropic.connection import AnthropicConnection
+from src.adapters.outbound.ollama.provider import OllamaProvider
 from src.adapters.outbound.oci.connection import OCIConnection
 from src.adapters.outbound.openai.provider import OpenAIProvider
 from src.adapters.outbound.anthropic.provider import AnthropicProvider
@@ -30,16 +31,17 @@ setup_logging(console_level="TRACE")
 
 # ========== CONFIGURAZIONE PROVIDER ==========
 api_key = os.getenv("ANTHROPIC_API_KEY")
-if not api_key:
-    raise ValueError("ANTHROPIC_API_KEY non trovata in .env")
 
+#open ai
 openai_connection = OpenAIConnection(
     api_key=api_key,
     base_url="https://api.anthropic.com/v1/"
 )
 
+#anthrtopic
 anthropic_connection = AnthropicConnection(api_key=api_key)
 
+#oci
 infra_config = YamlConfig(os.getenv("INFRASTRUCTURE_CONFIG_PATH"))
 oci_provider_config = infra_config.get("llm_providers.oci")
 
@@ -52,6 +54,11 @@ oci_config = {
 }
 
 oci_connection = OCIConnection(oci_config)
+#ollama
+
+ollama = OllamaProvider(model_id="MFDoom/deepseek-r1-tool-calling:8b")
+
+
 GlobalConfig().set_provider(provider=Providers.OCI_GENERATIVE_AI, connection=oci_connection)
 
 
@@ -86,7 +93,8 @@ class MathAgent(BaseAgent):
     def __init__(self):
         super().__init__(
             system_message="sei un esperto di matematica dotato di tool per fare calcoli, usalo per risolverli.",
-            provider=OCILLm(connection=oci_connection, model_id="openai.gpt-oss-120b"),
+            provider=ollama,
+            #OCILLm(connection=oci_connection, model_id="openai.gpt-oss-120b"),
             tool_policy=[
                 ToolRequirement(
                     tool_name="calculator",
