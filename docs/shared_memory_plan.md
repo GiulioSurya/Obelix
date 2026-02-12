@@ -847,9 +847,9 @@ def _attach_from_registry(self, agent, sub_name, extra_config):
 
 ```python
 def _inject_dependency_awareness(
-    self,
-    agent: 'BaseAgent',
-    subagent_refs: List[Union[str, 'BaseAgent']],
+        self,
+        agent: 'BaseAgent',
+        subagent_refs: List[Union[str, 'BaseAgent']],
 ) -> None:
     """Inietta il system message di awareness delle dipendenze nell'orchestratore.
 
@@ -861,7 +861,7 @@ def _inject_dependency_awareness(
         agent: l'agent orchestratore
         subagent_refs: lista di nomi dei sub-agent
     """
-    from src.domain.model.system_message import SystemMessage
+    from src.core.model.system_message import SystemMessage
 
     # Estrai solo i nomi stringa
     subagent_names = [s for s in subagent_refs if isinstance(s, str)]
@@ -942,7 +942,7 @@ Aggiungere l'import in TYPE_CHECKING (riga 1-18):
 
 ```python
 if TYPE_CHECKING:
-    from src.domain.agent.shared_memory import SharedMemoryGraph
+    from src.core.agent.shared_memory import SharedMemoryGraph
 ```
 
 ### Nuovi metodi
@@ -1210,11 +1210,11 @@ Quando `stateless=False` (default in `register_agent()`):
 ## 13. Esempio Completo End-to-End
 
 ```python
-from src.domain.agent import BaseAgent
-from src.domain.agent.agent_factory import AgentFactory
-from src.domain.agent.shared_memory import SharedMemoryGraph
-from src.domain.tool.tool_decorator import tool
-from src.domain.tool.tool_base import ToolBase
+from src.core.agent import BaseAgent
+from src.core.agent.agent_factory import AgentFactory
+from src.core.agent.shared_memory import SharedMemoryGraph
+from src.core.tool.tool_decorator import tool
+from src.core.tool.tool_base import ToolBase
 from pydantic import Field
 
 
@@ -1256,9 +1256,9 @@ class CoordinatorAgent(BaseAgent):
 
 # 1. Crea il grafo di dipendenze
 graph = SharedMemoryGraph()
-graph.add_edge("requirements", "designer")       # designer dipende da requirements
-graph.add_edge("requirements", "implementer")    # implementer dipende da requirements
-graph.add_edge("designer", "implementer")        # implementer dipende anche da designer
+graph.add_edge("requirements", "designer")  # designer dipende da requirements
+graph.add_edge("requirements", "implementer")  # implementer dipende da requirements
+graph.add_edge("designer", "implementer")  # implementer dipende anche da designer
 
 # 2. Crea la factory e attacca il grafo
 factory = AgentFactory()
@@ -1269,7 +1269,7 @@ factory.register(
     "requirements",
     RequirementsAgent,
     subagent_description="Extracts and analyzes project requirements",
-    stateless=True,        # raccomandato per shared memory
+    stateless=True,  # raccomandato per shared memory
 )
 factory.register(
     "designer",

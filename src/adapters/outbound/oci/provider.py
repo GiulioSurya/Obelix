@@ -29,9 +29,9 @@ except ImportError:
     )
 
 from src.ports.outbound.llm_provider import AbstractLLMProvider
-from src.domain.model import SystemMessage, StandardMessage, AssistantMessage
-from src.domain.model.usage import Usage
-from src.domain.tool.tool_base import ToolBase
+from src.core.model import SystemMessage, StandardMessage, AssistantMessage
+from src.core.model.usage import Usage
+from src.core.tool.tool_base import ToolBase
 from src.infrastructure.providers import Providers
 from src.adapters.outbound.oci.connection import OCIConnection
 from src.adapters.outbound.oci.connection import (

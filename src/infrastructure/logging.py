@@ -173,7 +173,7 @@ def setup_logging(
     if _is_configured:
         return
 
-    # Create log directory if it doesn't exist
+    # Create log sql if it doesn't exist
     log_path = Path(log_dir)
     log_path.mkdir(parents=True, exist_ok=True)
 
@@ -248,7 +248,7 @@ def get_logger(name: str):
         logger.error("Error during execution")
 
     Note:
-        - __name__ returns module path (e.g. "src.domain.agent.base_agent")
+        - __name__ returns module path (e.g. "src.core.agent.base_agent")
         - Returned logger is always the same global Loguru logger,
           but with additional context (the name)
         - If setup_logging() wasn't called, behavior is Loguru's default (stderr)
@@ -280,8 +280,8 @@ def format_message_for_trace(message, max_chars: int = 2500) -> str:
     msg_type = type(message).__name__
 
     # Import here to avoid circular imports
-    from src.domain.model.assistant_message import AssistantMessage
-    from src.domain.model.tool_message import ToolMessage
+    from src.core.model.assistant_message import AssistantMessage
+    from src.core.model.tool_message import ToolMessage
 
     if isinstance(message, AssistantMessage):
         parts = []

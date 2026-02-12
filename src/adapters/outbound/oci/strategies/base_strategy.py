@@ -13,9 +13,9 @@ from typing import List, Any, Dict, Optional, Union
 
 from oci.generative_ai_inference.models import BaseChatRequest, Message
 
-from src.domain.model.standard_message import StandardMessage
-from src.domain.model.tool_message import ToolCall
-from src.domain.tool.tool_base import ToolBase
+from src.core.model.standard_message import StandardMessage
+from src.core.model.tool_message import ToolCall
+from src.core.tool.tool_base import ToolBase
 
 
 class OCIRequestStrategy(ABC):

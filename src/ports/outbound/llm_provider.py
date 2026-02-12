@@ -8,9 +8,9 @@ self-contained for message/tool conversion and response parsing.
 from abc import ABC, abstractmethod
 from typing import List, Any, TYPE_CHECKING
 
-from src.domain.model.standard_message import StandardMessage
-from src.domain.model.assistant_message import AssistantMessage
-from src.domain.tool.tool_base import ToolBase
+from src.core.model.standard_message import StandardMessage
+from src.core.model.assistant_message import AssistantMessage
+from src.core.tool.tool_base import ToolBase
 from src.infrastructure.logging import get_logger
 
 if TYPE_CHECKING:

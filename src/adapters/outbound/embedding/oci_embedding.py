@@ -57,7 +57,7 @@ class OCIEmbeddingProvider(AbstractEmbeddingProvider):
 
         # Read complete OCI configuration from infrastructure.yaml (includes private_key_content)
         infra_config = YamlConfig(os.getenv("INFRASTRUCTURE_CONFIG_PATH"))
-        oci_provider_config = infra_config.get("client_adapters.oci")
+        oci_provider_config = infra_config.get("llm_providers.oci")
 
         # Validate presence of private key
         if not oci_provider_config.get("private_key_content"):

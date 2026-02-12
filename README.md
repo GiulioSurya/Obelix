@@ -122,7 +122,7 @@ This works out of the box - no hooks required. The error message from Pydantic i
 ## Quick Start
 
 ```python
-from src.domain.agent import BaseAgent
+from src.core.agent import BaseAgent
 from src.infrastructure.logging import setup_logging
 
 setup_logging()
@@ -143,9 +143,10 @@ Tools allow agents to perform concrete actions like fetching data, creating char
 Tools are created by extending `ToolBase` and using the `@tool` decorator:
 
 ```python
-from src.domain.tool.tool_decorator import tool
-from src.domain.tool.tool_base import ToolBase
+from src.core.tool.tool_decorator import tool
+from src.core.tool.tool_base import ToolBase
 from pydantic import Field
+
 
 @tool(name="calculator", description="Performs basic arithmetic operations")
 class CalculatorTool(ToolBase):
@@ -247,7 +248,8 @@ Agents orchestrate conversations with LLMs and execute tools based on the model'
 ### Basic Agent
 
 ```python
-from src.domain.agent import BaseAgent
+from src.core.agent import BaseAgent
+
 
 class MyAgent(BaseAgent):
     def __init__(self):
@@ -261,7 +263,7 @@ class MyAgent(BaseAgent):
 Tools can be registered via the `tools` parameter or the `register_tool()` method:
 
 ```python
-from src.domain.agent import BaseAgent
+from src.core.agent import BaseAgent
 
 # Option 1: tools parameter (single tool or list)
 agent = BaseAgent(
@@ -275,6 +277,7 @@ agent = BaseAgent(
     system_message="You are a helpful assistant.",
     tools=[CalculatorTool, WeatherTool(api_client)]  # Mix classes and instances
 )
+
 
 # Option 3: register_tool() method
 class ToolEquippedAgent(BaseAgent):
@@ -296,9 +299,9 @@ Hooks intercept agent lifecycle events enabling **validation**, **error recovery
 - **Result enrichment**: Transform tool results (e.g., fetch docs for error codes)
 
 ```python
-from src.domain.agent import BaseAgent
-from src.domain.agent.hooks import AgentEvent, HookDecision, AgentStatus
-from src.domain.model import SystemMessage
+from src.core.agent import BaseAgent
+from src.core.agent.hooks import AgentEvent, HookDecision, AgentStatus
+from src.core.model import SystemMessage
 
 
 class ValidatingAgent(BaseAgent):
@@ -306,12 +309,12 @@ class ValidatingAgent(BaseAgent):
         super().__init__(system_message="...")
 
         # Validate output contains required tag, retry if missing
-        self.on(AgentEvent.BEFORE_FINAL_RESPONSE) \
-            .when(self._missing_answer_tag) \
+        self.on(AgentEvent.BEFORE_FINAL_RESPONSE)
+            .when(self._missing_answer_tag)
             .handle(
-                decision=HookDecision.RETRY,
-                effects=[self._inject_format_guidance]
-            )
+            decision=HookDecision.RETRY,
+            effects=[self._inject_format_guidance]
+        )
 
     def _missing_answer_tag(self, ctx: AgentStatus) -> bool:
         content = ctx.assistant_message.content or ""
@@ -365,7 +368,7 @@ self.on(AgentEvent.EVENT_NAME) \
 Tool policies enforce that specific tools must be called before the agent can respond. Useful for ensuring required actions are performed.
 
 ```python
-from src.domain.model.tool_message import ToolRequirement
+from src.core.model.tool_message import ToolRequirement
 
 agent = BaseAgent(
     system_message="You are a SQL assistant.",
@@ -396,16 +399,19 @@ Obelix supports hierarchical agent composition. Any agent can register other age
 #### Direct Registration
 
 ```python
-from src.domain.agent import BaseAgent
+from src.core.agent import BaseAgent
+
 
 class SQLAnalyzerAgent(BaseAgent):
     def __init__(self):
         super().__init__(system_message="You are a SQL expert.")
         self.register_tool(SQLQueryTool())
 
+
 class CoordinatorAgent(BaseAgent):
     def __init__(self):
         super().__init__(system_message="You coordinate database tasks.")
+
 
 # Any agent can register sub-agents directly
 coordinator = CoordinatorAgent()
@@ -421,8 +427,8 @@ response = coordinator.execute_query("Why is this query failing? Error: ORA-0094
 #### Using Agent Factory
 
 ```python
-from src.domain.agent import BaseAgent
-from src.domain.agent.agent_factory import AgentFactory
+from src.core.agent import BaseAgent
+from src.core.agent.agent_factory import AgentFactory
 
 factory = AgentFactory()
 
@@ -505,7 +511,7 @@ Connection (credentials, singleton client, thread-safe)
 ```python
 from src.adapters.outbound.anthropic.connection import AnthropicConnection
 from src.adapters.outbound.anthropic.provider import AnthropicProvider
-from src.domain.agent import BaseAgent
+from src.core.agent import BaseAgent
 
 # 1. Create connection (reads ANTHROPIC_API_KEY from env)
 connection = AnthropicConnection()
@@ -552,7 +558,7 @@ config.set_provider(Providers.ANTHROPIC, connection=connection)
 Any agent will automatically use the configured provider if no provider is passed:
 
 ```python
-from src.domain.agent import BaseAgent
+from src.core.agent import BaseAgent
 
 agent = BaseAgent(
     system_message="You are a helpful assistant.",
@@ -605,7 +611,7 @@ setup_logging()
 setup_logging(
     level="DEBUG",           # Minimum level for file logging
     console_level="INFO",    # Minimum level for console output
-    log_dir="logs",          # Log directory
+    log_dir="logs",          # Log sql
     log_filename="app.log"   # Log file name
 )
 ```

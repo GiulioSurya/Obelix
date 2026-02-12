@@ -32,12 +32,12 @@ from oci.generative_ai_inference.models import (
 
 from src.adapters.outbound.oci.strategies.base_strategy import OCIRequestStrategy
 from src.adapters.outbound.oci.strategies.generic_strategy import ToolCallExtractionError
-from src.domain.model.standard_message import StandardMessage
-from src.domain.model.human_message import HumanMessage
-from src.domain.model.system_message import SystemMessage
-from src.domain.model.assistant_message import AssistantMessage
-from src.domain.model.tool_message import ToolMessage, ToolCall
-from src.domain.tool.tool_base import ToolBase
+from src.core.model.standard_message import StandardMessage
+from src.core.model.human_message import HumanMessage
+from src.core.model.system_message import SystemMessage
+from src.core.model.assistant_message import AssistantMessage
+from src.core.model.tool_message import ToolMessage, ToolCall
+from src.core.tool.tool_base import ToolBase
 from src.infrastructure.logging import get_logger, format_message_for_trace
 
 logger = get_logger(__name__)

@@ -17,9 +17,9 @@ from typing import List, Dict, Any, Optional
 from pydantic import ValidationError
 
 from src.ports.outbound.llm_provider import AbstractLLMProvider
-from src.domain.model import SystemMessage, HumanMessage, AssistantMessage, ToolMessage, StandardMessage
-from src.domain.model.tool_message import ToolCall
-from src.domain.tool.tool_base import ToolBase
+from src.core.model import SystemMessage, HumanMessage, AssistantMessage, ToolMessage, StandardMessage
+from src.core.model.tool_message import ToolCall
+from src.core.tool.tool_base import ToolBase
 from src.infrastructure.providers import Providers
 from src.infrastructure.logging import get_logger, format_message_for_trace
 

@@ -10,8 +10,8 @@ from typing import List
 
 from pydantic import BaseModel, Field
 
-from src.domain.tool.tool_decorator import tool
-from src.domain.tool.tool_base import ToolBase
+from src.core.tool.tool_decorator import tool
+from src.core.tool.tool_base import ToolBase
 
 
 class QuestionOption(BaseModel):

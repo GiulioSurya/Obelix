@@ -2,8 +2,8 @@
 import time
 from typing import Any
 
-from src.domain.tool.tool_base import ToolBase
-from src.domain.model.tool_message import ToolCall, ToolResult, ToolStatus, MCPToolSchema
+from src.core.tool.tool_base import ToolBase
+from src.core.model.tool_message import ToolCall, ToolResult, ToolStatus, MCPToolSchema
 from src.plugins.mcp.run_time_manager import MCPRuntimeManager
 
 
