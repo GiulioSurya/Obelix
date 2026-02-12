@@ -6,7 +6,7 @@ Self-contained provider with inline message/tool conversion.
 No external mapping dependencies.
 """
 import logging
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Type
 
 from tenacity import (
     retry,
@@ -113,7 +113,12 @@ class AnthropicProvider(AbstractLLMProvider):
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True,
     )
-    async def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
+    async def invoke(
+        self,
+        messages: List[StandardMessage],
+        tools: List[ToolBase],
+        response_schema: Optional[Type["BaseModel"]] = None,
+    ) -> AssistantMessage:
         """
         Call the Anthropic model with standardized messages and tools.
 

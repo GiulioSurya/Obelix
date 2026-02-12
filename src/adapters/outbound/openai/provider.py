@@ -10,7 +10,7 @@ Supports OpenAI GPT models and any OpenAI-compatible API
 """
 import json
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Type
 
 from pydantic import ValidationError
 from tenacity import (
@@ -138,7 +138,12 @@ class OpenAIProvider(AbstractLLMProvider):
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True,
     )
-    async def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
+    async def invoke(
+        self,
+        messages: List[StandardMessage],
+        tools: List[ToolBase],
+        response_schema: Optional[Type["BaseModel"]] = None,
+    ) -> AssistantMessage:
         """
         Call the OpenAI model with standardized messages and tools.
 

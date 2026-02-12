@@ -12,7 +12,7 @@ Tool calls are text-based: parsed from JSON in generated output text.
 import asyncio
 import json
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Type
 
 from pydantic import ValidationError
 
@@ -145,7 +145,12 @@ class VLLMProvider(AbstractLLMProvider):
 
     # ========== INVOKE ==========
 
-    async def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
+    async def invoke(
+        self,
+        messages: List[StandardMessage],
+        tools: List[ToolBase],
+        response_schema: Optional[Type["BaseModel"]] = None,
+    ) -> AssistantMessage:
         """
         Call the vLLM model with standardized messages and tools.
 

@@ -3,7 +3,9 @@
 Agent per selezionare colonne rilevanti in base alla domanda utente.
 """
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Type
+
+from pydantic import BaseModel
 
 from src.core.agent import BaseAgent
 from sql.sql_tools.column_filter_tool import ColumnFilterTool
@@ -20,6 +22,7 @@ class ColumnFilterAgent(BaseAgent):
         cache_path: Path,
         provider: Optional[AbstractLLMProvider] = None,
         max_iterations: int = 5,
+        response_schema: Optional[Type[BaseModel]] = None,
     ):
         schema_sql = generate_sql_schema(cache_path)
         agents_config = YamlConfig(os.getenv("CONFIG_PATH"))
@@ -32,6 +35,7 @@ class ColumnFilterAgent(BaseAgent):
             tool_policy=[
                 ToolRequirement(tool_name="column_filter", min_calls=1, require_success=True)
             ],
+            response_schema=response_schema,
         )
 
         self.register_tool(ColumnFilterTool())

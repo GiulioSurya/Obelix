@@ -4,6 +4,8 @@ import inspect
 import time
 from typing import List, Optional, Dict, Any, Union, Type, Tuple, Set, TYPE_CHECKING
 
+from pydantic import BaseModel
+
 from src.infrastructure.logging import get_logger
 
 if TYPE_CHECKING:
@@ -33,10 +35,12 @@ class BaseAgent:
         tools: Optional[Union[ToolBase, Type[ToolBase], List[Union[Type[ToolBase], ToolBase]]]] = None,
         tool_policy: Optional[List[ToolRequirement]] = None,
         exit_on_success: Optional[List[str]] = None,
+        response_schema: Optional[Type[BaseModel]] = None,
     ):
         self.system_message = SystemMessage(content=system_message)
         self.max_iterations = max_iterations
         self._exit_on_success: Set[str] = set(exit_on_success) if exit_on_success else set()
+        self.response_schema = response_schema
 
         self.provider = provider or GlobalConfig().get_current_provider_instance()
 
@@ -249,7 +253,9 @@ class BaseAgent:
             if outcome.decision == HookDecision.FAIL:
                 raise RuntimeError("Hook BEFORE_LLM_CALL requested FAIL")
 
-            assistant_msg = await self.provider.invoke(self.conversation_history, self.registered_tools)
+            assistant_msg = await self.provider.invoke(
+                self.conversation_history, self.registered_tools, self.response_schema
+            )
 
             outcome = await self._run_hooks(
                 AgentEvent.AFTER_LLM_CALL,

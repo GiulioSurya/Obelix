@@ -11,7 +11,7 @@ so tenacity is NOT needed here - only ToolCallExtractionError retry loop.
 """
 import asyncio
 import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Type
 
 from pydantic import ValidationError
 
@@ -134,7 +134,12 @@ class IBMWatsonXLLm(AbstractLLMProvider):
 
     # ========== INVOKE ==========
 
-    async def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
+    async def invoke(
+        self,
+        messages: List[StandardMessage],
+        tools: List[ToolBase],
+        response_schema: Optional[Type["BaseModel"]] = None,
+    ) -> AssistantMessage:
         """
         Call the IBM Watson model with standardized messages and tools.
 

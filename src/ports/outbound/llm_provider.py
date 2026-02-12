@@ -6,7 +6,9 @@ Pure ABC contract: each provider implements invoke() and is fully
 self-contained for message/tool conversion and response parsing.
 """
 from abc import ABC, abstractmethod
-from typing import List, Any, TYPE_CHECKING
+from typing import List, Any, Optional, Type, TYPE_CHECKING
+
+from pydantic import BaseModel
 
 from src.core.model.standard_message import StandardMessage
 from src.core.model.assistant_message import AssistantMessage
@@ -39,13 +41,21 @@ class AbstractLLMProvider(ABC):
         pass
 
     @abstractmethod
-    async def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
+    async def invoke(
+        self,
+        messages: List[StandardMessage],
+        tools: List[ToolBase],
+        response_schema: Optional[Type[BaseModel]] = None,
+    ) -> AssistantMessage:
         """
         Call the LLM with standardized messages and tools.
 
         Args:
             messages: List of messages in StandardMessage format
             tools: List of available tools
+            response_schema: Optional Pydantic BaseModel class for structured JSON output.
+                If None, the LLM responds with free-form text.
+                If specified, the LLM response follows the JSON schema derived from the model.
 
         Returns:
             AssistantMessage with model response

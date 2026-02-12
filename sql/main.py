@@ -12,8 +12,10 @@ lo schema arricchito a runtime prima di generare/eseguire la query SQL.
 """
 import os
 from pathlib import Path
+from typing import Optional, List
 
 from dotenv import load_dotenv
+from pydantic import BaseModel, Field
 
 from sql.agents import QueryEnhancementAgent, ColumnFilterAgent, CoordinatorAgent
 from sql.connections.db_connection.oracle_connection import (
@@ -36,6 +38,20 @@ setup_logging(console_level="TRACE")
 # ========== PATHS ==========
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_CACHE_PATH = PROJECT_ROOT / "sql" / "database" / "cache" / "schema_cache" / "bilancio_schema.json"
+
+
+# ========== STRUCTURED OUTPUT SCHEMA ==========
+class ColumnFilterOutput(BaseModel):
+    """Schema per la risposta strutturata del ColumnFilterAgent.
+    Formato atteso da SemanticSchemaBuilder.enrich_schema(filter=...)."""
+    VISTA_BILANCIO_ENTRATA_AI: Optional[List[str]] = Field(
+        default=None,
+        description="Colonne selezionate dalla vista bilancio entrata",
+    )
+    VISTA_BILANCIO_SPESA_AI: Optional[List[str]] = Field(
+        default=None,
+        description="Colonne selezionate dalla vista bilancio spesa",
+    )
 
 
 # ========== PROVIDER SETUP ==========
@@ -87,6 +103,7 @@ def create_factory() -> AgentFactory:
         defaults={
             "cache_path": SCHEMA_CACHE_PATH,
             "provider": provider,
+            "response_schema": ColumnFilterOutput,
         },
     )
 

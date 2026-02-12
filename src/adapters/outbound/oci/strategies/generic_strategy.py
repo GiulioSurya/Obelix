@@ -298,7 +298,8 @@ class GenericRequestStrategy(OCIRequestStrategy):
             "logit_bias",
             "is_parallel_tool_calls",
             "seed",
-            "metadata"
+            "metadata",
+            "response_format",
         ]
 
         for param in generic_specific_params:

@@ -6,9 +6,10 @@ Self-contained provider with strategy-based request handling.
 No external mapping dependencies - all conversion logic is in strategies.
 """
 import logging
-from typing import List, Optional
+from typing import List, Optional, Type
 
 import httpx
+from pydantic import BaseModel
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -22,6 +23,8 @@ try:
     from oci.generative_ai_inference.models import (
         ChatDetails,
         OnDemandServingMode,
+        JsonSchemaResponseFormat,
+        ResponseJsonSchema,
     )
 except ImportError:
     raise ImportError(
@@ -162,12 +165,22 @@ class OCILLm(AbstractLLMProvider):
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True,
     )
-    async def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
+    async def invoke(
+        self,
+        messages: List[StandardMessage],
+        tools: List[ToolBase],
+        response_schema: Optional[Type[BaseModel]] = None,
+    ) -> AssistantMessage:
         """
         Call the OCI model with standardized messages and tools.
 
         Uses the strategy for all format conversion (messages, tools, response).
         If tool call extraction fails, retries with error feedback to LLM.
+
+        Args:
+            messages: List of messages in StandardMessage format
+            tools: List of available tools
+            response_schema: Optional Pydantic BaseModel for structured JSON output
         """
         from src.infrastructure.k8s import YamlConfig
         import os
@@ -180,13 +193,30 @@ class OCILLm(AbstractLLMProvider):
         working_messages = list(messages)
         converted_tools = self.strategy.convert_tools(tools)
 
+        # Convert Pydantic BaseModel -> OCI JsonSchemaResponseFormat
+        oci_response_format = None
+        if response_schema is not None:
+            oci_response_format = JsonSchemaResponseFormat(
+                json_schema=ResponseJsonSchema(
+                    name=response_schema.__name__,
+                    schema=response_schema.model_json_schema(),
+                    is_strict=True,
+                )
+            )
+            logger.debug(f"OCI structured output enabled: schema={response_schema.__name__}")
+
         for attempt in range(1, self.MAX_EXTRACTION_RETRIES + 1):
             # 1. Convert messages using strategy
             converted_messages = self.strategy.convert_messages(working_messages)
 
             logger.debug(f"OCI invoke: model={self.model_id}, messages={len(working_messages)}, tools={len(converted_tools)}, attempt={attempt}")
 
-            # 2. Build request using strategy
+            # 2. Build strategy kwargs (merge user kwargs + response_format)
+            strategy_kwargs = dict(self.strategy_kwargs)
+            if oci_response_format is not None:
+                strategy_kwargs["response_format"] = oci_response_format
+
+            # 3. Build request using strategy
             chat_request = self.strategy.build_request(
                 converted_messages=converted_messages,
                 converted_tools=converted_tools,
@@ -198,7 +228,7 @@ class OCILLm(AbstractLLMProvider):
                 presence_penalty=self.presence_penalty,
                 stop_sequences=self.stop_sequences,
                 is_stream=self.is_stream,
-                **self.strategy_kwargs
+                **strategy_kwargs
             )
 
             # 3. Call OCI

@@ -11,7 +11,7 @@ AsyncClient is natively async - no asyncio.to_thread() needed.
 """
 import json
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Type
 
 from pydantic import ValidationError
 from tenacity import (
@@ -119,7 +119,12 @@ class OllamaProvider(AbstractLLMProvider):
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True,
     )
-    async def invoke(self, messages: List[StandardMessage], tools: List[ToolBase]) -> AssistantMessage:
+    async def invoke(
+        self,
+        messages: List[StandardMessage],
+        tools: List[ToolBase],
+        response_schema: Optional[Type["BaseModel"]] = None,
+    ) -> AssistantMessage:
         """
         Call the Ollama model with standardized messages and tools.
 
