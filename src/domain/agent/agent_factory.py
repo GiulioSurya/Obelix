@@ -10,6 +10,7 @@ from src.infrastructure.logging import get_logger
 
 if TYPE_CHECKING:
     from src.domain.agent.base_agent import BaseAgent
+    from src.domain.agent.shared_memory import SharedMemoryGraph
 
 logger = get_logger(__name__)
 
@@ -62,6 +63,7 @@ class AgentFactory:
         """
         self._global_defaults = global_defaults or {}
         self._registry: Dict[str, AgentSpec] = {}
+        self._memory_graph: Optional['SharedMemoryGraph'] = None
 
     def register(
         self,
@@ -104,6 +106,17 @@ class AgentFactory:
         )
 
         logger.info(f"AgentFactory: registered '{name}' ({cls.__name__})")
+        return self
+
+    def with_memory_graph(self, graph: 'SharedMemoryGraph') -> 'AgentFactory':
+        """Configure the shared memory graph.
+
+        All agents created by this factory will share the SAME graph instance.
+
+        Returns:
+            self for method chaining.
+        """
+        self._memory_graph = graph
         return self
 
     def create(
@@ -153,8 +166,17 @@ class AgentFactory:
 
         agent = spec.cls(**config)
 
+        # Attach shared memory graph
+        if self._memory_graph:
+            agent.memory_graph = self._memory_graph
+            agent.agent_id = name
+
         if subagents is not None:
             self._attach_subagents(agent, subagents, subagent_config or {})
+
+            # Inject dependency awareness message
+            if self._memory_graph:
+                self._inject_dependency_awareness(agent, subagents)
 
         return agent
 
@@ -196,12 +218,65 @@ class AgentFactory:
         config = {**self._global_defaults, **sub_spec.defaults, **extra_config}
         sub_agent = sub_spec.cls(**config)
 
+        # Attach shared memory graph to sub-agent
+        if self._memory_graph:
+            sub_agent.memory_graph = self._memory_graph
+            sub_agent.agent_id = sub_name
+            if not self._memory_graph.has_node(sub_name):
+                logger.warning(
+                    f"Sub-agent '{sub_name}' not found in memory graph. "
+                    "It won't participate in shared memory."
+                )
+
         agent.register_agent(
             sub_agent,
             name=sub_spec.subagent_name or sub_name,
             description=sub_spec.subagent_description,
             stateless=sub_spec.stateless,
         )
+
+    def _inject_dependency_awareness(
+        self,
+        agent: 'BaseAgent',
+        subagent_refs: list,
+    ) -> None:
+        """Inject dependency awareness system message into orchestrator."""
+        from src.domain.model.system_message import SystemMessage
+
+        subagent_names = [s for s in subagent_refs if isinstance(s, str)]
+        if not subagent_names:
+            return
+
+        edges = self._memory_graph.get_edges_for_nodes(subagent_names)
+        if not edges:
+            logger.debug("AgentFactory: no edges between sub-agents, skip awareness message")
+            return
+
+        try:
+            order = self._memory_graph.get_topological_order(subagent_names)
+            order_str = f"\nRecommended execution order: {', '.join(order)}"
+        except Exception as e:
+            logger.warning(f"AgentFactory: cannot compute topological order: {e}")
+            order_str = ""
+
+        lines = [
+            "You are coordinating sub-agents with dependencies.",
+            "",
+            "Dependency order (call upstream before downstream):",
+        ]
+        for src, dst in edges:
+            lines.append(f"  {src} -> {dst}")
+        if order_str:
+            lines.append(order_str)
+        lines.append("")
+        lines.append("Guideline: do not call an agent before its prerequisites have been executed.")
+
+        msg = SystemMessage(
+            content="\n".join(lines),
+            metadata={"orchestrator_awareness": True}
+        )
+        agent.conversation_history.insert(1, msg)
+        logger.info("AgentFactory: awareness message injected into orchestrator")
 
     # ─── Utility Methods ─────────────────────────────────────────────────────
 

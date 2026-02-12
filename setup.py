@@ -41,6 +41,9 @@ setup(
 
         # Core - Retry/Resilience
         "tenacity>=9.0.0",
+
+        # Core - Graph
+        "networkx>=3.3",
     ],
     extras_require={
         # LLM Providers (optional)

@@ -2,9 +2,13 @@
 import asyncio
 import inspect
 import time
-from typing import List, Optional, Dict, Any, Union, Type, Tuple, Set
+from typing import List, Optional, Dict, Any, Union, Type, Tuple, Set, TYPE_CHECKING
 
 from src.infrastructure.logging import get_logger
+
+if TYPE_CHECKING:
+    from src.domain.agent.shared_memory import SharedMemoryGraph
+
 from src.domain.model.system_message import SystemMessage
 from src.domain.model.human_message import HumanMessage
 from src.domain.model.assistant_message import AssistantMessage, AssistantResponse
@@ -66,6 +70,11 @@ class BaseAgent:
                     decision=HookDecision.RETRY,
                     effects=[self._tool_policy_inject_message],
                 )
+
+        # Shared memory (set by factory or manually, None if not used)
+        self.memory_graph: Optional['SharedMemoryGraph'] = None
+        self.agent_id: Optional[str] = None
+        self._register_memory_hooks()
 
     def register_tool(self, tool: ToolBase):
         """
@@ -616,6 +625,68 @@ class BaseAgent:
         """
         return self.conversation_history.copy()
 
+
+    def _register_memory_hooks(self) -> None:
+        """Register hooks for shared memory injection and publication.
+
+        Hooks check at RUNTIME if memory_graph exists.
+        If not (agent without shared memory), they do nothing.
+        """
+        self.on(AgentEvent.BEFORE_LLM_CALL).handle(
+            decision=HookDecision.CONTINUE,
+            effects=[self._inject_shared_memory],
+        )
+        self.on(AgentEvent.BEFORE_FINAL_RESPONSE).handle(
+            decision=HookDecision.CONTINUE,
+            effects=[self._publish_to_memory],
+        )
+
+    def _inject_shared_memory(self, status: AgentStatus) -> None:
+        """Pull and inject shared context from predecessor agents."""
+        if not self.memory_graph or not self.agent_id:
+            return
+
+        memories = self.memory_graph.pull_for(self.agent_id)
+        if not memories:
+            return
+
+        history = status.agent.conversation_history
+
+        for mem in memories:
+            already_injected = any(
+                isinstance(msg, SystemMessage)
+                and msg.metadata.get("shared_memory_source") == mem.source_id
+                for msg in history
+            )
+            if already_injected:
+                continue
+
+            msg = SystemMessage(
+                content=f"Shared context from {mem.source_id}:\n{mem.content}",
+                metadata={
+                    "shared_memory": True,
+                    "shared_memory_source": mem.source_id,
+                }
+            )
+            history.insert(1, msg)
+            logger.debug(
+                f"SharedMemory: injected context from '{mem.source_id}' "
+                f"into '{self.agent_id}' ({len(mem.content)} chars)"
+            )
+
+    async def _publish_to_memory(self, status: AgentStatus) -> None:
+        """Publish the agent's final response to the shared memory graph."""
+        if not self.memory_graph or not self.agent_id:
+            return
+
+        if not status.assistant_message or not status.assistant_message.content:
+            return
+
+        await self.memory_graph.publish(self.agent_id, status.assistant_message.content)
+        logger.debug(
+            f"SharedMemory: '{self.agent_id}' published "
+            f"({len(status.assistant_message.content)} chars)"
+        )
 
     def register_agent(
         self,
