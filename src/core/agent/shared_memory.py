@@ -15,6 +15,7 @@ logger = get_logger(__name__)
 
 class PropagationPolicy(str, Enum):
     FINAL_RESPONSE_ONLY = "final_response_only"
+    LAST_TOOL_RESULT = "last_tool_result"
 
 
 @dataclass
@@ -28,6 +29,7 @@ class MemoryItem:
 @dataclass
 class NodeData:
     last_final: str | None = None
+    last_tool_result: str | None = None
     timestamp: datetime | None = None
     metadata: dict = field(default_factory=dict)
 
@@ -66,15 +68,24 @@ class SharedMemoryGraph:
     def has_node(self, node_id: str) -> bool:
         return self._graph.has_node(node_id)
 
-    async def publish(self, node_id: str, content: str, metadata: dict | None = None) -> None:
+    async def publish(
+        self,
+        node_id: str,
+        content: str,
+        kind: str = "final",
+        metadata: dict | None = None,
+    ) -> None:
         async with self._lock:
             self.add_agent(node_id)
             node_data: NodeData = self._graph.nodes[node_id]["data"]
-            node_data.last_final = content
+            if kind == "tool_result":
+                node_data.last_tool_result = content
+            else:
+                node_data.last_final = content
             node_data.timestamp = datetime.now()
             if metadata:
                 node_data.metadata.update(metadata)
-            logger.info(f"SharedMemoryGraph: '{node_id}' published ({len(content)} chars)")
+            logger.info(f"SharedMemoryGraph: '{node_id}' published {kind} ({len(content)} chars)")
 
     def pull_for(self, node_id: str) -> list[MemoryItem]:
         if not self._graph.has_node(node_id):
@@ -82,14 +93,22 @@ class SharedMemoryGraph:
         items: list[MemoryItem] = []
         for pred in self._graph.predecessors(node_id):
             node_data: NodeData = self._graph.nodes[pred]["data"]
-            if node_data.last_final is None:
-                continue
             edge_data = self._graph.edges[pred, node_id]
+            policy = edge_data.get("policy", PropagationPolicy.FINAL_RESPONSE_ONLY)
+
+            if policy == PropagationPolicy.LAST_TOOL_RESULT:
+                content = node_data.last_tool_result
+            else:
+                content = node_data.last_final
+
+            if content is None:
+                continue
+
             items.append(MemoryItem(
                 source_id=pred,
-                content=node_data.last_final,
+                content=content,
                 timestamp=node_data.timestamp,
-                policy=edge_data.get("policy", PropagationPolicy.FINAL_RESPONSE_ONLY),
+                policy=policy,
             ))
         return items
 

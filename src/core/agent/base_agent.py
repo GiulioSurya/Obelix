@@ -659,40 +659,80 @@ class BaseAgent:
         history = status.agent.conversation_history
 
         for mem in memories:
-            already_injected = any(
-                isinstance(msg, SystemMessage)
-                and msg.metadata.get("shared_memory_source") == mem.source_id
-                for msg in history
-            )
-            if already_injected:
-                continue
+            existing_idx = None
+            for idx, msg in enumerate(history):
+                if (
+                    isinstance(msg, SystemMessage)
+                    and msg.metadata.get("shared_memory_source") == mem.source_id
+                ):
+                    existing_idx = idx
+                    break
 
-            msg = SystemMessage(
-                content=f"Shared context from {mem.source_id}:\n{mem.content}",
-                metadata={
-                    "shared_memory": True,
-                    "shared_memory_source": mem.source_id,
-                }
-            )
-            history.insert(1, msg)
-            logger.debug(
-                f"SharedMemory: injected context from '{mem.source_id}' "
-                f"into '{self.agent_id}' ({len(mem.content)} chars)"
-            )
+            if existing_idx is not None:
+                existing_ts = history[existing_idx].metadata.get("shared_memory_timestamp")
+                if existing_ts == mem.timestamp:
+                    continue
+
+                history[existing_idx] = SystemMessage(
+                    content=f"Shared context from {mem.source_id}:\n{mem.content}",
+                    metadata={
+                        "shared_memory": True,
+                        "shared_memory_source": mem.source_id,
+                        "shared_memory_timestamp": mem.timestamp,
+                    }
+                )
+                logger.debug(
+                    f"SharedMemory: updated context from '{mem.source_id}' "
+                    f"in '{self.agent_id}' ({len(mem.content)} chars)"
+                )
+            else:
+                msg = SystemMessage(
+                    content=f"Shared context from {mem.source_id}:\n{mem.content}",
+                    metadata={
+                        "shared_memory": True,
+                        "shared_memory_source": mem.source_id,
+                        "shared_memory_timestamp": mem.timestamp,
+                    }
+                )
+                history.insert(1, msg)
+                logger.debug(
+                    f"SharedMemory: injected context from '{mem.source_id}' "
+                    f"into '{self.agent_id}' ({len(mem.content)} chars)"
+                )
 
     async def _publish_to_memory(self, status: AgentStatus) -> None:
-        """Publish the agent's final response to the shared memory graph."""
+        """Publish the agent's final response and last tool result to the shared memory graph."""
         if not self.memory_graph or not self.agent_id:
             return
 
-        if not status.assistant_message or not status.assistant_message.content:
-            return
+        # Publish final response
+        if status.assistant_message and status.assistant_message.content:
+            await self.memory_graph.publish(self.agent_id, status.assistant_message.content)
+            logger.debug(
+                f"SharedMemory: '{self.agent_id}' published final "
+                f"({len(status.assistant_message.content)} chars)"
+            )
 
-        await self.memory_graph.publish(self.agent_id, status.assistant_message.content)
-        logger.debug(
-            f"SharedMemory: '{self.agent_id}' published "
-            f"({len(status.assistant_message.content)} chars)"
-        )
+        # Publish last successful tool result (serialized as JSON)
+        last_tool_content = self._extract_last_tool_result()
+        if last_tool_content:
+            await self.memory_graph.publish(self.agent_id, last_tool_content, kind="tool_result")
+            logger.debug(
+                f"SharedMemory: '{self.agent_id}' published tool_result "
+                f"({len(last_tool_content)} chars)"
+            )
+
+    def _extract_last_tool_result(self) -> Optional[str]:
+        """Extract the last successful tool result from conversation history, serialized as JSON."""
+        import json
+        for msg in reversed(self.conversation_history):
+            if isinstance(msg, ToolMessage):
+                for result in reversed(msg.tool_results):
+                    if result.status == ToolStatus.SUCCESS and result.result is not None:
+                        if isinstance(result.result, (dict, list)):
+                            return json.dumps(result.result, ensure_ascii=False)
+                        return str(result.result)
+        return None
 
     def register_agent(
         self,

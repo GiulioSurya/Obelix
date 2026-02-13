@@ -33,9 +33,10 @@ class ColumnFilterAgent(BaseAgent):
             provider=provider,
             max_iterations=max_iterations,
             tool_policy=[
-                ToolRequirement(tool_name="column_filter", min_calls=1, require_success=True)
+                ToolRequirement(tool_name="column_filter", min_calls=1, require_success=True, error_message="non hai chiamato il tool column filter")
             ],
             response_schema=response_schema,
+            exit_on_success=["column_filter"]
         )
 
         self.register_tool(ColumnFilterTool())

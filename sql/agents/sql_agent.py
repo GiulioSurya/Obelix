@@ -17,7 +17,7 @@ from src.infrastructure.logging import get_logger
 logger = get_logger(__name__)
 
 
-class QueryEnhancementAgent(BaseAgent):
+class SqlAgent(BaseAgent):
     """
     Agent specializzato nella generazione e esecuzione di query SQL Oracle.
 
@@ -28,10 +28,17 @@ class QueryEnhancementAgent(BaseAgent):
 
     enhanced_query: str = Field(
         default="",
-        description=(
-            "Query riformulata e ottimizzata per ricerca semantica. "
-            "Espandi la domanda utente con sinonimi, termini affini e concetti correlati "
-            "in una frase densa e scorrevole, eliminando parole superflue."
+        description=("""
+        Query riformulata e ottimizzata per ricerca semantica.
+        Espandi la domanda utente con sinonimi, termini affini e concetti correlati
+        in una frase densa e scorrevole, eliminando parole superflue.
+        questo campo sfrutta la ricerca semnantica + fuzzy per arricchire il database, più la espandi più ci sono probabilità
+        che le parole chiave verranno mostrare all'agente
+        esempio:
+        Input: “quanti finanziamenti abbiamo preso per la sostenibilità”
+        Output: “finanziamenti e contributi per iniziative legate alla sostenibilità ambientale,
+         mobilità sostenibile, tutela del territorio, energia rinnovabile e progetti ecologici”
+        """
         ),
     )
 
@@ -48,10 +55,9 @@ class QueryEnhancementAgent(BaseAgent):
             provider: LLM provider opzionale (se None, usa GlobalConfig)
         """
         self._postgres_conn = postgres_conn
-        self._schema_built = False
 
         agents_config = YamlConfig(os.getenv("CONFIG_PATH"))
-        self._system_prompt_template = agents_config.get("prompts.query_enhancement")
+        self._system_prompt_template = agents_config.get("prompts.sql_agent")
         self._search_config = agents_config.get("semantic_search")
 
         # System prompt placeholder - verrà sostituito dal hook con lo schema arricchito
@@ -59,13 +65,15 @@ class QueryEnhancementAgent(BaseAgent):
             system_message="Schema in fase di costruzione...",
             provider=provider,
             tool_policy=[
-                ToolRequirement(tool_name="sql_query_executor", min_calls=1, require_success=True)
+                ToolRequirement(tool_name="sql_query_executor", min_calls=1, require_success=True,
+                                error_message="devi utilizzare il tool sql query executor per interrogare il database")
             ],
-            exit_on_success=["sql_query_executor"],
         )
 
         sql_tool = SqlQueryExecutorTool(oracle_pool)
         self.register_tool(sql_tool)
+        from sql.sql_tools.ask_user_question_tool import AskUserQuestionTool
+        self.register_tool(AskUserQuestionTool())
 
         # Hook: costruisce schema arricchito a runtime (iteration 1, dopo shared memory injection)
         self.on(AgentEvent.BEFORE_LLM_CALL) \
@@ -86,7 +94,7 @@ class QueryEnhancementAgent(BaseAgent):
     # ─── Schema Building (runtime) ──────────────────────────────────────────
 
     def _should_build_schema(self, ctx: AgentStatus) -> bool:
-        return not self._schema_built and ctx.iteration == 1
+        return ctx.iteration == 1
 
     def _build_and_inject_schema(self, ctx: AgentStatus) -> None:
         """
@@ -106,10 +114,10 @@ class QueryEnhancementAgent(BaseAgent):
             config=self._search_config,
             filter=schema_filter,
         )
+        print(database_schema)
 
         system_prompt = self._system_prompt_template.format(database_schema=database_schema)
         ctx.agent.conversation_history[0] = SystemMessage(content=system_prompt)
-        self._schema_built = True
 
         logger.info(
             f"Schema arricchito costruito a runtime "
@@ -149,7 +157,7 @@ class QueryEnhancementAgent(BaseAgent):
                     if isinstance(parsed, dict):
                         return parsed
                 except (json.JSONDecodeError, ValueError):
-                    logger.debug("SharedMemory da column_filter non è JSON, filter=None")
+                    logger.warning("SharedMemory da column_filter non è JSON, filter=None")
         return None
 
     # ─── Oracle Error Docs ───────────────────────────────────────────────────
@@ -235,32 +243,3 @@ class QueryEnhancementAgent(BaseAgent):
             return result.model_copy(update={"error": enriched_error})
 
         return result
-
-    def _missing_plan_tag(self, ctx: AgentStatus) -> bool:
-        assistant_msg = ctx.assistant_message
-
-        if assistant_msg and assistant_msg.content and '<plan>' in assistant_msg.content:
-            logger.debug("Tag <plan> trovato nella risposta, validazione OK")
-            return False
-
-        logger.warning(f"Tag <plan> mancante nella risposta (iterazione {ctx.iteration})")
-        return True
-
-    def _inject_plan_guidance(self, ctx: AgentStatus) -> None:
-        plan_guidance_message = SystemMessage(content="""
-ATTENZIONE: La tua risposta non contiene il tag <plan> obbligatorio.
-
-Devi concludere la tua analisi con un piano strutturato racchiuso tra i tag <plan>...</plan>.
-
-Il piano deve contenere le decisioni tecniche per costruire la query SQL:
-1. **TABELLE**: quali tabelle usare e perché
-2. **COLONNE**: quali colonne selezionare (con le coppie codice-descrizione se applicabile)
-3. **FILTRI**: condizioni WHERE con operatori (=, LIKE, IN) e valori specifici
-4. **JOIN**: se necessari, specifica tabelle e condizioni di join
-5. **AGGREGAZIONI**: GROUP BY, funzioni aggregate (SUM, COUNT, etc.)
-6. **ORDINAMENTO**: ORDER BY se richiesto
-
-Basandoti sul tuo ragionamento interno, produci il <plan> corrispondente.
-""")
-
-        ctx.agent.conversation_history.append(plan_guidance_message)

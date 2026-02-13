@@ -443,7 +443,10 @@ class OCIAsyncHttpClient:
         if status == 409 and code == "IncorrectState":
             raise OCIIncorrectStateError(**error_kwargs)
 
-        if status == 400 and "Unsafe Text detected" in message:
+        if status == 400 and (
+            "Unsafe Text detected" in message
+            or "moderation system flagged" in message
+        ):
             raise OCIContentModerationError(**error_kwargs)
 
         raise OCIServiceError(**error_kwargs)

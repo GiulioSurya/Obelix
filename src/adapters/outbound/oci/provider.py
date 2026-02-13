@@ -239,8 +239,27 @@ class OCILLm(AbstractLLMProvider):
             )
 
             response = await client.chat(chat_details)
+
             logger.info(f"OCI chat completed: {response.data.model_id}")
             logger.debug(f"OCI response total tokens: {response.data.chat_response.usage.total_tokens}")
+
+            # DEBUG TEMP: print tool calls for column_filter and sql_query_executor
+            try:
+                raw_calls = response.data.data["chatResponse"]["choices"][0]["message"].get("toolCalls", [])
+                for tc in raw_calls:
+                    if tc.get("name") in ("column_filter", "sql_query_executor", "sql_agent"):
+                        import json
+                        print(f"TOOL CALL: {tc['name']}")
+                        args = tc.get("arguments", "")
+                        try:
+                            parsed = json.loads(args)
+                            for k, v in parsed.items():
+                                print(f"  {k}: {v}")
+                        except (json.JSONDecodeError, TypeError):
+                            print(args)
+                        print(f"{'='*50}")
+            except (KeyError, IndexError, TypeError):
+                pass
 
             # 4. Try to convert response - may raise ToolCallExtractionError
             try:
