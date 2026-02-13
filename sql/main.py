@@ -66,6 +66,7 @@ def create_memory_graph() -> SharedMemoryGraph:
     graph.add_agent("column_filter")
     graph.add_agent("sql_agent")
     graph.add_edge("column_filter", "sql_agent", policy=PropagationPolicy.LAST_TOOL_RESULT)
+    graph.add_edge("sql_agent", "coordinator", policy=PropagationPolicy.LAST_TOOL_RESULT)
     return graph
 
 

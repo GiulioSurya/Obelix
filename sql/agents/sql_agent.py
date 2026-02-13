@@ -4,11 +4,13 @@ import os
 import re
 import oracledb
 import httpx
+import pandas as pd
 from bs4 import BeautifulSoup
 from pydantic import Field
 from src.core.agent import BaseAgent, AgentEvent, HookDecision, AgentStatus
 from sql.sql_tools.sql_query_executor_tool import SqlQueryExecutorTool
 from sql.database.schema.semantic_builder import SemanticSchemaBuilder
+from sql.utils.dataframe.analyzer import DataFrameAnalyzer
 from src.core.model import ToolResult, ToolStatus, ToolRequirement, SystemMessage
 from src.ports.outbound import AbstractLLMProvider
 from src.infrastructure.k8s import YamlConfig
@@ -81,6 +83,14 @@ class SqlAgent(BaseAgent):
             .handle(
                 decision=HookDecision.CONTINUE,
                 effects=[self._build_and_inject_schema],
+            )
+
+        # Hook: trasforma dati grezzi SQL in metadata prima della reiniezione nel modello
+        self.on(AgentEvent.AFTER_TOOL_EXECUTION) \
+            .when(self._is_successful_sql_result) \
+            .handle(
+                decision=HookDecision.CONTINUE,
+                value=self._transform_to_metadata,
             )
 
         # Hook: arricchisce errori Oracle con documentazione ufficiale
@@ -159,6 +169,34 @@ class SqlAgent(BaseAgent):
                 except (json.JSONDecodeError, ValueError):
                     logger.warning("SharedMemory da column_filter non è JSON, filter=None")
         return None
+
+    # ─── SQL Result → Metadata ────────────────────────────────────────────────
+
+    def _is_successful_sql_result(self, ctx: AgentStatus) -> bool:
+        """Condizione hook: tool è sql_query_executor con status SUCCESS e dati tabellari."""
+        result = ctx.tool_result
+        return (
+            result is not None
+            and result.tool_name == "sql_query_executor"
+            and result.status == ToolStatus.SUCCESS
+            and isinstance(result.result, dict)
+            and "data" in result.result
+            and "columns" in result.result
+        )
+
+    def _transform_to_metadata(self, ctx: AgentStatus, result: ToolResult) -> ToolResult:
+        """Trasforma i dati grezzi SQL in metadata analitici per il modello."""
+        try:
+            df = pd.DataFrame(result.result["data"], columns=result.result["columns"])
+            metadata = DataFrameAnalyzer.analyze(df)
+            logger.info(
+                f"SQL result trasformato in metadata: "
+                f"{metadata['n_rows']} righe, {metadata['n_columns']} colonne"
+            )
+            return result.model_copy(update={"result": metadata})
+        except Exception as e:
+            logger.warning(f"Errore nella trasformazione metadata, dati grezzi mantenuti: {e}")
+            return result
 
     # ─── Oracle Error Docs ───────────────────────────────────────────────────
 

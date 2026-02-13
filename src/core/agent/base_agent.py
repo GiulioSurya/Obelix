@@ -672,33 +672,26 @@ class BaseAgent:
                 existing_ts = history[existing_idx].metadata.get("shared_memory_timestamp")
                 if existing_ts == mem.timestamp:
                     continue
-
-                history[existing_idx] = SystemMessage(
-                    content=f"Shared context from {mem.source_id}:\n{mem.content}",
-                    metadata={
-                        "shared_memory": True,
-                        "shared_memory_source": mem.source_id,
-                        "shared_memory_timestamp": mem.timestamp,
-                    }
-                )
+                # Rimuovi il vecchio e re-inserisci in fondo per mantenere rilevanza
+                history.pop(existing_idx)
                 logger.debug(
                     f"SharedMemory: updated context from '{mem.source_id}' "
                     f"in '{self.agent_id}' ({len(mem.content)} chars)"
                 )
-            else:
-                msg = SystemMessage(
-                    content=f"Shared context from {mem.source_id}:\n{mem.content}",
-                    metadata={
-                        "shared_memory": True,
-                        "shared_memory_source": mem.source_id,
-                        "shared_memory_timestamp": mem.timestamp,
-                    }
-                )
-                history.insert(1, msg)
-                logger.debug(
-                    f"SharedMemory: injected context from '{mem.source_id}' "
-                    f"into '{self.agent_id}' ({len(mem.content)} chars)"
-                )
+
+            msg = SystemMessage(
+                content=f"Shared context from {mem.source_id}:\n{mem.content}",
+                metadata={
+                    "shared_memory": True,
+                    "shared_memory_source": mem.source_id,
+                    "shared_memory_timestamp": mem.timestamp,
+                }
+            )
+            history.append(msg)
+            logger.debug(
+                f"SharedMemory: injected context from '{mem.source_id}' "
+                f"into '{self.agent_id}' ({len(mem.content)} chars)"
+            )
 
     async def _publish_to_memory(self, status: AgentStatus) -> None:
         """Publish the agent's final response and last tool result to the shared memory graph."""

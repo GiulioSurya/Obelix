@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from typing import Dict, List, Any
 
-from src.utils.dataframe.year_detector import YearDetector
+from sql.utils.dataframe.year_detector import YearDetector
 
 
 class DataFrameAnalyzer:

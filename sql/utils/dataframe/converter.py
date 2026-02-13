@@ -16,9 +16,9 @@ from typing import Dict, Any, Optional, List
 import pandas as pd
 from dotenv import load_dotenv
 
-from src.messages.tool_message import ToolResult, ToolStatus
-from src.utils.dataframe.year_detector import YearDetector
-from src.k8s_config import YamlConfig
+from src.core.model import ToolResult, ToolStatus
+from sql.utils.dataframe.year_detector import YearDetector
+from src.infrastructure.k8s import YamlConfig
 import os
 load_dotenv()
 
