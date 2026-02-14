@@ -21,44 +21,56 @@ A multi-provider LLM agent framework with tool support, hooks system, and seamle
 ## Requirements
 
 - **Python 3.13+**
+- **[uv](https://docs.astral.sh/uv/)** package manager
 - One or more LLM provider credentials
+
+## Installing uv
+
+uv is a fast Python package manager. Install it with:
+
+```bash
+# macOS/Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# With pip (any OS)
+pip install uv
+```
 
 ## Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/obelix/obelix.git
-cd obelix
-
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+git clone https://github.com/GiulioSurya/Obelix.git
+cd Obelix
 
 # Install core dependencies only
-pip install -e .
+uv sync
 
 # Install with specific provider(s)
-pip install -e ".[openai]"             # OpenAI GPT models (also works with OpenAI-compatible APIs)
-pip install -e ".[anthropic]"          # Anthropic Claude
-pip install -e ".[oci]"                # Oracle Cloud Infrastructure
-pip install -e ".[ibm]"                # IBM Watson X
-pip install -e ".[ollama]"             # Ollama (local models)
-pip install -e ".[vllm]"               # vLLM (self-hosted inference)
+uv sync --extra openai             # OpenAI GPT models (also works with OpenAI-compatible APIs)
+uv sync --extra anthropic          # Anthropic Claude
+uv sync --extra oci                # Oracle Cloud Infrastructure
+uv sync --extra ibm                # IBM Watson X
+uv sync --extra ollama             # Ollama (local models)
+uv sync --extra vllm               # vLLM (self-hosted inference)
 
 # Install with MCP support
-pip install -e ".[mcp]"
+uv sync --extra mcp
 
 # Install multiple providers
-pip install -e ".[anthropic,oci]"
+uv sync --extra anthropic --extra oci
 
 # Install all LLM providers
-pip install -e ".[all-llm]"
+uv sync --extra all-llm
 
 # Install everything (all providers + MCP)
-pip install -e ".[all]"
+uv sync --extra all
 
 # Install with development tools
-pip install -e ".[dev]"
+uv sync --extra dev
 ```
 
 ### Available Extras
@@ -122,8 +134,8 @@ This works out of the box - no hooks required. The error message from Pydantic i
 ## Quick Start
 
 ```python
-from src.domain.agent import BaseAgent
-from src.infrastructure.logging import setup_logging
+from obelix.domain.agent import BaseAgent
+from obelix.infrastructure.logging import setup_logging
 
 setup_logging()
 
@@ -143,8 +155,8 @@ Tools allow agents to perform concrete actions like fetching data, creating char
 Tools are created by extending `ToolBase` and using the `@tool` decorator:
 
 ```python
-from src.domain.tool.tool_decorator import tool
-from src.domain.tool.tool_base import ToolBase
+from obelix.domain.tool.tool_decorator import tool
+from obelix.domain.tool.tool_base import ToolBase
 from pydantic import Field
 
 @tool(name="calculator", description="Performs basic arithmetic operations")
@@ -201,7 +213,7 @@ class WeatherTool(ToolBase):
 The `AskUserQuestionTool` allows agents to gather user input through structured, interactive questions with multiple-choice options:
 
 ```python
-from src.plugins.builtin.ask_user_question_tool import AskUserQuestionTool
+from obelix.plugins.builtin.ask_user_question_tool import AskUserQuestionTool
 
 class InteractiveAgent(BaseAgent):
     def __init__(self):
@@ -247,7 +259,7 @@ Agents orchestrate conversations with LLMs and execute tools based on the model'
 ### Basic Agent
 
 ```python
-from src.domain.agent import BaseAgent
+from obelix.domain.agent import BaseAgent
 
 class MyAgent(BaseAgent):
     def __init__(self):
@@ -261,7 +273,7 @@ class MyAgent(BaseAgent):
 Tools can be registered via the `tools` parameter or the `register_tool()` method:
 
 ```python
-from src.domain.agent import BaseAgent
+from obelix.domain.agent import BaseAgent
 
 # Option 1: tools parameter (single tool or list)
 agent = BaseAgent(
@@ -296,9 +308,9 @@ Hooks intercept agent lifecycle events enabling **validation**, **error recovery
 - **Result enrichment**: Transform tool results (e.g., fetch docs for error codes)
 
 ```python
-from src.domain.agent import BaseAgent
-from src.domain.agent.hooks import AgentEvent, HookDecision, AgentStatus
-from src.domain.model import SystemMessage
+from obelix.domain.agent import BaseAgent
+from obelix.domain.agent.hooks import AgentEvent, HookDecision, AgentStatus
+from obelix.domain.model import SystemMessage
 
 
 class ValidatingAgent(BaseAgent):
@@ -365,7 +377,7 @@ self.on(AgentEvent.EVENT_NAME) \
 Tool policies enforce that specific tools must be called before the agent can respond. Useful for ensuring required actions are performed.
 
 ```python
-from src.domain.model.tool_message import ToolRequirement
+from obelix.domain.model.tool_message import ToolRequirement
 
 agent = BaseAgent(
     system_message="You are a SQL assistant.",
@@ -396,7 +408,7 @@ Obelix supports hierarchical agent composition. Any agent can register other age
 #### Direct Registration
 
 ```python
-from src.domain.agent import BaseAgent
+from obelix.domain.agent import BaseAgent
 
 class SQLAnalyzerAgent(BaseAgent):
     def __init__(self):
@@ -421,8 +433,8 @@ response = coordinator.execute_query("Why is this query failing? Error: ORA-0094
 #### Using Agent Factory
 
 ```python
-from src.domain.agent import BaseAgent
-from src.domain.agent.agent_factory import AgentFactory
+from obelix.domain.agent import BaseAgent
+from obelix.domain.agent.agent_factory import AgentFactory
 
 factory = AgentFactory()
 
@@ -503,9 +515,9 @@ Connection (credentials, singleton client, thread-safe)
 2. **Provider**: Uses the connection and defines model parameters
 
 ```python
-from src.adapters.outbound.anthropic.connection import AnthropicConnection
-from src.adapters.outbound.anthropic.provider import AnthropicProvider
-from src.domain.agent import BaseAgent
+from obelix.adapters.outbound.anthropic.connection import AnthropicConnection
+from obelix.adapters.outbound.anthropic.provider import AnthropicProvider
+from obelix.domain.agent import BaseAgent
 
 # 1. Create connection (reads ANTHROPIC_API_KEY from env)
 connection = AnthropicConnection()
@@ -532,7 +544,7 @@ agent = BaseAgent(
 #### Step 1: Initialize Connection
 
 ```python
-from src.adapters.outbound.anthropic.connection import AnthropicConnection
+from obelix.adapters.outbound.anthropic.connection import AnthropicConnection
 
 connection = AnthropicConnection(api_key="your_api_key")
 ```
@@ -540,8 +552,8 @@ connection = AnthropicConnection(api_key="your_api_key")
 #### Step 2: Configure GlobalConfig
 
 ```python
-from src.infrastructure.config import GlobalConfig
-from src.infrastructure.providers import Providers
+from obelix.infrastructure.config import GlobalConfig
+from obelix.infrastructure.providers import Providers
 
 config = GlobalConfig()
 config.set_provider(Providers.ANTHROPIC, connection=connection)
@@ -552,7 +564,7 @@ config.set_provider(Providers.ANTHROPIC, connection=connection)
 Any agent will automatically use the configured provider if no provider is passed:
 
 ```python
-from src.domain.agent import BaseAgent
+from obelix.domain.agent import BaseAgent
 
 agent = BaseAgent(
     system_message="You are a helpful assistant.",
@@ -596,7 +608,7 @@ Obelix uses [Loguru](https://github.com/Delgan/loguru) for structured logging wi
 ### Setup (Once at Application Start)
 
 ```python
-from src.infrastructure.logging import setup_logging
+from obelix.infrastructure.logging import setup_logging
 
 # Default configuration
 setup_logging()
@@ -613,7 +625,7 @@ setup_logging(
 ### Usage in Modules
 
 ```python
-from src.infrastructure.logging import get_logger
+from obelix.infrastructure.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -644,42 +656,43 @@ def my_function():
 
 ```
 src/
-├── domain/                          # Business logic
-│   ├── agent/                       # Agent infrastructure
-│   │   ├── base_agent.py            # BaseAgent class (execution engine)
-│   │   ├── agent_factory.py         # AgentFactory for agent creation/composition
-│   │   ├── subagent_wrapper.py      # SubAgentWrapper (BaseAgent -> ToolBase bridge)
-│   │   ├── hooks.py                 # Hooks system + AgentEvent/AgentStatus
-│   │   └── event_contracts.py       # Event validation specifications
-│   ├── model/                       # Message types (Pydantic)
-│   │   ├── human_message.py         # HumanMessage
-│   │   ├── assistant_message.py     # AssistantMessage, AssistantResponse
-│   │   ├── system_message.py        # SystemMessage
-│   │   ├── tool_message.py          # ToolMessage, ToolCall, ToolResult
-│   │   └── standard_message.py      # StandardMessage union type
-│   └── tool/                        # Tool infrastructure
-│       ├── tool_base.py             # Abstract ToolBase
-│       └── tool_decorator.py        # @tool decorator
-├── ports/
-│   └── outbound/                    # Abstract interfaces (ABCs)
-│       ├── llm_provider.py          # AbstractLLMProvider
-│       ├── llm_connection.py        # AbstractLLMConnection
-│       └── embedding_provider.py    # AbstractEmbeddingProvider
-├── adapters/
-│   └── outbound/                    # Provider implementations
-│       ├── anthropic/               # Anthropic Claude
-│       ├── openai/                  # OpenAI + compatible APIs
-│       ├── oci/                     # Oracle Cloud Infrastructure
-│       ├── ibm/                     # IBM Watson X
-│       ├── ollama/                  # Ollama (local models)
-│       └── vllm/                    # vLLM (self-hosted)
-├── infrastructure/                  # Cross-cutting concerns
-│   ├── config.py                    # GlobalConfig singleton
-│   ├── logging.py                   # Loguru configuration
-│   └── providers.py                 # Providers enum
-└── plugins/                         # Optional extensions
-    ├── builtin/                     # Built-in tools (AskUserQuestionTool)
-    └── mcp/                         # Model Context Protocol support
+└── obelix/
+    ├── domain/                          # Business logic
+    │   ├── agent/                       # Agent infrastructure
+    │   │   ├── base_agent.py            # BaseAgent class (execution engine)
+    │   │   ├── agent_factory.py         # AgentFactory for agent creation/composition
+    │   │   ├── subagent_wrapper.py      # SubAgentWrapper (BaseAgent -> ToolBase bridge)
+    │   │   ├── hooks.py                 # Hooks system + AgentEvent/AgentStatus
+    │   │   └── event_contracts.py       # Event validation specifications
+    │   ├── model/                       # Message types (Pydantic)
+    │   │   ├── human_message.py         # HumanMessage
+    │   │   ├── assistant_message.py     # AssistantMessage, AssistantResponse
+    │   │   ├── system_message.py        # SystemMessage
+    │   │   ├── tool_message.py          # ToolMessage, ToolCall, ToolResult
+    │   │   └── standard_message.py      # StandardMessage union type
+    │   └── tool/                        # Tool infrastructure
+    │       ├── tool_base.py             # Abstract ToolBase
+    │       └── tool_decorator.py        # @tool decorator
+    ├── ports/
+    │   └── outbound/                    # Abstract interfaces (ABCs)
+    │       ├── llm_provider.py          # AbstractLLMProvider
+    │       ├── llm_connection.py        # AbstractLLMConnection
+    │       └── embedding_provider.py    # AbstractEmbeddingProvider
+    ├── adapters/
+    │   └── outbound/                    # Provider implementations
+    │       ├── anthropic/               # Anthropic Claude
+    │       ├── openai/                  # OpenAI + compatible APIs
+    │       ├── oci/                     # Oracle Cloud Infrastructure
+    │       ├── ibm/                     # IBM Watson X
+    │       ├── ollama/                  # Ollama (local models)
+    │       └── vllm/                    # vLLM (self-hosted)
+    ├── infrastructure/                  # Cross-cutting concerns
+    │   ├── config.py                    # GlobalConfig singleton
+    │   ├── logging.py                   # Loguru configuration
+    │   └── providers.py                 # Providers enum
+    └── plugins/                         # Optional extensions
+        ├── builtin/                     # Built-in tools (AskUserQuestionTool)
+        └── mcp/                         # Model Context Protocol support
 ```
 
 ## Supported LLM Providers
