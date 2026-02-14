@@ -5,22 +5,22 @@ This demo shows how to use the AgentFactory to create and compose agents.
 from dotenv import load_dotenv
 from pydantic import Field
 
-from src.domain.agent import BaseAgent
-from src.domain.agent.agent_factory import AgentFactory
-from src.domain.tool.tool_base import ToolBase
-from src.domain.tool.tool_decorator import tool
-from src.infrastructure.config import GlobalConfig
-from src.infrastructure.providers import Providers
-from src.adapters.outbound.openai.connection import OpenAIConnection
-from src.adapters.outbound.anthropic.connection import AnthropicConnection
-from src.adapters.outbound.oci.connection import OCIConnection
-from src.adapters.outbound.openai.provider import OpenAIProvider
-from src.adapters.outbound.anthropic.provider import AnthropicProvider
-from src.adapters.outbound.oci.provider import OCILLm
-from src.infrastructure.k8s import YamlConfig
-from src.domain.model.tool_message import ToolRequirement
-from src.infrastructure.logging import setup_logging
-from src.plugins.builtin.ask_user_question_tool import AskUserQuestionTool
+from obelix.domain.agent import BaseAgent
+from obelix.domain.agent.agent_factory import AgentFactory
+from obelix.domain.tool.tool_base import ToolBase
+from obelix.domain.tool.tool_decorator import tool
+from obelix.infrastructure.config import GlobalConfig
+from obelix.infrastructure.providers import Providers
+from obelix.adapters.outbound.openai.connection import OpenAIConnection
+from obelix.adapters.outbound.anthropic.connection import AnthropicConnection
+from obelix.adapters.outbound.oci.connection import OCIConnection
+from obelix.adapters.outbound.openai.provider import OpenAIProvider
+from obelix.adapters.outbound.anthropic.provider import AnthropicProvider
+from obelix.adapters.outbound.oci.provider import OCILLm
+from obelix.infrastructure.k8s import YamlConfig
+from obelix.domain.model.tool_message import ToolRequirement
+from obelix.infrastructure.logging import setup_logging
+from obelix.plugins.builtin.ask_user_question_tool import AskUserQuestionTool
 import os
 
 load_dotenv()

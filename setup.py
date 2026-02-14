@@ -32,13 +32,10 @@ setup(
         # Core - Data & Validation
         "pydantic>=2.12.0",
         "numpy>=2.2.0",
-
         # Core - Logging
         "loguru>=0.7.0",
-
         # Core - Configuration
         "pyyaml>=6.0.0",
-
         # Core - Retry/Resilience
         "tenacity>=9.0.0",
     ],
@@ -50,17 +47,14 @@ setup(
         "ibm": ["ibm_watsonx_ai>=1.4.0"],
         "ollama": ["ollama>=0.6.0"],
         "vllm": ["vllm>=0.13.0"],
-
         # MCP (Model Context Protocol)
         "mcp": ["mcp>=1.25.0"],
-
         # Development
         "dev": [
             "pytest>=9.0.0",
             "pytest-asyncio>=1.0.0",
             "pytest-cov>=7.0.0",
         ],
-
         # All LLM providers
         "all-llm": [
             "anthropic>=0.71.0",
@@ -70,7 +64,6 @@ setup(
             "ollama>=0.6.0",
             "vllm>=0.13.0",
         ],
-
         # Everything (all providers + mcp)
         "all": [
             "anthropic>=0.71.0",
@@ -84,7 +77,7 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "obelix=src.main:main",
+            "obelix=obelix.main:main",
         ],
     },
 )
