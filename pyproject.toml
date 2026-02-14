@@ -23,11 +23,7 @@ ibm = ["ibm_watsonx_ai>=1.4.0"]
 ollama = ["ollama>=0.6.0"]
 vllm = ["vllm>=0.13.0"]
 mcp = ["mcp>=1.25.0"]
-dev = [
-    "pytest>=9.0.0",
-    "pytest-asyncio>=1.0.0",
-    "pytest-cov>=7.0.0",
-]
+
 all-llm = [
     "anthropic>=0.71.0",
     "openai>=2.14.0",
@@ -60,7 +56,12 @@ build-backend = "hatchling.build"
 packages = ["src/obelix"]
 
 [dependency-groups]
-dev = ["ruff>=0.9.0"]
+dev = [
+    "ruff>=0.9.0",
+    "pytest>=9.0.0",
+    "pytest-asyncio>=1.0.0",
+    "pytest-cov>=7.0.0",
+]
 
 [tool.ruff]
 line-length = 88

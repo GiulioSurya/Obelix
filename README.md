@@ -74,7 +74,7 @@ uv sync --extra all-llm
 uv sync --extra all
 
 # Install with development tools
-uv sync --extra dev
+uv sync --group dev
 ```
 
 ### Option 2: uv pip install (Editable mode)
@@ -108,8 +108,35 @@ uv pip install -e ".[all]"
 | `mcp` | Model Context Protocol support |
 | `all-llm` | All LLM providers |
 | `all` | All providers + MCP |
-| `dev` | Development tools (pytest, coverage) |
 
+## Development
+
+### Running Commands with uv
+
+Use `uv run` to execute commands within the virtual environment without activating it:
+
+```bash
+# Run Python scripts
+uv run python your_script.py
+
+# Run tests
+uv run pytest
+
+### Linting and Formatting
+
+```bash
+# Check for linting issues
+uv run ruff check
+
+# Auto-fix linting issues
+uv run ruff check --fix
+
+# Format code
+uv run ruff format
+
+# Check formatting without changes
+uv run ruff format --check
+```
 
 ## Powered by Pydantic
 
