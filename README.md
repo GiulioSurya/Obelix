@@ -45,7 +45,11 @@ pip install uv
 # Clone the repository
 git clone https://github.com/GiulioSurya/Obelix.git
 cd Obelix
+```
 
+### Option 1: uv sync (Recommended)
+
+```bash
 # Install core dependencies only
 uv sync
 
@@ -71,6 +75,24 @@ uv sync --extra all
 
 # Install with development tools
 uv sync --extra dev
+```
+
+### Option 2: uv pip install (Editable mode)
+
+If you prefer `pip`-style installation:
+
+```bash
+# Create and activate a virtual environment first
+uv venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install in editable mode
+uv pip install -e .
+
+# Install with extras
+uv pip install -e ".[anthropic]"
+uv pip install -e ".[anthropic,oci]"
+uv pip install -e ".[all]"
 ```
 
 ### Available Extras
