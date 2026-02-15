@@ -39,19 +39,6 @@ This documentation covers how to build, compose, and deploy agents using Obelix.
 
 ---
 
-## Design & Architecture Documentation
-
-### Design Plans (In Progress)
-
-These documents describe planned features and design decisions. They are for reference and future implementation:
-
-| Document | Description |
-|----------|-------------|
-| [Shared Memory Graph Plan](shared_memory_plan.md) | Design for agent-to-agent memory sharing via directed graph (partially implemented in `obelix.core.agent.shared_memory`) |
-| [Inbound A2A Architecture Plan](INBOUND_ARCHITECTURE_PLAN.md) | Design for Agent-to-Agent (A2A) protocol support with HTTP/A2A adapters (not yet implemented) |
-
----
-
 ## Code Organization
 
 The source code follows hexagonal architecture:
