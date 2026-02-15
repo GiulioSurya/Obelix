@@ -4,18 +4,19 @@ Base Strategy for OCI Request Strategies.
 
 Each strategy handles a specific API format (GENERIC or COHERE) and is self-contained:
 - Convert StandardMessage to provider-specific message format
-- Convert ToolBase to provider-specific tool format
+- Convert Tool to provider-specific tool format
 - Extract tool calls from response (with validation)
 - Build provider-specific chat request
 """
+
 from abc import ABC, abstractmethod
-from typing import List, Any, Dict, Optional, Union
+from typing import Any
 
 from oci.generative_ai_inference.models import BaseChatRequest, Message
 
 from obelix.core.model.standard_message import StandardMessage
 from obelix.core.model.tool_message import ToolCall
-from obelix.core.tool.tool_base import ToolBase
+from obelix.core.tool.tool_base import Tool
 
 
 class OCIRequestStrategy(ABC):
@@ -27,7 +28,9 @@ class OCIRequestStrategy(ABC):
     """
 
     @abstractmethod
-    def convert_messages(self, messages: List[StandardMessage]) -> Union[List[Message], Dict[str, Any]]:
+    def convert_messages(
+        self, messages: list[StandardMessage]
+    ) -> list[Message] | dict[str, Any]:
         """
         Convert StandardMessage objects to provider-specific message format.
 
@@ -41,12 +44,12 @@ class OCIRequestStrategy(ABC):
         pass
 
     @abstractmethod
-    def convert_tools(self, tools: List[ToolBase]) -> List[Any]:
+    def convert_tools(self, tools: list[Tool]) -> list[Any]:
         """
-        Convert ToolBase objects to provider-specific tool format.
+        Convert Tool objects to provider-specific tool format.
 
         Args:
-            tools: List of ToolBase objects
+            tools: List of Tool objects
 
         Returns:
             GenericStrategy: List[FunctionDefinition]
@@ -55,7 +58,7 @@ class OCIRequestStrategy(ABC):
         pass
 
     @abstractmethod
-    def extract_tool_calls(self, response) -> List[ToolCall]:
+    def extract_tool_calls(self, response) -> list[ToolCall]:
         """
         Extract and validate tool calls from OCI response.
 
@@ -73,17 +76,17 @@ class OCIRequestStrategy(ABC):
     @abstractmethod
     def build_request(
         self,
-        converted_messages: Union[List[Message], Dict[str, Any]],
-        converted_tools: List[Any],
+        converted_messages: list[Message] | dict[str, Any],
+        converted_tools: list[Any],
         max_tokens: int,
         temperature: float,
-        top_p: Optional[float] = None,
-        top_k: Optional[int] = None,
-        frequency_penalty: Optional[float] = None,
-        presence_penalty: Optional[float] = None,
-        stop_sequences: Optional[List[str]] = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        frequency_penalty: float | None = None,
+        presence_penalty: float | None = None,
+        stop_sequences: list[str] | None = None,
         is_stream: bool = False,
-        **kwargs
+        **kwargs,
     ) -> BaseChatRequest:
         """
         Build the appropriate chat request for this strategy.
@@ -117,7 +120,7 @@ class OCIRequestStrategy(ABC):
         pass
 
     @abstractmethod
-    def get_supported_model_prefixes(self) -> List[str]:
+    def get_supported_model_prefixes(self) -> list[str]:
         """
         Get the list of model ID prefixes supported by this strategy.
 

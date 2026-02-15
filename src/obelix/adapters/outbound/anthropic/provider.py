@@ -5,37 +5,45 @@ Anthropic Claude Provider.
 Self-contained provider with inline message/tool conversion.
 No external mapping dependencies.
 """
-import logging
-from typing import List, Dict, Any, Optional, Tuple, Type
 
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
-    before_sleep_log,
-)
+import logging
+from typing import Any
+
 from anthropic import (
     APIConnectionError,
     APITimeoutError,
-    RateLimitError,
     InternalServerError,
+    RateLimitError,
+)
+from tenacity import (
+    before_sleep_log,
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
 )
 
-from obelix.ports.outbound.llm_provider import AbstractLLMProvider
-from obelix.core.model import SystemMessage, StandardMessage, AssistantMessage, HumanMessage, ToolMessage
+from obelix.adapters.outbound.anthropic.connection import AnthropicConnection
+from obelix.core.model import (
+    AssistantMessage,
+    HumanMessage,
+    StandardMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from obelix.core.model.tool_message import ToolCall
 from obelix.core.model.usage import Usage
-from obelix.core.tool.tool_base import ToolBase
+from obelix.core.tool.tool_base import Tool
+from obelix.infrastructure.logging import format_message_for_trace, get_logger
 from obelix.infrastructure.providers import Providers
-from obelix.adapters.outbound.anthropic.connection import AnthropicConnection
-from obelix.infrastructure.logging import get_logger, format_message_for_trace
+from obelix.ports.outbound.llm_provider import AbstractLLMProvider
 
 logger = get_logger(__name__)
 
 
 class ToolCallExtractionError(Exception):
     """Raised when tool call extraction or validation fails."""
+
     pass
 
 
@@ -58,14 +66,16 @@ class AnthropicProvider(AbstractLLMProvider):
     def provider_type(self) -> Providers:
         return Providers.ANTHROPIC
 
-    def __init__(self,
-                 connection: Optional[AnthropicConnection] = None,
-                 model_id: str = "claude-haiku-4-5-20251001",
-                 max_tokens: int = 3000,
-                 temperature: float = 0.1,
-                 top_p: Optional[float] = None,
-                 thinking_mode: bool = False,
-                 thinking_params: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self,
+        connection: AnthropicConnection | None = None,
+        model_id: str = "claude-haiku-4-5-20251001",
+        max_tokens: int = 3000,
+        temperature: float = 0.1,
+        top_p: float | None = None,
+        thinking_mode: bool = False,
+        thinking_params: dict[str, Any] | None = None,
+    ):
         """
         Initialize the Anthropic provider with dependency injection of connection.
 
@@ -83,8 +93,7 @@ class AnthropicProvider(AbstractLLMProvider):
         """
         if connection is None:
             connection = self._get_connection_from_global_config(
-                Providers.ANTHROPIC,
-                "AnthropicProvider"
+                Providers.ANTHROPIC, "AnthropicProvider"
             )
 
         self.connection = connection
@@ -96,18 +105,23 @@ class AnthropicProvider(AbstractLLMProvider):
         self.thinking_mode = thinking_mode
 
         if thinking_mode:
-            self.thinking_params = thinking_params or {"type": "enabled", "budget_tokens": 2000}
+            self.thinking_params = thinking_params or {
+                "type": "enabled",
+                "budget_tokens": 2000,
+            }
             logger.debug(f"Thinking mode enabled: {self.thinking_params}")
         else:
             self.thinking_params = {"type": "disabled"}
 
     @retry(
-        retry=retry_if_exception_type((
-            APIConnectionError,
-            APITimeoutError,
-            RateLimitError,
-            InternalServerError,
-        )),
+        retry=retry_if_exception_type(
+            (
+                APIConnectionError,
+                APITimeoutError,
+                RateLimitError,
+                InternalServerError,
+            )
+        ),
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         before_sleep=before_sleep_log(logger, logging.WARNING),
@@ -115,9 +129,9 @@ class AnthropicProvider(AbstractLLMProvider):
     )
     async def invoke(
         self,
-        messages: List[StandardMessage],
-        tools: List[ToolBase],
-        response_schema: Optional[Type["BaseModel"]] = None,
+        messages: list[StandardMessage],
+        tools: list[Tool],
+        response_schema: type["BaseModel"] | None = None,
     ) -> AssistantMessage:
         """
         Call the Anthropic model with standardized messages and tools.
@@ -132,16 +146,20 @@ class AnthropicProvider(AbstractLLMProvider):
         converted_tools = self._convert_tools(tools)
 
         for attempt in range(1, self.MAX_EXTRACTION_RETRIES + 1):
-            logger.debug(f"Anthropic invoke: model={self.model_id}, messages={len(working_messages)}, tools={len(converted_tools)}, attempt={attempt}, thinking_mode={self.thinking_mode}")
+            logger.debug(
+                f"Anthropic invoke: model={self.model_id}, messages={len(working_messages)}, tools={len(converted_tools)}, attempt={attempt}, thinking_mode={self.thinking_mode}"
+            )
 
-            system_content, conversation_messages = self._convert_messages(working_messages)
+            system_content, conversation_messages = self._convert_messages(
+                working_messages
+            )
 
-            api_params: Dict[str, Any] = {
+            api_params: dict[str, Any] = {
                 "model": self.model_id,
                 "max_tokens": self.max_tokens,
                 "temperature": self.temperature,
                 "messages": conversation_messages,
-                "thinking": self.thinking_params
+                "thinking": self.thinking_params,
             }
 
             if system_content:
@@ -157,14 +175,18 @@ class AnthropicProvider(AbstractLLMProvider):
 
             logger.info(f"Anthropic chat completed: {self.model_id}")
 
-            if hasattr(response, 'usage'):
-                logger.debug(f"Anthropic tokens: input={response.usage.input_tokens}, output={response.usage.output_tokens}, total={response.usage.input_tokens + response.usage.output_tokens}")
+            if hasattr(response, "usage"):
+                logger.debug(
+                    f"Anthropic tokens: input={response.usage.input_tokens}, output={response.usage.output_tokens}, total={response.usage.input_tokens + response.usage.output_tokens}"
+                )
 
             try:
                 return self._convert_response_to_assistant_message(response)
             except ToolCallExtractionError as e:
                 if attempt >= self.MAX_EXTRACTION_RETRIES:
-                    logger.error(f"Tool call extraction failed after {attempt} attempts: {e}")
+                    logger.error(
+                        f"Tool call extraction failed after {attempt} attempts: {e}"
+                    )
                     raise
 
                 logger.warning(f"Tool call extraction failed (attempt {attempt}): {e}")
@@ -176,7 +198,9 @@ class AnthropicProvider(AbstractLLMProvider):
 
         raise RuntimeError("Unexpected end of invoke loop")
 
-    def _convert_messages(self, messages: List[StandardMessage]) -> Tuple[Optional[str], List[dict]]:
+    def _convert_messages(
+        self, messages: list[StandardMessage]
+    ) -> tuple[str | None, list[dict]]:
         """
         Convert standardized messages to Anthropic format.
 
@@ -194,10 +218,7 @@ class AnthropicProvider(AbstractLLMProvider):
             if isinstance(msg, SystemMessage):
                 system_content = msg.content
             elif isinstance(msg, HumanMessage):
-                conversation_messages.append({
-                    "role": "user",
-                    "content": msg.content
-                })
+                conversation_messages.append({"role": "user", "content": msg.content})
             elif isinstance(msg, AssistantMessage):
                 content_blocks = []
 
@@ -206,41 +227,47 @@ class AnthropicProvider(AbstractLLMProvider):
 
                 if msg.tool_calls:
                     for tc in msg.tool_calls:
-                        content_blocks.append({
-                            "type": "tool_use",
-                            "id": tc.id,
-                            "name": tc.name,
-                            "input": tc.arguments
-                        })
+                        content_blocks.append(
+                            {
+                                "type": "tool_use",
+                                "id": tc.id,
+                                "name": tc.name,
+                                "input": tc.arguments,
+                            }
+                        )
 
-                conversation_messages.append({
-                    "role": "assistant",
-                    "content": content_blocks
-                })
+                conversation_messages.append(
+                    {"role": "assistant", "content": content_blocks}
+                )
             elif isinstance(msg, ToolMessage):
                 tool_results_content = []
                 for result in msg.tool_results:
-                    tool_results_content.append({
-                        "type": "tool_result",
-                        "tool_use_id": result.tool_call_id,
-                        "content": str(result.result) if result.result else (result.error or "No result")
-                    })
+                    tool_results_content.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": result.tool_call_id,
+                            "content": str(result.result)
+                            if result.result
+                            else (result.error or "No result"),
+                        }
+                    )
 
-                conversation_messages.append({
-                    "role": "user",
-                    "content": tool_results_content
-                })
+                conversation_messages.append(
+                    {"role": "user", "content": tool_results_content}
+                )
 
-        logger.debug(f"Converted {len(messages)} messages: system={'present' if system_content else 'absent'}, conversation={len(conversation_messages)}")
+        logger.debug(
+            f"Converted {len(messages)} messages: system={'present' if system_content else 'absent'}, conversation={len(conversation_messages)}"
+        )
 
         return system_content, conversation_messages
 
-    def _convert_tools(self, tools: List[ToolBase]) -> List[dict]:
+    def _convert_tools(self, tools: list[Tool]) -> list[dict]:
         """
         Convert tool list to Anthropic format.
 
         Args:
-            tools: List of ToolBase instances
+            tools: List of Tool instances
 
         Returns:
             List of Anthropic tool schemas
@@ -251,17 +278,19 @@ class AnthropicProvider(AbstractLLMProvider):
         anthropic_tools = []
         for tool in tools:
             schema = tool.create_schema()
-            anthropic_tools.append({
-                "name": schema.name,
-                "description": schema.description,
-                "input_schema": schema.inputSchema
-            })
+            anthropic_tools.append(
+                {
+                    "name": schema.name,
+                    "description": schema.description,
+                    "input_schema": schema.inputSchema,
+                }
+            )
 
         logger.debug(f"Converted {len(tools)} tools to Anthropic format")
 
         return anthropic_tools
 
-    def _extract_tool_calls(self, response) -> List[ToolCall]:
+    def _extract_tool_calls(self, response) -> list[ToolCall]:
         """
         Extract and validate tool calls from Anthropic response.
 
@@ -291,9 +320,7 @@ class AnthropicProvider(AbstractLLMProvider):
                         )
 
                     tool_call = ToolCall(
-                        id=tool_id,
-                        name=tool_name,
-                        arguments=tool_input
+                        id=tool_id, name=tool_name, arguments=tool_input
                     )
                     tool_calls.append(tool_call)
 
@@ -333,7 +360,7 @@ class AnthropicProvider(AbstractLLMProvider):
 
         return "".join(text_parts)
 
-    def _extract_usage(self, response) -> Optional[Usage]:
+    def _extract_usage(self, response) -> Usage | None:
         """
         Extract usage information from response.
 
@@ -349,7 +376,7 @@ class AnthropicProvider(AbstractLLMProvider):
         return Usage(
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
-            total_tokens=response.usage.input_tokens + response.usage.output_tokens
+            total_tokens=response.usage.input_tokens + response.usage.output_tokens,
         )
 
     def _convert_response_to_assistant_message(self, response) -> AssistantMessage:
@@ -370,9 +397,7 @@ class AnthropicProvider(AbstractLLMProvider):
         )
 
         return AssistantMessage(
-            content=text_content,
-            tool_calls=tool_calls,
-            usage=usage
+            content=text_content, tool_calls=tool_calls, usage=usage
         )
 
     def _get_block_attribute(self, block, attribute: str) -> Any:

@@ -1,9 +1,5 @@
 # src/mcp/mcp_validator.py
-from typing import Dict, Any, Optional, Type
 from pydantic import BaseModel, ValidationError, create_model
-from typing import Dict, Any, Optional, Type
-from pydantic import BaseModel, ValidationError, create_model
-from pydantic.fields import FieldInfo
 
 
 class MCPValidationError(Exception):
@@ -12,7 +8,9 @@ class MCPValidationError(Exception):
     def __init__(self, tool_name: str, validation_errors: list):
         self.tool_name = tool_name
         self.validation_errors = validation_errors
-        super().__init__(f"Validation failed for tool '{tool_name}': {validation_errors}")
+        super().__init__(
+            f"Validation failed for tool '{tool_name}': {validation_errors}"
+        )
 
 
 class MCPValidator:
@@ -24,9 +22,11 @@ class MCPValidator:
     """
 
     def __init__(self):
-        self._cached_validators: Dict[str, Type[BaseModel]] = {}
+        self._cached_validators: dict[str, type[BaseModel]] = {}
 
-    def create_pydantic_model_from_schema(self, tool_name: str, json_schema: dict) -> Type[BaseModel]:
+    def create_pydantic_model_from_schema(
+        self, tool_name: str, json_schema: dict
+    ) -> type[BaseModel]:
         """
         Dynamically generate Pydantic model from MCP JSON Schema.
 
@@ -41,8 +41,8 @@ class MCPValidator:
             return self._cached_validators[tool_name]
 
         # Extract properties from JSON Schema
-        properties = json_schema.get('properties', {})
-        required_fields = set(json_schema.get('required', []))
+        properties = json_schema.get("properties", {})
+        required_fields = set(json_schema.get("required", []))
 
         # Convert each property to Pydantic field
         field_definitions = {}
@@ -75,38 +75,40 @@ class MCPValidator:
         Returns:
             tuple: (python_type, default_value)
         """
-        schema_type = field_schema.get('type', 'string')
-        default_value = field_schema.get('default')
+        schema_type = field_schema.get("type", "string")
+        default_value = field_schema.get("default")
 
         type_mapping = {
-            'string': str,
-            'integer': int,
-            'number': float,
-            'boolean': bool,
-            'array': list,
-            'object': dict
+            "string": str,
+            "integer": int,
+            "number": float,
+            "boolean": bool,
+            "array": list,
+            "object": dict,
         }
 
         python_type = type_mapping.get(schema_type, str)
 
         # If no explicit default, use Python type default
         if default_value is None:
-            if schema_type == 'string':
+            if schema_type == "string":
                 default_value = ""
-            elif schema_type in ['integer', 'number']:
+            elif schema_type in ["integer", "number"]:
                 default_value = 0
-            elif schema_type == 'boolean':
+            elif schema_type == "boolean":
                 default_value = False
-            elif schema_type == 'array':
+            elif schema_type == "array":
                 default_value = []
-            elif schema_type == 'object':
+            elif schema_type == "object":
                 default_value = {}
             else:
                 default_value = None
 
         return python_type, default_value
 
-    def validate_and_convert(self, tool_name: str, json_schema: dict, raw_args: dict) -> dict:
+    def validate_and_convert(
+        self, tool_name: str, json_schema: dict, raw_args: dict
+    ) -> dict:
         """
         Validate and convert arguments using MCP schema.
 
@@ -117,7 +119,9 @@ class MCPValidator:
             preprocessed_args = self._preprocess_json_strings(json_schema, raw_args)
 
             # Get or create Pydantic model
-            validator_model = self.create_pydantic_model_from_schema(tool_name, json_schema)
+            validator_model = self.create_pydantic_model_from_schema(
+                tool_name, json_schema
+            )
 
             # Pydantic validates the pre-processed data
             validated_instance = validator_model(**preprocessed_args)
@@ -140,7 +144,7 @@ class MCPValidator:
         """
         import json
 
-        properties = json_schema.get('properties', {})
+        properties = json_schema.get("properties", {})
         processed_args = {}
 
         for key, value in raw_args.items():
@@ -149,22 +153,24 @@ class MCPValidator:
                 continue
 
             prop_def = properties[key]
-            prop_type = prop_def.get('type', 'string')
+            prop_type = prop_def.get("type", "string")
 
             # If it's an array and value is a string, try to convert
-            if prop_type == 'array' and isinstance(value, str):
-                if value.strip() in ('', '[]', 'null'):
+            if prop_type == "array" and isinstance(value, str):
+                if value.strip() in ("", "[]", "null"):
                     processed_args[key] = []
                 else:
                     try:
                         parsed = json.loads(value)
-                        processed_args[key] = parsed if isinstance(parsed, list) else [parsed]
+                        processed_args[key] = (
+                            parsed if isinstance(parsed, list) else [parsed]
+                        )
                     except (json.JSONDecodeError, TypeError):
                         processed_args[key] = []
 
             # If it's an object and value is a string, try to convert
-            elif prop_type == 'object' and isinstance(value, str):
-                if value.strip() in ('', '{}', 'null'):
+            elif prop_type == "object" and isinstance(value, str):
+                if value.strip() in ("", "{}", "null"):
                     processed_args[key] = {}
                 else:
                     try:
@@ -179,7 +185,9 @@ class MCPValidator:
 
         return processed_args
 
-    def get_validator_for_tool(self, tool_name: str, json_schema: dict) -> Type[BaseModel]:
+    def get_validator_for_tool(
+        self, tool_name: str, json_schema: dict
+    ) -> type[BaseModel]:
         """
         Get cached validator for a specific tool.
 
@@ -199,38 +207,32 @@ if __name__ == "__main__":
     test_schema_with_arrays = {
         "type": "object",
         "properties": {
-            "query": {
-                "type": "string",
-                "description": "Search query"
-            },
+            "query": {"type": "string", "description": "Search query"},
             "max_results": {
                 "type": "integer",
                 "description": "Maximum results",
-                "default": 5
+                "default": 5,
             },
             "include_domains": {
                 "type": "array",
                 "description": "Domains to include",
                 "items": {"type": "string"},
-                "default": []
+                "default": [],
             },
             "exclude_domains": {
                 "type": "array",
                 "description": "Domains to exclude",
                 "items": {"type": "string"},
-                "default": []
+                "default": [],
             },
             "metadata": {
                 "type": "object",
                 "description": "Additional metadata",
-                "default": {}
+                "default": {},
             },
-            "active": {
-                "type": "boolean",
-                "default": True
-            }
+            "active": {"type": "boolean", "default": True},
         },
-        "required": ["query"]
+        "required": ["query"],
     }
 
     validator = MCPValidator()
@@ -241,15 +243,19 @@ if __name__ == "__main__":
         "query": "Finmatica",
         "max_results": "10",  # String → int
         "include_domains": '["www.finmatica.it"]',  # JSON string → list
-        "exclude_domains": '[]',  # Empty JSON array → empty list
+        "exclude_domains": "[]",  # Empty JSON array → empty list
         "metadata": '{"source": "test"}',  # JSON object → dict
-        "active": "true"  # String → bool
+        "active": "true",  # String → bool
     }
 
     try:
-        converted = validator.validate_and_convert("tavily_search", test_schema_with_arrays, tavily_like_args)
-        print(f"✓ Conversion successful!")
-        print(f"Input types: {[(k, type(v).__name__) for k, v in tavily_like_args.items()]}")
+        converted = validator.validate_and_convert(
+            "tavily_search", test_schema_with_arrays, tavily_like_args
+        )
+        print("✓ Conversion successful!")
+        print(
+            f"Input types: {[(k, type(v).__name__) for k, v in tavily_like_args.items()]}"
+        )
         print(f"Output types: {[(k, type(v).__name__) for k, v in converted.items()]}")
         print(f"include_domains value: {converted['include_domains']}")
         print(f"exclude_domains value: {converted['exclude_domains']}")
@@ -271,7 +277,11 @@ if __name__ == "__main__":
 
     for i, case in enumerate(edge_cases):
         try:
-            result = validator.validate_and_convert("test", test_schema_with_arrays, case)
-            print(f"✓ Edge case {i + 1}: {case['include_domains']} → {result['include_domains']}")
+            result = validator.validate_and_convert(
+                "test", test_schema_with_arrays, case
+            )
+            print(
+                f"✓ Edge case {i + 1}: {case['include_domains']} → {result['include_domains']}"
+            )
         except Exception as e:
             print(f"✗ Edge case {i + 1} failed: {e}")

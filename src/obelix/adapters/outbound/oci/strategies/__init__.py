@@ -29,8 +29,12 @@ Usage:
 """
 
 from obelix.adapters.outbound.oci.strategies.base_strategy import OCIRequestStrategy
-from obelix.adapters.outbound.oci.strategies.generic_strategy import GenericRequestStrategy
-from obelix.adapters.outbound.oci.strategies.cohere_strategy import CohereRequestStrategy
+from obelix.adapters.outbound.oci.strategies.cohere_strategy import (
+    CohereRequestStrategy,
+)
+from obelix.adapters.outbound.oci.strategies.generic_strategy import (
+    GenericRequestStrategy,
+)
 
 __all__ = [
     "OCIRequestStrategy",

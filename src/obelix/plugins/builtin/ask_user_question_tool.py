@@ -5,48 +5,47 @@ Tool for asking interactive questions to the user.
 Allows the agent to gather information, clarify requirements, and get decisions
 from the user through structured questions with multiple choice options.
 """
+
 import asyncio
-from typing import List
 
 from pydantic import BaseModel, Field
 
 from obelix.core.tool.tool_decorator import tool
-from obelix.core.tool.tool_base import ToolBase
 
 
 class QuestionOption(BaseModel):
     """Single option for a question."""
+
     label: str = Field(
-        ...,
-        description="Display text for this option (1-5 words, concise)"
+        ..., description="Display text for this option (1-5 words, concise)"
     )
     description: str = Field(
         ...,
-        description="Explanation of what this option means or what happens if chosen"
+        description="Explanation of what this option means or what happens if chosen",
     )
-
 
 
 class Question(BaseModel):
     """A question to ask the user."""
+
     question: str = Field(
         ...,
-        description="The complete question to ask. Should be clear and end with '?'"
+        description="The complete question to ask. Should be clear and end with '?'",
     )
     header: str = Field(
         ...,
         max_length=12,
-        description="Short label displayed as chip/tag (max 12 chars). E.g.: 'Auth method', 'Library'"
+        description="Short label displayed as chip/tag (max 12 chars). E.g.: 'Auth method', 'Library'",
     )
-    options: List[QuestionOption] = Field(
+    options: list[QuestionOption] = Field(
         ...,
         min_length=2,
         max_length=4,
-        description="2-4 available choices. Each must be distinct."
+        description="2-4 available choices. Each must be distinct.",
     )
     multi_select: bool = Field(
         default=False,
-        description="If true, user can select multiple options. If false, only one."
+        description="If true, user can select multiple options. If false, only one.",
     )
 
 
@@ -56,9 +55,9 @@ class Question(BaseModel):
 Ask interactive questions to the user and receive structured responses.
 Use to clarify requirements, gather preferences, validate assumptions, or get decisions.
 
- l,"""
+ l,""",
 )
-class AskUserQuestionTool(ToolBase):
+class AskUserQuestionTool:
     """
     Tool for asking interactive questions to the user.
 
@@ -81,11 +80,11 @@ class AskUserQuestionTool(ToolBase):
         ]
     """
 
-    questions: List[Question] = Field(
+    questions: list[Question] = Field(
         ...,
         min_length=1,
         max_length=4,
-        description="Questions to ask the user (1-4 questions)"
+        description="Questions to ask the user (1-4 questions)",
     )
 
     async def execute(self) -> dict:
@@ -103,7 +102,7 @@ class AskUserQuestionTool(ToolBase):
 
         return {"answers": answers}
 
-    async def _ask_single_question(self, question: Question) -> str | List[str]:
+    async def _ask_single_question(self, question: Question) -> str | list[str]:
         """
         Present a single question and get user response.
 
@@ -117,7 +116,7 @@ class AskUserQuestionTool(ToolBase):
         """
         return await asyncio.to_thread(self._blocking_ask, question)
 
-    def _blocking_ask(self, question: Question) -> str | List[str]:
+    def _blocking_ask(self, question: Question) -> str | list[str]:
         """
         Blocking implementation of question asking.
 
@@ -143,7 +142,7 @@ class AskUserQuestionTool(ToolBase):
 
         # Show selection mode hint
         if question.multi_select:
-            print(f"\n(Multi-select: enter comma-separated numbers, e.g. '1,3')")
+            print("\n(Multi-select: enter comma-separated numbers, e.g. '1,3')")
         print()
 
         # Input loop
@@ -167,10 +166,7 @@ class AskUserQuestionTool(ToolBase):
                 return "Cancelled"
 
     def _parse_single_select(
-        self,
-        user_input: str,
-        question: Question,
-        other_num: int
+        self, user_input: str, question: Question, other_num: int
     ) -> str:
         """Parse single selection input."""
         selection = int(user_input)
@@ -183,11 +179,8 @@ class AskUserQuestionTool(ToolBase):
             raise ValueError(f"Enter a number between 1 and {other_num}")
 
     def _parse_multi_select(
-        self,
-        user_input: str,
-        question: Question,
-        other_num: int
-    ) -> List[str]:
+        self, user_input: str, question: Question, other_num: int
+    ) -> list[str]:
         """Parse multi-selection input."""
         selections = [int(x.strip()) for x in user_input.split(",")]
         selected_labels = []

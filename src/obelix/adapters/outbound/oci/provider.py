@@ -5,52 +5,52 @@ OCI Generative AI Provider.
 Self-contained provider with strategy-based request handling.
 No external mapping dependencies - all conversion logic is in strategies.
 """
+
 import logging
-from typing import List, Optional, Type
 
 import httpx
 from pydantic import BaseModel
 from tenacity import (
+    before_sleep_log,
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
-    before_sleep_log,
 )
 
 try:
     import oci
     from oci.generative_ai_inference.models import (
         ChatDetails,
-        OnDemandServingMode,
         JsonSchemaResponseFormat,
+        OnDemandServingMode,
         ResponseJsonSchema,
     )
 except ImportError:
-    raise ImportError(
-        "oci is not installed. Install with: pip install oci"
-    )
+    raise ImportError("oci is not installed. Install with: pip install oci")
 
-from obelix.ports.outbound.llm_provider import AbstractLLMProvider
-from obelix.core.model import SystemMessage, StandardMessage, AssistantMessage
-from obelix.core.model.usage import Usage
-from obelix.core.tool.tool_base import ToolBase
-from obelix.infrastructure.providers import Providers
-from obelix.adapters.outbound.oci.connection import OCIConnection
 from obelix.adapters.outbound.oci.connection import (
+    OCIConnection,
+    OCIIncorrectStateError,
     OCIRateLimitError,
     OCIServerError,
-    OCIIncorrectStateError,
 )
-from obelix.infrastructure.logging import get_logger
 
 # Import strategies
 from obelix.adapters.outbound.oci.strategies.base_strategy import OCIRequestStrategy
+from obelix.adapters.outbound.oci.strategies.cohere_strategy import (
+    CohereRequestStrategy,
+)
 from obelix.adapters.outbound.oci.strategies.generic_strategy import (
     GenericRequestStrategy,
     ToolCallExtractionError,
 )
-from obelix.adapters.outbound.oci.strategies.cohere_strategy import CohereRequestStrategy
+from obelix.core.model import AssistantMessage, StandardMessage, SystemMessage
+from obelix.core.model.usage import Usage
+from obelix.core.tool.tool_base import Tool
+from obelix.infrastructure.logging import get_logger
+from obelix.infrastructure.providers import Providers
+from obelix.ports.outbound.llm_provider import AbstractLLMProvider
 
 logger = get_logger(__name__)
 
@@ -64,29 +64,28 @@ class OCILLm(AbstractLLMProvider):
     """
 
     # Available strategies
-    _STRATEGIES = [
-        GenericRequestStrategy(),
-        CohereRequestStrategy()
-    ]
+    _STRATEGIES = [GenericRequestStrategy(), CohereRequestStrategy()]
 
     @property
     def provider_type(self) -> Providers:
         return Providers.OCI_GENERATIVE_AI
 
-    def __init__(self,
-                 connection: Optional[OCIConnection] = None,
-                 model_id: str = "openai.gpt-oss-120b",
-                 max_tokens: int = 3500,
-                 temperature: float = 0.1,
-                 top_p: Optional[float] = None,
-                 top_k: Optional[int] = None,
-                 frequency_penalty: Optional[float] = None,
-                 presence_penalty: Optional[float] = None,
-                 stop_sequences: Optional[List[str]] = None,
-                 is_stream: bool = False,
-                 strategy: Optional[OCIRequestStrategy] = None,
-                 logger: bool = False,
-                 **strategy_kwargs):
+    def __init__(
+        self,
+        connection: OCIConnection | None = None,
+        model_id: str = "openai.gpt-oss-120b",
+        max_tokens: int = 3500,
+        temperature: float = 0.1,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        frequency_penalty: float | None = None,
+        presence_penalty: float | None = None,
+        stop_sequences: list[str] | None = None,
+        is_stream: bool = False,
+        strategy: OCIRequestStrategy | None = None,
+        logger: bool = False,
+        **strategy_kwargs,
+    ):
         """
         Initialize the OCI provider with dependency injection of connection.
 
@@ -106,17 +105,16 @@ class OCILLm(AbstractLLMProvider):
         """
         if logger is True:
             logging.basicConfig(level=logging.DEBUG)
-            logging.getLogger('oci').setLevel(logging.DEBUG)
+            logging.getLogger("oci").setLevel(logging.DEBUG)
             oci.base_client.is_http_log_enabled(True)
         else:
-            logging.getLogger('oci').setLevel(logging.WARNING)
+            logging.getLogger("oci").setLevel(logging.WARNING)
             oci.base_client.is_http_log_enabled(False)
 
         # Dependency injection of connection with fallback to GlobalConfig
         if connection is None:
             connection = self._get_connection_from_global_config(
-                Providers.OCI_GENERATIVE_AI,
-                "OCILLm"
+                Providers.OCI_GENERATIVE_AI, "OCILLm"
             )
 
         self.connection = connection
@@ -153,13 +151,15 @@ class OCILLm(AbstractLLMProvider):
     MAX_EXTRACTION_RETRIES = 3
 
     @retry(
-        retry=retry_if_exception_type((
-            OCIRateLimitError,
-            OCIServerError,
-            OCIIncorrectStateError,
-            httpx.TimeoutException,
-            httpx.ConnectError,
-        )),
+        retry=retry_if_exception_type(
+            (
+                OCIRateLimitError,
+                OCIServerError,
+                OCIIncorrectStateError,
+                httpx.TimeoutException,
+                httpx.ConnectError,
+            )
+        ),
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         before_sleep=before_sleep_log(logger, logging.WARNING),
@@ -167,9 +167,9 @@ class OCILLm(AbstractLLMProvider):
     )
     async def invoke(
         self,
-        messages: List[StandardMessage],
-        tools: List[ToolBase],
-        response_schema: Optional[Type[BaseModel]] = None,
+        messages: list[StandardMessage],
+        tools: list[Tool],
+        response_schema: type[BaseModel] | None = None,
     ) -> AssistantMessage:
         """
         Call the OCI model with standardized messages and tools.
@@ -182,9 +182,11 @@ class OCILLm(AbstractLLMProvider):
             tools: List of available tools
             response_schema: Optional Pydantic BaseModel for structured JSON output
         """
-        from obelix.infrastructure.k8s import YamlConfig
         import os
-        #todo, questo andra eliminato
+
+        from obelix.infrastructure.k8s import YamlConfig
+
+        # todo, questo andra eliminato
         infra_config = YamlConfig(os.getenv("INFRASTRUCTURE_CONFIG_PATH"))
         oci_config = infra_config.get("llm_providers.oci")
         client = self.connection.get_client()
@@ -203,13 +205,17 @@ class OCILLm(AbstractLLMProvider):
                     is_strict=True,
                 )
             )
-            logger.debug(f"OCI structured output enabled: schema={response_schema.__name__}")
+            logger.debug(
+                f"OCI structured output enabled: schema={response_schema.__name__}"
+            )
 
         for attempt in range(1, self.MAX_EXTRACTION_RETRIES + 1):
             # 1. Convert messages using strategy
             converted_messages = self.strategy.convert_messages(working_messages)
 
-            logger.debug(f"OCI invoke: model={self.model_id}, messages={len(working_messages)}, tools={len(converted_tools)}, attempt={attempt}")
+            logger.debug(
+                f"OCI invoke: model={self.model_id}, messages={len(working_messages)}, tools={len(converted_tools)}, attempt={attempt}"
+            )
 
             # 2. Build strategy kwargs (merge user kwargs + response_format)
             strategy_kwargs = dict(self.strategy_kwargs)
@@ -228,27 +234,36 @@ class OCILLm(AbstractLLMProvider):
                 presence_penalty=self.presence_penalty,
                 stop_sequences=self.stop_sequences,
                 is_stream=self.is_stream,
-                **strategy_kwargs
+                **strategy_kwargs,
             )
 
             # 3. Call OCI
             chat_details = ChatDetails(
                 compartment_id=oci_config["compartment_id"],
                 serving_mode=OnDemandServingMode(model_id=self.model_id),
-                chat_request=chat_request
+                chat_request=chat_request,
             )
 
             response = await client.chat(chat_details)
 
             logger.info(f"OCI chat completed: {response.data.model_id}")
-            logger.debug(f"OCI response total tokens: {response.data.chat_response.usage.total_tokens}")
+            logger.debug(
+                f"OCI response total tokens: {response.data.chat_response.usage.total_tokens}"
+            )
 
             # DEBUG TEMP: print tool calls for column_filter and sql_query_executor
             try:
-                raw_calls = response.data.data["chatResponse"]["choices"][0]["message"].get("toolCalls", [])
+                raw_calls = response.data.data["chatResponse"]["choices"][0][
+                    "message"
+                ].get("toolCalls", [])
                 for tc in raw_calls:
-                    if tc.get("name") in ("column_filter", "sql_query_executor", "sql_agent"):
+                    if tc.get("name") in (
+                        "column_filter",
+                        "sql_query_executor",
+                        "sql_agent",
+                    ):
                         import json
+
                         print(f"TOOL CALL: {tc['name']}")
                         args = tc.get("arguments", "")
                         try:
@@ -257,7 +272,7 @@ class OCILLm(AbstractLLMProvider):
                                 print(f"  {k}: {v}")
                         except (json.JSONDecodeError, TypeError):
                             print(args)
-                        print(f"{'='*50}")
+                        print(f"{'=' * 50}")
             except (KeyError, IndexError, TypeError):
                 pass
 
@@ -266,7 +281,9 @@ class OCILLm(AbstractLLMProvider):
                 return self._convert_response_to_assistant_message(response)
             except ToolCallExtractionError as e:
                 if attempt >= self.MAX_EXTRACTION_RETRIES:
-                    logger.error(f"Tool call extraction failed after {attempt} attempts: {e}")
+                    logger.error(
+                        f"Tool call extraction failed after {attempt} attempts: {e}"
+                    )
                     raise
 
                 logger.warning(f"Tool call extraction failed (attempt {attempt}): {e}")
@@ -296,11 +313,7 @@ class OCILLm(AbstractLLMProvider):
         # Extract usage
         usage = self._extract_usage(response)
 
-        return AssistantMessage(
-            content=content,
-            tool_calls=tool_calls,
-            usage=usage
-        )
+        return AssistantMessage(content=content, tool_calls=tool_calls, usage=usage)
 
     def _extract_content(self, response) -> str:
         """Extract text content from OCI response."""
@@ -311,36 +324,44 @@ class OCILLm(AbstractLLMProvider):
             return content
 
         # Try Generic format first (choices[0].message.content)
-        choices = chat_response.choices if hasattr(chat_response, 'choices') else None
+        choices = chat_response.choices if hasattr(chat_response, "choices") else None
         if choices and len(choices) > 0:
             message = choices[0].message
             msg_content = message.content if message else None
             if msg_content:
                 parts = []
                 for c in msg_content:
-                    c_type = c.type if hasattr(c, 'type') else (c.get("type") if isinstance(c, dict) else None)
+                    c_type = (
+                        c.type
+                        if hasattr(c, "type")
+                        else (c.get("type") if isinstance(c, dict) else None)
+                    )
                     if c_type == "TEXT":
-                        text = c.text if hasattr(c, 'text') else (c.get("text") if isinstance(c, dict) else None)
+                        text = (
+                            c.text
+                            if hasattr(c, "text")
+                            else (c.get("text") if isinstance(c, dict) else None)
+                        )
                         if text:
                             parts.append(str(text))
                 content = "".join(parts)
 
         # Try Cohere format (chat_response.text)
         if not content:
-            cohere_text = getattr(chat_response, 'text', None)
+            cohere_text = getattr(chat_response, "text", None)
             if cohere_text:
                 content = str(cohere_text)
 
         return content or ""
 
-    def _extract_usage(self, response) -> Optional[Usage]:
+    def _extract_usage(self, response) -> Usage | None:
         """Extract usage information from OCI response."""
         try:
             usage_data = response.data.chat_response.usage
             return Usage(
                 input_tokens=usage_data.prompt_tokens,
                 output_tokens=usage_data.completion_tokens,
-                total_tokens=usage_data.total_tokens
+                total_tokens=usage_data.total_tokens,
             )
         except AttributeError:
             return None

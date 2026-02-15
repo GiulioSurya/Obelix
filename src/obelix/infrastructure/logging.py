@@ -121,10 +121,10 @@ The add() method returns an ID you can use to remove the handler:
 =============================================================================
 """
 
-from loguru import logger
-from pathlib import Path
 import sys
+from pathlib import Path
 
+from loguru import logger
 
 # Flag to prevent multiple setups
 _is_configured = False
@@ -134,7 +134,7 @@ def setup_logging(
     level: str = "INFO",
     console_level: str = "DEBUG",
     log_dir: str = "logs",
-    log_filename: str = "sophia.log"
+    log_filename: str = "sophia.log",
 ) -> None:
     """
     Configure logging for the application.
@@ -192,11 +192,11 @@ def setup_logging(
     # File handler with rotation
     logger.add(
         sink=log_path / log_filename,  # Path to file
-        level=level,                    # Minimum level (DEBUG)
-        format=log_format,              # Format defined above
-        rotation="50 MB",               # Rotate when file exceeds 50 MB
-        retention="7 days",             # Keep files for 7 days
-        encoding="utf-8",               # File encoding
+        level=level,  # Minimum level (DEBUG)
+        format=log_format,  # Format defined above
+        rotation="50 MB",  # Rotate when file exceeds 50 MB
+        retention="7 days",  # Keep files for 7 days
+        encoding="utf-8",  # File encoding
     )
 
     # Console format: more compact, no full timestamp
@@ -208,10 +208,10 @@ def setup_logging(
 
     # Console handler with colors
     logger.add(
-        sink=sys.stderr,                # Output: console (stderr)
-        level=console_level,            # Minimum level (INFO by default)
-        format=console_format,          # Compact format
-        colorize=True,                  # Colors active
+        sink=sys.stderr,  # Output: console (stderr)
+        level=console_level,  # Minimum level (INFO by default)
+        format=console_format,  # Compact format
+        colorize=True,  # Colors active
     )
 
     _is_configured = True
@@ -303,7 +303,7 @@ def format_message_for_trace(message, max_chars: int = 2500) -> str:
     elif isinstance(message, ToolMessage):
         results_strs = []
         for tr in message.tool_results:
-            status = tr.status.value if hasattr(tr.status, 'value') else str(tr.status)
+            status = tr.status.value if hasattr(tr.status, "value") else str(tr.status)
             result_repr = repr(tr.result)
             if tr.error:
                 results_strs.append(f"{tr.tool_name}: {status} error={tr.error!r}")
@@ -313,13 +313,13 @@ def format_message_for_trace(message, max_chars: int = 2500) -> str:
 
     else:
         # SystemMessage, HumanMessage, or other
-        content = message.content if hasattr(message, 'content') else ""
+        content = message.content if hasattr(message, "content") else ""
         formatted = f"{msg_type}: {content}"
 
     # Truncate if too long
     if len(formatted) > max_chars:
         truncate_marker = " ... [TRUNCATED]"
-        formatted = formatted[:max_chars - len(truncate_marker)] + truncate_marker
+        formatted = formatted[: max_chars - len(truncate_marker)] + truncate_marker
 
     return formatted
 

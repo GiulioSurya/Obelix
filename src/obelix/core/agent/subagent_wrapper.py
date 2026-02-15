@@ -1,5 +1,5 @@
 """
-SubAgentWrapper: bridges BaseAgent to ToolBase interface.
+SubAgentWrapper: bridges BaseAgent to Tool protocol.
 
 Allows any BaseAgent to be registered as a sub-agent (tool) on another agent.
 All field extraction, schema generation, and execution logic is self-contained.
@@ -13,16 +13,21 @@ Usage:
     )
     orchestrator.registered_tools.append(wrapper)
 """
+
 import asyncio
 import copy
 import time
-from typing import Dict, Type, TYPE_CHECKING, get_type_hints
+from typing import TYPE_CHECKING, get_type_hints
 
 from pydantic import Field, create_model
 from pydantic.fields import FieldInfo
 
-from obelix.core.tool.tool_base import ToolBase
-from obelix.core.model.tool_message import ToolCall, ToolResult, ToolStatus, MCPToolSchema
+from obelix.core.model.tool_message import (
+    MCPToolSchema,
+    ToolCall,
+    ToolResult,
+    ToolStatus,
+)
 from obelix.infrastructure.logging import get_logger
 
 if TYPE_CHECKING:
@@ -31,9 +36,9 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-class SubAgentWrapper(ToolBase):
+class SubAgentWrapper:
     """
-    Wraps a BaseAgent as a ToolBase so it can be registered as a tool.
+    Wraps a BaseAgent as a tool (satisfies Tool protocol via structural typing).
 
     Handles:
     - Field extraction from the agent class (Pydantic Fields become input parameters)
@@ -44,7 +49,7 @@ class SubAgentWrapper(ToolBase):
 
     def __init__(
         self,
-        agent: 'BaseAgent',
+        agent: "BaseAgent",
         *,
         name: str,
         description: str,
@@ -83,7 +88,7 @@ class SubAgentWrapper(ToolBase):
                 tool_call_id=tool_call.id,
                 result=response.content,
                 status=ToolStatus.SUCCESS,
-                execution_time=time.time() - start_time
+                execution_time=time.time() - start_time,
             )
         except Exception as e:
             return ToolResult(
@@ -92,7 +97,7 @@ class SubAgentWrapper(ToolBase):
                 result=None,
                 status=ToolStatus.ERROR,
                 error=str(e),
-                execution_time=time.time() - start_time
+                execution_time=time.time() - start_time,
             )
 
     async def _execute_stateful(self, tool_call: ToolCall) -> ToolResult:
@@ -106,7 +111,7 @@ class SubAgentWrapper(ToolBase):
                 tool_call_id=tool_call.id,
                 result=response.content,
                 status=ToolStatus.SUCCESS,
-                execution_time=time.time() - start_time
+                execution_time=time.time() - start_time,
             )
         except Exception as e:
             return ToolResult(
@@ -115,7 +120,7 @@ class SubAgentWrapper(ToolBase):
                 result=None,
                 status=ToolStatus.ERROR,
                 error=str(e),
-                execution_time=time.time() - start_time
+                execution_time=time.time() - start_time,
             )
 
     # ─── Query Building ───────────────────────────────────────────────────────
@@ -125,7 +130,7 @@ class SubAgentWrapper(ToolBase):
 
         query_parts = []
         for field_name in self._fields.keys():
-            if field_name == 'query':
+            if field_name == "query":
                 continue
             field_value = getattr(validated, field_name, None)
             if field_value:
@@ -141,13 +146,13 @@ class SubAgentWrapper(ToolBase):
             name=self.tool_name,
             description=self.tool_description,
             inputSchema=self._input_schema.model_json_schema(),
-            outputSchema={"type": "object", "additionalProperties": True}
+            outputSchema={"type": "object", "additionalProperties": True},
         )
 
     # ─── Field Extraction (from agent class) ──────────────────────────────────
 
     @staticmethod
-    def _extract_fields(cls: Type) -> Dict[str, tuple]:
+    def _extract_fields(cls: type) -> dict[str, tuple]:
         """
         Extract Pydantic Field definitions from the agent class.
 
@@ -159,10 +164,10 @@ class SubAgentWrapper(ToolBase):
         try:
             hints = get_type_hints(cls)
         except Exception:
-            hints = getattr(cls, '__annotations__', {})
+            hints = getattr(cls, "__annotations__", {})
 
         for attr_name, attr_type in hints.items():
-            if attr_name.startswith('_') or attr_name == 'query':
+            if attr_name.startswith("_") or attr_name == "query":
                 continue
 
             default = getattr(cls, attr_name, ...)
@@ -170,11 +175,11 @@ class SubAgentWrapper(ToolBase):
                 other_fields[attr_name] = (attr_type, default)
 
         return {
-            'query': (str, Field(..., description="Query for the sub-agent")),
-            **other_fields
+            "query": (str, Field(..., description="Query for the sub-agent")),
+            **other_fields,
         }
 
-    def _build_input_schema(self, name: str) -> Type:
+    def _build_input_schema(self, name: str) -> type:
         """Create dynamic Pydantic model from extracted fields."""
         schema_class_name = f"{name.title().replace('_', '')}SubAgentSchema"
         return create_model(schema_class_name, **self._fields)

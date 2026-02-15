@@ -3,8 +3,9 @@ Agent Factory for centralized agent creation and composition.
 
 All agents should be created through this factory in production code.
 """
+
 from dataclasses import dataclass, field
-from typing import Dict, List, Type, Optional, Any, Union, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Union
 
 from obelix.infrastructure.logging import get_logger
 
@@ -22,11 +23,12 @@ class AgentSpec:
 
     Stores the class and configuration for creating agent instances.
     """
-    cls: Type['BaseAgent']
-    subagent_name: Optional[str] = None
-    subagent_description: Optional[str] = None
+
+    cls: type["BaseAgent"]
+    subagent_name: str | None = None
+    subagent_description: str | None = None
     stateless: bool = False
-    defaults: Dict[str, Any] = field(default_factory=dict)
+    defaults: dict[str, Any] = field(default_factory=dict)
 
 
 class AgentFactory:
@@ -52,7 +54,7 @@ class AgentFactory:
         planner = factory.create("planner", subagents=["weather"])
     """
 
-    def __init__(self, global_defaults: Optional[Dict[str, Any]] = None):
+    def __init__(self, global_defaults: dict[str, Any] | None = None):
         """
         Initialize the factory.
 
@@ -62,19 +64,19 @@ class AgentFactory:
                 or per-instance in create().
         """
         self._global_defaults = global_defaults or {}
-        self._registry: Dict[str, AgentSpec] = {}
-        self._memory_graph: Optional['SharedMemoryGraph'] = None
+        self._registry: dict[str, AgentSpec] = {}
+        self._memory_graph: SharedMemoryGraph | None = None
 
     def register(
         self,
         name: str,
-        cls: Type['BaseAgent'],
+        cls: type["BaseAgent"],
         *,
-        subagent_name: Optional[str] = None,
-        subagent_description: Optional[str] = None,
+        subagent_name: str | None = None,
+        subagent_description: str | None = None,
         stateless: bool = False,
-        defaults: Optional[Dict[str, Any]] = None,
-    ) -> 'AgentFactory':
+        defaults: dict[str, Any] | None = None,
+    ) -> "AgentFactory":
         """
         Register an agent class with the factory.
 
@@ -108,7 +110,7 @@ class AgentFactory:
         logger.info(f"AgentFactory: registered '{name}' ({cls.__name__})")
         return self
 
-    def with_memory_graph(self, graph: 'SharedMemoryGraph') -> 'AgentFactory':
+    def with_memory_graph(self, graph: "SharedMemoryGraph") -> "AgentFactory":
         """Configure the shared memory graph.
 
         All agents created by this factory will share the SAME graph instance.
@@ -123,10 +125,10 @@ class AgentFactory:
         self,
         name: str,
         *,
-        subagents: Optional[List[Union[str, 'BaseAgent']]] = None,
-        subagent_config: Optional[Dict[str, Dict[str, Any]]] = None,
+        subagents: list[Union[str, "BaseAgent"]] | None = None,
+        subagent_config: dict[str, dict[str, Any]] | None = None,
         **overrides: Any,
-    ) -> 'BaseAgent':
+    ) -> "BaseAgent":
         """
         Create an agent instance from a registered class.
 
@@ -182,9 +184,9 @@ class AgentFactory:
 
     def _attach_subagents(
         self,
-        agent: 'BaseAgent',
-        subagents: List[Union[str, 'BaseAgent']],
-        subagent_config: Dict[str, Dict[str, Any]],
+        agent: "BaseAgent",
+        subagents: list[Union[str, "BaseAgent"]],
+        subagent_config: dict[str, dict[str, Any]],
     ) -> None:
         """Register subagents on the orchestrator agent."""
         for sub in subagents:
@@ -198,9 +200,9 @@ class AgentFactory:
 
     def _attach_from_registry(
         self,
-        agent: 'BaseAgent',
+        agent: "BaseAgent",
         sub_name: str,
-        extra_config: Dict[str, Any],
+        extra_config: dict[str, Any],
     ) -> None:
         """Create a subagent from registry and register it on the agent."""
         if sub_name not in self._registry:
@@ -237,7 +239,7 @@ class AgentFactory:
 
     def _inject_dependency_awareness(
         self,
-        agent: 'BaseAgent',
+        agent: "BaseAgent",
         subagent_refs: list,
     ) -> None:
         """Inject dependency awareness system message into orchestrator."""
@@ -249,7 +251,9 @@ class AgentFactory:
 
         edges = self._memory_graph.get_edges_for_nodes(subagent_names)
         if not edges:
-            logger.debug("AgentFactory: no edges between sub-agents, skip awareness message")
+            logger.debug(
+                "AgentFactory: no edges between sub-agents, skip awareness message"
+            )
             return
 
         try:
@@ -269,18 +273,19 @@ class AgentFactory:
         if order_str:
             lines.append(order_str)
         lines.append("")
-        lines.append("Guideline: do not call an agent before its prerequisites have been executed.")
+        lines.append(
+            "Guideline: do not call an agent before its prerequisites have been executed."
+        )
 
         msg = SystemMessage(
-            content="\n".join(lines),
-            metadata={"orchestrator_awareness": True}
+            content="\n".join(lines), metadata={"orchestrator_awareness": True}
         )
         agent.conversation_history.insert(1, msg)
         logger.info("AgentFactory: awareness message injected into orchestrator")
 
     # ─── Utility Methods ─────────────────────────────────────────────────────
 
-    def get_registered_names(self) -> List[str]:
+    def get_registered_names(self) -> list[str]:
         """Return all registered agent names."""
         return list(self._registry.keys())
 
@@ -288,7 +293,7 @@ class AgentFactory:
         """Check if name is registered."""
         return name in self._registry
 
-    def get_spec(self, name: str) -> Optional[AgentSpec]:
+    def get_spec(self, name: str) -> AgentSpec | None:
         """Get AgentSpec for introspection."""
         return self._registry.get(name)
 

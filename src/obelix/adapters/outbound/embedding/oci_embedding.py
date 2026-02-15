@@ -1,11 +1,9 @@
 # src/embedding_providers/oci_embedding_provider.py
-from oci.generative_ai_inference import GenerativeAiInferenceClient
-from oci.generative_ai_inference.models import (
-    EmbedTextDetails,
-    OnDemandServingMode
-)
-from typing import List, Union, Literal
+from typing import Literal
+
 import numpy as np
+from oci.generative_ai_inference import GenerativeAiInferenceClient
+from oci.generative_ai_inference.models import EmbedTextDetails, OnDemandServingMode
 
 from obelix.ports.outbound.embedding_provider import AbstractEmbeddingProvider
 
@@ -28,8 +26,10 @@ class OCIEmbeddingProvider(AbstractEmbeddingProvider):
     def __init__(
         self,
         model_id: str = "cohere.embed-multilingual-v3.0",
-        input_type: Literal["search_document", "search_query", "classification", "clustering"] = "search_document",
-        truncate: Literal["NONE", "START", "END"] = "END"
+        input_type: Literal[
+            "search_document", "search_query", "classification", "clustering"
+        ] = "search_document",
+        truncate: Literal["NONE", "START", "END"] = "END",
     ):
         """
         Initialize the OCI Embedding provider.
@@ -52,8 +52,9 @@ class OCIEmbeddingProvider(AbstractEmbeddingProvider):
         self.truncate = truncate
 
         # Import config for centralized configuration
-        from obelix.infrastructure.k8s import YamlConfig
         import os
+
+        from obelix.infrastructure.k8s import YamlConfig
 
         # Read complete OCI configuration from infrastructure.yaml (includes private_key_content)
         infra_config = YamlConfig(os.getenv("INFRASTRUCTURE_CONFIG_PATH"))
@@ -68,11 +69,11 @@ class OCIEmbeddingProvider(AbstractEmbeddingProvider):
 
         # Initialize OCI configuration
         oci_config = {
-            'user': oci_provider_config["user_id"],
-            'fingerprint': oci_provider_config["fingerprint"],
-            'key_content': oci_provider_config["private_key_content"],
-            'tenancy': oci_provider_config["tenancy"],
-            'region': oci_provider_config["region"],
+            "user": oci_provider_config["user_id"],
+            "fingerprint": oci_provider_config["fingerprint"],
+            "key_content": oci_provider_config["private_key_content"],
+            "tenancy": oci_provider_config["tenancy"],
+            "region": oci_provider_config["region"],
         }
 
         # Initialize OCI client
@@ -81,7 +82,7 @@ class OCIEmbeddingProvider(AbstractEmbeddingProvider):
         # Use compartment_id from config
         self.compartment_id = oci_provider_config["compartment_id"]
 
-    def embed(self, texts: Union[str, List[str]]) -> Union[np.ndarray, List[np.ndarray]]:
+    def embed(self, texts: str | list[str]) -> np.ndarray | list[np.ndarray]:
         """
         Generates embeddings using Cohere Embed v4 on OCI.
 
@@ -125,7 +126,7 @@ class OCIEmbeddingProvider(AbstractEmbeddingProvider):
             inputs=text_list,
             input_type=self.input_type.upper(),
             truncate=self.truncate,
-            compartment_id=self.compartment_id
+            compartment_id=self.compartment_id,
         )
 
         # OCI API call
@@ -133,8 +134,7 @@ class OCIEmbeddingProvider(AbstractEmbeddingProvider):
 
         # Extract embeddings and convert to numpy array
         embeddings = [
-            np.array(emb, dtype=np.float32)
-            for emb in response.data.embeddings
+            np.array(emb, dtype=np.float32) for emb in response.data.embeddings
         ]
 
         # Return appropriate format

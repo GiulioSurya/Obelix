@@ -9,39 +9,45 @@ Uses OpenAI-compatible dict format for messages.
 Ollama SDK has NO built-in retry - tenacity handles transient errors.
 AsyncClient is natively async - no asyncio.to_thread() needed.
 """
+
 import json
 import logging
-from typing import List, Dict, Any, Optional, Type
+from typing import Any
 
 from pydantic import ValidationError
 from tenacity import (
+    before_sleep_log,
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
-    before_sleep_log,
 )
 
 try:
-    from ollama import AsyncClient, ResponseError, RequestError
+    from ollama import AsyncClient, RequestError, ResponseError
 except ImportError:
-    raise ImportError(
-        "ollama is not installed. Install with: pip install ollama"
-    )
+    raise ImportError("ollama is not installed. Install with: pip install ollama")
 
-from obelix.ports.outbound.llm_provider import AbstractLLMProvider
-from obelix.core.model import SystemMessage, HumanMessage, AssistantMessage, ToolMessage, StandardMessage
+from obelix.core.model import (
+    AssistantMessage,
+    HumanMessage,
+    StandardMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from obelix.core.model.tool_message import ToolCall
 from obelix.core.model.usage import Usage
-from obelix.core.tool.tool_base import ToolBase
+from obelix.core.tool.tool_base import Tool
+from obelix.infrastructure.logging import format_message_for_trace, get_logger
 from obelix.infrastructure.providers import Providers
-from obelix.infrastructure.logging import get_logger, format_message_for_trace
+from obelix.ports.outbound.llm_provider import AbstractLLMProvider
 
 logger = get_logger(__name__)
 
 
 class ToolCallExtractionError(Exception):
     """Raised when tool call extraction or validation fails."""
+
     pass
 
 
@@ -59,16 +65,18 @@ class OllamaProvider(AbstractLLMProvider):
     def provider_type(self) -> Providers:
         return Providers.OLLAMA
 
-    def __init__(self,
-                 model_id: str = "a-kore/Arctic-Text2SQL-R1-7B",
-                 base_url: Optional[str] = None,
-                 temperature: float = 0.1,
-                 max_tokens: Optional[int] = 2000,
-                 top_p: Optional[float] = None,
-                 top_k: Optional[int] = None,
-                 seed: Optional[int] = None,
-                 stop: Optional[List[str]] = None,
-                 keep_alive: Optional[str] = None):
+    def __init__(
+        self,
+        model_id: str = "a-kore/Arctic-Text2SQL-R1-7B",
+        base_url: str | None = None,
+        temperature: float = 0.1,
+        max_tokens: int | None = 2000,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        seed: int | None = None,
+        stop: list[str] | None = None,
+        keep_alive: str | None = None,
+    ):
         """
         Initialize the Ollama provider.
 
@@ -91,7 +99,7 @@ class OllamaProvider(AbstractLLMProvider):
             self.client = AsyncClient()
 
         # Build options dict with only non-None parameters
-        self.options: Dict[str, Any] = {}
+        self.options: dict[str, Any] = {}
         if temperature is not None:
             self.options["temperature"] = temperature
         if max_tokens is not None:
@@ -110,10 +118,12 @@ class OllamaProvider(AbstractLLMProvider):
     # ========== INVOKE ==========
 
     @retry(
-        retry=retry_if_exception_type((
-            ResponseError,
-            ConnectionError,
-        )),
+        retry=retry_if_exception_type(
+            (
+                ResponseError,
+                ConnectionError,
+            )
+        ),
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         before_sleep=before_sleep_log(logger, logging.WARNING),
@@ -121,9 +131,9 @@ class OllamaProvider(AbstractLLMProvider):
     )
     async def invoke(
         self,
-        messages: List[StandardMessage],
-        tools: List[ToolBase],
-        response_schema: Optional[Type["BaseModel"]] = None,
+        messages: list[StandardMessage],
+        tools: list[Tool],
+        response_schema: type["BaseModel"] | None = None,
     ) -> AssistantMessage:
         """
         Call the Ollama model with standardized messages and tools.
@@ -135,11 +145,13 @@ class OllamaProvider(AbstractLLMProvider):
         converted_tools = self._convert_tools(tools)
 
         for attempt in range(1, self.MAX_EXTRACTION_RETRIES + 1):
-            logger.debug(f"Ollama invoke: model={self.model_id}, messages={len(working_messages)}, tools={len(converted_tools)}, attempt={attempt}")
+            logger.debug(
+                f"Ollama invoke: model={self.model_id}, messages={len(working_messages)}, tools={len(converted_tools)}, attempt={attempt}"
+            )
 
             converted_messages = self._convert_messages(working_messages)
 
-            chat_params: Dict[str, Any] = {
+            chat_params: dict[str, Any] = {
                 "model": self.model_id,
                 "messages": converted_messages,
             }
@@ -157,14 +169,20 @@ class OllamaProvider(AbstractLLMProvider):
 
             logger.info(f"Ollama chat completed: {self.model_id}")
 
-            if hasattr(response, 'prompt_eval_count') and hasattr(response, 'eval_count'):
-                logger.debug(f"Ollama tokens: prompt={response.prompt_eval_count}, completion={response.eval_count}")
+            if hasattr(response, "prompt_eval_count") and hasattr(
+                response, "eval_count"
+            ):
+                logger.debug(
+                    f"Ollama tokens: prompt={response.prompt_eval_count}, completion={response.eval_count}"
+                )
 
             try:
                 return self._convert_response_to_assistant_message(response)
             except ToolCallExtractionError as e:
                 if attempt >= self.MAX_EXTRACTION_RETRIES:
-                    logger.error(f"Tool call extraction failed after {attempt} attempts: {e}")
+                    logger.error(
+                        f"Tool call extraction failed after {attempt} attempts: {e}"
+                    )
                     raise
 
                 logger.warning(f"Tool call extraction failed (attempt {attempt}): {e}")
@@ -178,7 +196,7 @@ class OllamaProvider(AbstractLLMProvider):
 
     # ========== MESSAGE CONVERSION ==========
 
-    def _convert_messages(self, messages: List[StandardMessage]) -> List[dict]:
+    def _convert_messages(self, messages: list[StandardMessage]) -> list[dict]:
         """
         Convert standardized messages to Ollama format (OpenAI-compatible dicts).
         """
@@ -188,19 +206,13 @@ class OllamaProvider(AbstractLLMProvider):
             logger.trace(f"msg[{i}] {format_message_for_trace(msg)}")
 
             if isinstance(msg, SystemMessage):
-                converted.append({
-                    "role": "system",
-                    "content": msg.content
-                })
+                converted.append({"role": "system", "content": msg.content})
 
             elif isinstance(msg, HumanMessage):
-                converted.append({
-                    "role": "user",
-                    "content": msg.content
-                })
+                converted.append({"role": "user", "content": msg.content})
 
             elif isinstance(msg, AssistantMessage):
-                assistant_msg: Dict[str, Any] = {"role": "assistant"}
+                assistant_msg: dict[str, Any] = {"role": "assistant"}
 
                 if msg.content:
                     assistant_msg["content"] = msg.content
@@ -212,8 +224,8 @@ class OllamaProvider(AbstractLLMProvider):
                             "id": tc.id,
                             "function": {
                                 "name": tc.name,
-                                "arguments": json.dumps(tc.arguments)
-                            }
+                                "arguments": json.dumps(tc.arguments),
+                            },
                         }
                         for tc in msg.tool_calls
                     ]
@@ -225,18 +237,24 @@ class OllamaProvider(AbstractLLMProvider):
 
             elif isinstance(msg, ToolMessage):
                 for result in msg.tool_results:
-                    converted.append({
-                        "role": "tool",
-                        "tool_call_id": result.tool_call_id,
-                        "content": str(result.result) if result.result is not None else (result.error or "No result")
-                    })
+                    converted.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": result.tool_call_id,
+                            "content": str(result.result)
+                            if result.result is not None
+                            else (result.error or "No result"),
+                        }
+                    )
 
-        logger.debug(f"Converted {len(messages)} messages to {len(converted)} Ollama messages")
+        logger.debug(
+            f"Converted {len(messages)} messages to {len(converted)} Ollama messages"
+        )
         return converted
 
     # ========== TOOL CONVERSION ==========
 
-    def _convert_tools(self, tools: List[ToolBase]) -> List[dict]:
+    def _convert_tools(self, tools: list[Tool]) -> list[dict]:
         """Convert tool list to OpenAI-compatible function format."""
         if not tools:
             return []
@@ -244,21 +262,23 @@ class OllamaProvider(AbstractLLMProvider):
         converted = []
         for tool in tools:
             schema = tool.create_schema()
-            converted.append({
-                "type": "function",
-                "function": {
-                    "name": schema.name,
-                    "description": schema.description,
-                    "parameters": schema.inputSchema
+            converted.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": schema.name,
+                        "description": schema.description,
+                        "parameters": schema.inputSchema,
+                    },
                 }
-            })
+            )
 
         logger.debug(f"Converted {len(tools)} tools to Ollama format")
         return converted
 
     # ========== TOOL CALL EXTRACTION ==========
 
-    def _extract_tool_calls(self, response) -> List[ToolCall]:
+    def _extract_tool_calls(self, response) -> list[ToolCall]:
         """
         Extract and validate tool calls from Ollama response.
 
@@ -268,10 +288,10 @@ class OllamaProvider(AbstractLLMProvider):
         Raises:
             ToolCallExtractionError: If validation fails
         """
-        if not hasattr(response, 'message') or not response.message:
+        if not hasattr(response, "message") or not response.message:
             return []
 
-        raw_tool_calls = getattr(response.message, 'tool_calls', None)
+        raw_tool_calls = getattr(response.message, "tool_calls", None)
         if not raw_tool_calls:
             return []
 
@@ -279,7 +299,7 @@ class OllamaProvider(AbstractLLMProvider):
         errors = []
 
         for call in raw_tool_calls:
-            if not hasattr(call, 'function'):
+            if not hasattr(call, "function"):
                 continue
 
             try:
@@ -289,9 +309,9 @@ class OllamaProvider(AbstractLLMProvider):
                     arguments = json.loads(arguments, strict=False)
 
                 tool_call = ToolCall(
-                    id=getattr(call, 'id', None) or f"ollama_{len(tool_calls)}",
+                    id=getattr(call, "id", None) or f"ollama_{len(tool_calls)}",
                     name=call.function.name,
-                    arguments=dict(arguments)
+                    arguments=dict(arguments),
                 )
                 tool_calls.append(tool_call)
 
@@ -306,7 +326,8 @@ class OllamaProvider(AbstractLLMProvider):
 
         if errors:
             raise ToolCallExtractionError(
-                "Failed to extract tool calls:\n" + "\n".join(f"  - {err}" for err in errors)
+                "Failed to extract tool calls:\n"
+                + "\n".join(f"  - {err}" for err in errors)
             )
 
         return tool_calls
@@ -315,15 +336,15 @@ class OllamaProvider(AbstractLLMProvider):
 
     def _extract_content(self, response) -> str:
         """Extract text content from Ollama response."""
-        if not hasattr(response, 'message') or not response.message:
+        if not hasattr(response, "message") or not response.message:
             return ""
 
         return response.message.content or ""
 
-    def _extract_usage(self, response) -> Optional[Usage]:
+    def _extract_usage(self, response) -> Usage | None:
         """Extract usage information from Ollama response."""
-        prompt_tokens = getattr(response, 'prompt_eval_count', None)
-        completion_tokens = getattr(response, 'eval_count', None)
+        prompt_tokens = getattr(response, "prompt_eval_count", None)
+        completion_tokens = getattr(response, "eval_count", None)
 
         if prompt_tokens is None and completion_tokens is None:
             return None
@@ -334,7 +355,7 @@ class OllamaProvider(AbstractLLMProvider):
         return Usage(
             input_tokens=prompt_tokens,
             output_tokens=completion_tokens,
-            total_tokens=prompt_tokens + completion_tokens
+            total_tokens=prompt_tokens + completion_tokens,
         )
 
     def _convert_response_to_assistant_message(self, response) -> AssistantMessage:
@@ -352,8 +373,4 @@ class OllamaProvider(AbstractLLMProvider):
             f"Ollama response: content_length={len(content)}, tool_calls={len(tool_calls)}"
         )
 
-        return AssistantMessage(
-            content=content,
-            tool_calls=tool_calls,
-            usage=usage
-        )
+        return AssistantMessage(content=content, tool_calls=tool_calls, usage=usage)

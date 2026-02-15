@@ -9,10 +9,11 @@ The API uses when(...) and handle(...) to define:
 - flow decisions (CONTINUE/RETRY/FAIL/STOP)
 """
 
-from enum import Enum
-from dataclasses import dataclass
-from typing import Optional, Callable, Any, List, TYPE_CHECKING
 import asyncio
+from collections.abc import Callable
+from dataclasses import dataclass
+from enum import Enum
+from typing import TYPE_CHECKING, Any, Optional
 
 from obelix.infrastructure.logging import get_logger
 
@@ -20,9 +21,9 @@ logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from obelix.core.agent.base_agent import BaseAgent
-    from obelix.core.model.tool_message import ToolCall, ToolResult
     from obelix.core.model.assistant_message import AssistantMessage
     from obelix.core.model.standard_message import StandardMessage
+    from obelix.core.model.tool_message import ToolCall, ToolResult
 
 
 class AgentEvent(str, Enum):
@@ -56,6 +57,7 @@ class AgentEvent(str, Enum):
 
 class HookDecision(str, Enum):
     """Hook decision for flow control"""
+
     CONTINUE = "continue"
     RETRY = "retry"
     FAIL = "fail"
@@ -65,6 +67,7 @@ class HookDecision(str, Enum):
 @dataclass
 class Outcome:
     """Uniform result of a hook execution."""
+
     decision: HookDecision
     value: Any
 
@@ -77,16 +80,17 @@ class AgentStatus:
     Contains information about the agent's current state
     and allows access to conversation history.
     """
+
     event: AgentEvent
-    agent: 'BaseAgent'
+    agent: "BaseAgent"
     iteration: int = 0
-    tool_call: Optional['ToolCall'] = None
-    tool_result: Optional['ToolResult'] = None
-    assistant_message: Optional['AssistantMessage'] = None
-    error: Optional[str] = None
+    tool_call: Optional["ToolCall"] = None
+    tool_result: Optional["ToolResult"] = None
+    assistant_message: Optional["AssistantMessage"] = None
+    error: str | None = None
 
     @property
-    def conversation_history(self) -> List['StandardMessage']:
+    def conversation_history(self) -> list["StandardMessage"]:
         """Direct access to agent's conversation history"""
         return self.agent.conversation_history
 
@@ -100,13 +104,13 @@ class Hook:
 
     def __init__(self, event: AgentEvent):
         self.event = event
-        self._condition: Optional[Callable[[AgentStatus], bool]] = None
+        self._condition: Callable[[AgentStatus], bool] | None = None
         self._decision: HookDecision = HookDecision.CONTINUE
-        self._value: Optional[Callable[..., Any] | Any] = None
-        self._effects: List[Callable[[AgentStatus], Any]] = []
+        self._value: Callable[..., Any] | Any | None = None
+        self._effects: list[Callable[[AgentStatus], Any]] = []
         logger.debug(f"Hook created for event: {event.value}")
 
-    def when(self, condition: Callable[[AgentStatus], bool]) -> 'Hook':
+    def when(self, condition: Callable[[AgentStatus], bool]) -> "Hook":
         """
         Set the condition to activate the hook.
 
@@ -118,16 +122,16 @@ class Hook:
             self for method chaining
         """
         self._condition = condition
-        condition_name = getattr(condition, '__name__', str(condition))
+        condition_name = getattr(condition, "__name__", str(condition))
         logger.debug(f"Hook [{self.event.value}] - condition set: {condition_name}")
         return self
 
     def handle(
         self,
         decision: HookDecision,
-        value: Optional[Callable[..., Any] | Any] = None,
-        effects: Optional[List[Callable[[AgentStatus], Any]]] = None,
-    ) -> 'Hook':
+        value: Callable[..., Any] | Any | None = None,
+        effects: list[Callable[[AgentStatus], Any]] | None = None,
+    ) -> "Hook":
         """
         Defines decision, value and effects for the hook.
 
@@ -148,23 +152,31 @@ class Hook:
         )
         return self
 
-    async def execute(self, agent_status: AgentStatus, current_value: Any = None) -> Outcome:
+    async def execute(
+        self, agent_status: AgentStatus, current_value: Any = None
+    ) -> Outcome:
         """
         Execute the hook if condition is satisfied.
 
         Returns:
             Outcome with decision and value
         """
-        logger.debug(f"Hook [{self.event.value}] - execute invoked, iteration={agent_status.iteration}")
+        logger.debug(
+            f"Hook [{self.event.value}] - execute invoked, iteration={agent_status.iteration}"
+        )
 
         if self._condition is not None:
-            condition_name = getattr(self._condition, '__name__', 'anonymous')
-            logger.debug(f"Hook [{self.event.value}] - evaluating condition: {condition_name}")
+            condition_name = getattr(self._condition, "__name__", "anonymous")
+            logger.debug(
+                f"Hook [{self.event.value}] - evaluating condition: {condition_name}"
+            )
             cond_result = self._condition(agent_status)
             if asyncio.iscoroutine(cond_result):
                 cond_result = await cond_result
             if not cond_result:
-                logger.debug(f"Hook [{self.event.value}] - condition NOT satisfied, skip")
+                logger.debug(
+                    f"Hook [{self.event.value}] - condition NOT satisfied, skip"
+                )
                 return Outcome(HookDecision.CONTINUE, current_value)
             logger.debug(
                 f"Hook [{self.event.value}] - condition SATISFIED, effects={len(self._effects)}"
@@ -176,7 +188,7 @@ class Hook:
 
         for i, effect in enumerate(self._effects):
             logger.debug(
-                f"Hook [{self.event.value}] - executing effect {i+1}/{len(self._effects)}"
+                f"Hook [{self.event.value}] - executing effect {i + 1}/{len(self._effects)}"
             )
             effect_result = effect(agent_status)
             if asyncio.iscoroutine(effect_result):

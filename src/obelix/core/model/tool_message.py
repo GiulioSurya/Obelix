@@ -1,15 +1,17 @@
 # src/core/model/tool_message.py
-from pydantic import BaseModel, Field
-from typing import List, Any, Optional, Dict
-from enum import Enum
 from datetime import datetime
+from enum import Enum
+from typing import Any
 
-from obelix.core.model.roles import  MessageRole
+from pydantic import BaseModel, ConfigDict, Field
+
+from obelix.core.model.roles import MessageRole
+
 
 class ToolCall(BaseModel):
     id: str = Field(..., description="Unique ID of the tool call")
     name: str = Field(..., description="Name of the tool to call")
-    arguments: Dict[str, Any] = Field(..., description="Arguments for the tool")
+    arguments: dict[str, Any] = Field(..., description="Arguments for the tool")
 
 
 class ToolStatus(str, Enum):
@@ -22,7 +24,7 @@ class ToolRequirement(BaseModel):
     tool_name: str = Field(..., description="Tool name to enforce")
     min_calls: int = Field(1, description="Minimum number of calls required")
     require_success: bool = Field(False, description="Whether calls must be successful")
-    error_message: Optional[str] = Field(None, description="Custom error message")
+    error_message: str | None = Field(None, description="Custom error message")
 
 
 class ToolResult(BaseModel):
@@ -30,13 +32,13 @@ class ToolResult(BaseModel):
     tool_call_id: str = Field(..., description="ID of the tool call")
     result: Any = Field(..., description="Result of the tool")
     status: ToolStatus = Field(default=ToolStatus.SUCCESS)
-    error: Optional[str] = Field(None)
-    execution_time: Optional[float] = Field(None)
+    error: str | None = Field(None)
+    execution_time: float | None = Field(None)
 
     def __init__(self, **kwargs):
         # If there is an error, truncate it automatically
-        if 'error' in kwargs and kwargs['error']:
-            kwargs['error'] = self._truncate_error_if_needed(kwargs['error'])
+        if "error" in kwargs and kwargs["error"]:
+            kwargs["error"] = self._truncate_error_if_needed(kwargs["error"])
 
         super().__init__(**kwargs)
 
@@ -70,21 +72,25 @@ class ToolResult(BaseModel):
         truncated = error_msg[:head_chars] + separator + error_msg[-tail_chars:]
         return truncated
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class ToolMessage(BaseModel):
     role: MessageRole = Field(default=MessageRole.TOOL)
-    timestamp: datetime = Field(default_factory=datetime.now, description="Creation timestamp")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
-    tool_results: List[ToolResult] = Field(...)
+    timestamp: datetime = Field(
+        default_factory=datetime.now, description="Creation timestamp"
+    )
+    metadata: dict[str, Any] = Field(
+        default_factory=dict, description="Additional metadata"
+    )
+    tool_results: list[ToolResult] = Field(...)
 
-    def __init__(self, tool_results: List[ToolResult], **kwargs):
+    def __init__(self, tool_results: list[ToolResult], **kwargs):
         # *** DEPRECATED *** content auto-generation is redundant, see TODO.md
         # if 'content' not in kwargs:
         #     kwargs['content'] = self._generate_content_summary(tool_results)
         super().__init__(tool_results=tool_results, **kwargs)
+
     #
     # # *** DEPRECATED *** - kept for backward compatibility, see TODO.md
     # @staticmethod
@@ -102,19 +108,18 @@ class ToolMessage(BaseModel):
     #     return "; ".join(summaries)
     #
 
+
 class MCPToolSchema(BaseModel):
     """Tool schema in MCP standard format - NOT a message"""
 
     # MCP Standard Fields
     name: str = Field(..., description="Unique identifier for the tool")
     description: str = Field(..., description="Description of the tool")
-    title: Optional[str] = Field(None, description="Friendly name for UI")
-    inputSchema: Dict[str, Any] = Field(..., description="JSON Schema for parameters")
-    outputSchema: Optional[Dict[str, Any]] = Field(None, description="JSON Schema for response")
-    annotations: Optional[Dict[str, Any]] = Field(None, description="Behavioral hints")
+    title: str | None = Field(None, description="Friendly name for UI")
+    inputSchema: dict[str, Any] = Field(..., description="JSON Schema for parameters")
+    outputSchema: dict[str, Any] | None = Field(
+        None, description="JSON Schema for response"
+    )
+    annotations: dict[str, Any] | None = Field(None, description="Behavioral hints")
 
-    class Config:
-        # Strict validation
-        validate_assignment = True
-        # Field name as it appears in JSON (maintains MCP camelCase)
-        populate_by_name = True
+    model_config = ConfigDict(validate_assignment=True, populate_by_name=True)

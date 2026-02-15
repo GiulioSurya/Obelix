@@ -4,7 +4,7 @@ Decorator @tool for declaratively defining tools.
 
 Usage example:
     @tool(name="sql_query_executor", description="Execute SQL queries")
-    class SqlQueryExecutor(ToolBase):
+    class SqlQueryExecutor:
         sql_query: str = Field(..., description="Valid SQL query")
 
         def __init__(self, oracle_conn: OracleConnection):
@@ -18,17 +18,22 @@ The decorator automatically handles both sync and async methods:
 - If execute is sync: executed in separate thread (asyncio.to_thread)
 - If execute is async: executed directly with await
 """
+
 import asyncio
 import copy
 import inspect
 import time
-from typing import Type, get_type_hints
+from typing import get_type_hints
 
-from pydantic import create_model, ValidationError
+from pydantic import ValidationError, create_model
 from pydantic.fields import FieldInfo
 
-from obelix.core.model.tool_message import ToolCall, ToolResult, ToolStatus, MCPToolSchema
-
+from obelix.core.model.tool_message import (
+    MCPToolSchema,
+    ToolCall,
+    ToolResult,
+    ToolStatus,
+)
 
 # Validation utilities moved to src/utility/pydantic_validation.py
 from obelix.infrastructure.utility.pydantic_validation import format_validation_error
@@ -48,7 +53,8 @@ def tool(name: str = None, description: str = None):
     Returns:
         Decorator that transforms the class into a complete tool
     """
-    def decorator(cls: Type) -> Type:
+
+    def decorator(cls: type) -> type:
         # 1. Mandatory validation - fail-fast at import time
         if not name:
             raise ValueError(
@@ -81,7 +87,7 @@ def tool(name: str = None, description: str = None):
 
                 # Validate arguments and populate attributes on the COPY
                 validated = instance._input_schema(**tool_call.arguments)
-                for field_name in validated.model_fields:
+                for field_name in type(validated).model_fields:
                     setattr(instance, field_name, getattr(validated, field_name))
 
                 # Call original execute on the COPY (isolated)
@@ -97,7 +103,7 @@ def tool(name: str = None, description: str = None):
                     tool_call_id=tool_call.id,
                     result=result,
                     status=ToolStatus.SUCCESS,
-                    execution_time=time.time() - start_time
+                    execution_time=time.time() - start_time,
                 )
 
             except ValidationError as e:
@@ -109,7 +115,7 @@ def tool(name: str = None, description: str = None):
                     result=None,
                     status=ToolStatus.ERROR,
                     error=error_msg,
-                    execution_time=time.time() - start_time
+                    execution_time=time.time() - start_time,
                 )
             except Exception as e:
                 return ToolResult(
@@ -118,7 +124,7 @@ def tool(name: str = None, description: str = None):
                     result=None,
                     status=ToolStatus.ERROR,
                     error=str(e),
-                    execution_time=time.time() - start_time
+                    execution_time=time.time() - start_time,
                 )
 
         cls.execute = wrapped_execute
@@ -131,7 +137,7 @@ def tool(name: str = None, description: str = None):
                 name=cls_inner.tool_name,
                 description=cls_inner.tool_description,
                 inputSchema=cls_inner._input_schema.model_json_schema(),
-                outputSchema={"type": "object", "additionalProperties": True}
+                outputSchema={"type": "object", "additionalProperties": True},
             )
 
         cls.create_schema = create_schema
@@ -141,7 +147,7 @@ def tool(name: str = None, description: str = None):
     return decorator
 
 
-def _create_input_schema(cls: Type, tool_name: str) -> Type:
+def _create_input_schema(cls: type, tool_name: str) -> type:
     """
     Create dynamic Pydantic model from annotated Fields on the class.
 
@@ -163,12 +169,12 @@ def _create_input_schema(cls: Type, tool_name: str) -> Type:
         hints = get_type_hints(cls)
     except Exception:
         # Fallback if get_type_hints fails (e.g. forward references)
-        hints = getattr(cls, '__annotations__', {})
+        hints = getattr(cls, "__annotations__", {})
 
     # Extract fields with FieldInfo
     for attr_name, attr_type in hints.items():
         # Skip internal and base class attributes
-        if attr_name.startswith('_'):
+        if attr_name.startswith("_"):
             continue
 
         # Get the default from the class

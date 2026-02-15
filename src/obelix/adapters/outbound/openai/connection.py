@@ -18,20 +18,20 @@ class OpenAIConnection(AbstractLLMConnection):
     - Local LLMs: http://localhost:8000/v1/
     """
 
-    _instance: Optional['OpenAIConnection'] = None
+    _instance: Optional["OpenAIConnection"] = None
     _lock = threading.Lock()
     _client = None
     _client_lock = threading.Lock()
     _initialized = False
 
-    def __new__(cls, api_key: str, base_url: Optional[str] = None):
+    def __new__(cls, api_key: str, base_url: str | None = None):
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
                     cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, api_key: str, base_url: Optional[str] = None):
+    def __init__(self, api_key: str, base_url: str | None = None):
         if self._initialized:
             return
         self._api_key = api_key

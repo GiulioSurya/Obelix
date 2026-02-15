@@ -1,14 +1,14 @@
 # src/mcp/mcp_client_manager.py
-import asyncio
-import threading
 import json
 import os
-from typing import Dict, List, Optional, Any, Union
+import threading
 from dataclasses import dataclass
+from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
-from mcp.types import Tool, CallToolResult, Resource, Prompt
-from .mcp_validator import MCPValidator, MCPValidationError
+from mcp.types import CallToolResult, Prompt, Resource, Tool
+
+from .mcp_validator import MCPValidationError, MCPValidator
 
 
 @dataclass
@@ -53,17 +53,18 @@ class MCPConfig:
             args=["-y", "mcp-remote", f"https://mcp.tavily.com/mcp/?tavilyApiKey={api_key}"]
         )
     """
+
     name: str
     transport: str = "stdio"  # stdio, streamable-http
 
     # STDIO params - for local servers
-    command: Optional[str] = None  # Command to execute (e.g. "npx", "python")
-    args: Optional[List[str]] = None  # Command arguments (e.g. ["-y", "server.js"])
-    env: Optional[Dict[str, str]] = None  # Environment variables for subprocess
+    command: str | None = None  # Command to execute (e.g. "npx", "python")
+    args: list[str] | None = None  # Command arguments (e.g. ["-y", "server.js"])
+    env: dict[str, str] | None = None  # Environment variables for subprocess
 
     # Streamable HTTP params - for remote servers
-    url: Optional[str] = None  # MCP endpoint URL (e.g. "https://api.example.com/mcp/")
-    headers: Optional[Dict[str, str]] = None  # HTTP headers (e.g. Authorization)
+    url: str | None = None  # MCP endpoint URL (e.g. "https://api.example.com/mcp/")
+    headers: dict[str, str] | None = None  # HTTP headers (e.g. Authorization)
 
     def get_key(self) -> tuple:
         """Generate unique key for singleton"""
@@ -128,7 +129,9 @@ class MCPClientManager:
     _instances = {}
     _lock = threading.Lock()
 
-    def __new__(cls, config: Union[MCPConfig, str], command: str = None, args: List[str] = None):
+    def __new__(
+        cls, config: MCPConfig | str, command: str = None, args: list[str] = None
+    ):
         # Backward compatibility
         if isinstance(config, str):
             config = MCPConfig(name=config, command=command, args=args)
@@ -141,8 +144,10 @@ class MCPClientManager:
                     cls._instances[key] = instance
         return cls._instances[key]
 
-    def __init__(self, config: Union[MCPConfig, str], command: str = None, args: List[str] = None):
-        if hasattr(self, '_initialized'):
+    def __init__(
+        self, config: MCPConfig | str, command: str = None, args: list[str] = None
+    ):
+        if hasattr(self, "_initialized"):
             return
 
         self._initialized = True
@@ -157,17 +162,17 @@ class MCPClientManager:
         # Connection state
         self._session = None
         self._client_connection = None
-        self._available_tools: List[Tool] = []
-        self._available_resources: List[Resource] = []
-        self._available_prompts: List[Prompt] = []
+        self._available_tools: list[Tool] = []
+        self._available_resources: list[Resource] = []
+        self._available_prompts: list[Prompt] = []
         self._connected = False
-        self._session_id: Optional[str] = None
+        self._session_id: str | None = None
 
         # NEW: Integrated validator for automatic type conversion
         self._validator = MCPValidator()
 
     @classmethod
-    def from_config_file(cls, config_path: str, server_name: str) -> 'MCPClientManager':
+    def from_config_file(cls, config_path: str, server_name: str) -> "MCPClientManager":
         """
         Load configuration from standard mcp.json file.
 
@@ -203,32 +208,36 @@ class MCPClientManager:
             ValueError: If server not found in file
             FileNotFoundError: If file does not exist
         """
-        with open(config_path, 'r') as f:
+        with open(config_path) as f:
             config_data = json.load(f)
 
-        server_config = config_data.get('mcpServers', {}).get(server_name)
+        server_config = config_data.get("mcpServers", {}).get(server_name)
         if not server_config:
             raise ValueError(f"Server '{server_name}' not found in config file")
 
         # Determine transport from config
-        if 'url' in server_config:
+        if "url" in server_config:
             transport = "streamable-http"
-            return cls(MCPConfig(
-                name=server_name,
-                transport=transport,
-                url=server_config['url'],
-                headers=server_config.get('headers'),
-                env=server_config.get('env')
-            ))
+            return cls(
+                MCPConfig(
+                    name=server_name,
+                    transport=transport,
+                    url=server_config["url"],
+                    headers=server_config.get("headers"),
+                    env=server_config.get("env"),
+                )
+            )
         else:
             transport = "stdio"
-            return cls(MCPConfig(
-                name=server_name,
-                transport=transport,
-                command=server_config['command'],
-                args=server_config.get('args', []),
-                env=server_config.get('env')
-            ))
+            return cls(
+                MCPConfig(
+                    name=server_name,
+                    transport=transport,
+                    command=server_config["command"],
+                    args=server_config.get("args", []),
+                    env=server_config.get("env"),
+                )
+            )
 
     async def connect_server(self) -> bool:
         """
@@ -276,7 +285,7 @@ class MCPClientManager:
         params = StdioServerParameters(
             command=self.config.command,
             args=self.config.args or [],
-            env=self.config.env
+            env=self.config.env,
         )
 
         self._client_connection = stdio_client(params)
@@ -298,11 +307,13 @@ class MCPClientManager:
 
             # Prepare headers with protocol version
             headers = self.config.headers or {}
-            headers['MCP-Protocol-Version'] = '2025-06-18'
-            headers['Accept'] = 'application/json, text/event-stream'
+            headers["MCP-Protocol-Version"] = "2025-06-18"
+            headers["Accept"] = "application/json, text/event-stream"
 
             # Use correct streamable HTTP client
-            self._client_connection = streamablehttp_client(self.config.url, headers=headers)
+            self._client_connection = streamablehttp_client(
+                self.config.url, headers=headers
+            )
             read, write, _ = await self._client_connection.__aenter__()
 
             self._session = ClientSession(read, write)
@@ -312,8 +323,11 @@ class MCPClientManager:
             init_result = await self._session.initialize()
 
             # Extract session ID from response headers if available
-            if hasattr(init_result, 'headers') and 'Mcp-Session-Id' in init_result.headers:
-                self._session_id = init_result.headers['Mcp-Session-Id']
+            if (
+                hasattr(init_result, "headers")
+                and "Mcp-Session-Id" in init_result.headers
+            ):
+                self._session_id = init_result.headers["Mcp-Session-Id"]
 
             # Load available capabilities
             await self._load_capabilities()
@@ -321,7 +335,9 @@ class MCPClientManager:
             return True
 
         except ImportError:
-            print("Streamable HTTP client not available. Install: pip install 'mcp[client]'")
+            print(
+                "Streamable HTTP client not available. Install: pip install 'mcp[client]'"
+            )
             return False
         except Exception as e:
             print(f"Streamable HTTP error: {e}")
@@ -352,22 +368,22 @@ class MCPClientManager:
     def is_connected(self) -> bool:
         return self._connected
 
-    def get_available_tools(self) -> List[Tool]:
+    def get_available_tools(self) -> list[Tool]:
         return self._available_tools
 
-    def get_available_resources(self) -> List[Resource]:
+    def get_available_resources(self) -> list[Resource]:
         return self._available_resources
 
-    def get_available_prompts(self) -> List[Prompt]:
+    def get_available_prompts(self) -> list[Prompt]:
         return self._available_prompts
 
-    def find_tool(self, tool_name: str) -> Optional[Tool]:
+    def find_tool(self, tool_name: str) -> Tool | None:
         for tool in self._available_tools:
             if tool.name == tool_name:
                 return tool
         return None
 
-    async def get_session_id(self) -> Optional[str]:
+    async def get_session_id(self) -> str | None:
         """
         Return session ID for HTTP connections, None for stdio.
 
@@ -386,7 +402,9 @@ class MCPClientManager:
         return self._session_id
 
     # Core MCP operations with integrated validation
-    async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> CallToolResult:
+    async def call_tool(
+        self, tool_name: str, arguments: dict[str, Any]
+    ) -> CallToolResult:
         """
         Call MCP tool with automatic argument validation.
 
@@ -420,7 +438,9 @@ class MCPClientManager:
 
         except MCPValidationError as e:
             # Validation errors - detailed information for debugging
-            error_msg = f"Validation error for tool '{tool_name}': {e.validation_errors}"
+            error_msg = (
+                f"Validation error for tool '{tool_name}': {e.validation_errors}"
+            )
             raise Exception(error_msg)
 
         except Exception as e:
@@ -428,11 +448,11 @@ class MCPClientManager:
             error_msg = str(e)
 
             # Extract additional details from exception
-            if hasattr(e, 'data') and e.data:
+            if hasattr(e, "data") and e.data:
                 error_msg += f" | Data: {e.data}"
 
             # Check for specific error codes
-            if hasattr(e, 'code'):
+            if hasattr(e, "code"):
                 error_msg += f" | Code: {e.code}"
 
             # For HTTP errors, add status code
@@ -441,7 +461,9 @@ class MCPClientManager:
 
             raise Exception(error_msg)
 
-    def _validate_tool_arguments(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def _validate_tool_arguments(
+        self, tool_name: str, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
         """
         Validate tool arguments using MCP schema and MCPValidator.
 
@@ -458,16 +480,20 @@ class MCPClientManager:
         # Find tool and its schema
         tool = self.find_tool(tool_name)
         if not tool:
-            raise MCPValidationError(tool_name, [{"error": f"Tool '{tool_name}' not found"}])
+            raise MCPValidationError(
+                tool_name, [{"error": f"Tool '{tool_name}' not found"}]
+            )
 
         # If no inputSchema, pass arguments as-is
-        if not hasattr(tool, 'inputSchema') or not tool.inputSchema:
+        if not hasattr(tool, "inputSchema") or not tool.inputSchema:
             return arguments
 
         # Validation via MCPValidator - performs type conversion magic
-        return self._validator.validate_and_convert(tool_name, tool.inputSchema, arguments)
+        return self._validator.validate_and_convert(
+            tool_name, tool.inputSchema, arguments
+        )
 
-    async def list_resources(self) -> List[Resource]:
+    async def list_resources(self) -> list[Resource]:
         """
         List available resources from MCP server.
 
@@ -515,7 +541,7 @@ class MCPClientManager:
         result = await self._session.read_resource(uri)
         return result
 
-    async def list_prompts(self) -> List[Prompt]:
+    async def list_prompts(self) -> list[Prompt]:
         """
         List available prompts from MCP server.
 
@@ -539,7 +565,7 @@ class MCPClientManager:
         result = await self._session.list_prompts()
         return result.prompts
 
-    async def get_prompt(self, name: str, arguments: Dict[str, Any] = None):
+    async def get_prompt(self, name: str, arguments: dict[str, Any] = None):
         """
         Execute a prompt with specified arguments.
 
@@ -581,4 +607,3 @@ class MCPClientManager:
         self._session_id = None
 
         print(f"Disconnected from {self.name}")
-

@@ -22,7 +22,7 @@ class IBMConnection(AbstractLLMConnection):
             - https://jp-tok.ml.cloud.ibm.com
     """
 
-    _instance: Optional['IBMConnection'] = None
+    _instance: Optional["IBMConnection"] = None
     _lock = threading.Lock()
     _credentials = None
     _credentials_lock = threading.Lock()
@@ -73,7 +73,9 @@ class IBMConnection(AbstractLLMConnection):
         try:
             from ibm_watsonx_ai import Credentials
         except ImportError:
-            raise ImportError("ibm-watsonx-ai is not installed. Install with: pip install ibm-watsonx-ai")
+            raise ImportError(
+                "ibm-watsonx-ai is not installed. Install with: pip install ibm-watsonx-ai"
+            )
 
         return Credentials(
             url=self._url,

@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+
 import networkx as nx
 
 from obelix.infrastructure.logging import get_logger
@@ -63,7 +64,9 @@ class SharedMemoryGraph:
         if nx.has_path(self._graph, dst, src):
             raise ValueError(f"Adding edge '{src}' -> '{dst}' would create a cycle")
         self._graph.add_edge(src, dst, policy=policy)
-        logger.debug(f"SharedMemoryGraph: edge '{src}' -> '{dst}' added (policy={policy.value})")
+        logger.debug(
+            f"SharedMemoryGraph: edge '{src}' -> '{dst}' added (policy={policy.value})"
+        )
 
     def has_node(self, node_id: str) -> bool:
         return self._graph.has_node(node_id)
@@ -85,7 +88,9 @@ class SharedMemoryGraph:
             node_data.timestamp = datetime.now()
             if metadata:
                 node_data.metadata.update(metadata)
-            logger.info(f"SharedMemoryGraph: '{node_id}' published {kind} ({len(content)} chars)")
+            logger.info(
+                f"SharedMemoryGraph: '{node_id}' published {kind} ({len(content)} chars)"
+            )
 
     def pull_for(self, node_id: str) -> list[MemoryItem]:
         if not self._graph.has_node(node_id):
@@ -104,12 +109,14 @@ class SharedMemoryGraph:
             if content is None:
                 continue
 
-            items.append(MemoryItem(
-                source_id=pred,
-                content=content,
-                timestamp=node_data.timestamp,
-                policy=policy,
-            ))
+            items.append(
+                MemoryItem(
+                    source_id=pred,
+                    content=content,
+                    timestamp=node_data.timestamp,
+                    policy=policy,
+                )
+            )
         return items
 
     def pull_for_indirect(self, node_id: str) -> list[MemoryItem]:
@@ -121,17 +128,21 @@ class SharedMemoryGraph:
             node_data: NodeData = self._graph.nodes[ancestor]["data"]
             if node_data.last_final is None:
                 continue
-            items.append(MemoryItem(
-                source_id=ancestor,
-                content=node_data.last_final,
-                timestamp=node_data.timestamp,
-                policy=PropagationPolicy.FINAL_RESPONSE_ONLY,
-            ))
+            items.append(
+                MemoryItem(
+                    source_id=ancestor,
+                    content=node_data.last_final,
+                    timestamp=node_data.timestamp,
+                    policy=PropagationPolicy.FINAL_RESPONSE_ONLY,
+                )
+            )
         return items
 
     def get_edges_for_nodes(self, node_ids: list[str]) -> list[tuple[str, str]]:
         node_set = set(node_ids)
-        return [(u, v) for u, v in self._graph.edges() if u in node_set and v in node_set]
+        return [
+            (u, v) for u, v in self._graph.edges() if u in node_set and v in node_set
+        ]
 
     def get_topological_order(self, node_ids: list[str] | None = None) -> list[str]:
         if node_ids:

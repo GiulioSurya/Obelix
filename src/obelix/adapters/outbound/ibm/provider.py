@@ -9,20 +9,27 @@ Uses OpenAI-compatible format (dict-based responses).
 IBM SDK has built-in retry for transport errors (429, 503, 504, 520),
 so tenacity is NOT needed here - only ToolCallExtractionError retry loop.
 """
+
 import asyncio
 import json
-from typing import List, Dict, Any, Optional, Type
+from typing import Any
 
 from pydantic import ValidationError
 
-from obelix.ports.outbound.llm_provider import AbstractLLMProvider
-from obelix.core.model import SystemMessage, HumanMessage, AssistantMessage, ToolMessage, StandardMessage
+from obelix.adapters.outbound.ibm.connection import IBMConnection
+from obelix.core.model import (
+    AssistantMessage,
+    HumanMessage,
+    StandardMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from obelix.core.model.tool_message import ToolCall
 from obelix.core.model.usage import Usage
-from obelix.core.tool.tool_base import ToolBase
+from obelix.core.tool.tool_base import Tool
+from obelix.infrastructure.logging import format_message_for_trace, get_logger
 from obelix.infrastructure.providers import Providers
-from obelix.adapters.outbound.ibm.connection import IBMConnection
-from obelix.infrastructure.logging import get_logger, format_message_for_trace
+from obelix.ports.outbound.llm_provider import AbstractLLMProvider
 
 try:
     from ibm_watsonx_ai.foundation_models import ModelInference
@@ -37,6 +44,7 @@ logger = get_logger(__name__)
 
 class ToolCallExtractionError(Exception):
     """Raised when tool call extraction or validation fails."""
+
     pass
 
 
@@ -54,20 +62,22 @@ class IBMWatsonXLLm(AbstractLLMProvider):
     def provider_type(self) -> Providers:
         return Providers.IBM_WATSON
 
-    def __init__(self,
-                 connection: Optional[IBMConnection] = None,
-                 model_id: str = "meta-llama/llama-3-3-70b-instruct",
-                 max_tokens: int = 3000,
-                 temperature: float = 0.3,
-                 top_p: Optional[float] = None,
-                 seed: Optional[int] = None,
-                 stop: Optional[List[str]] = None,
-                 frequency_penalty: Optional[float] = None,
-                 presence_penalty: Optional[float] = None,
-                 logprobs: Optional[bool] = None,
-                 top_logprobs: Optional[int] = None,
-                 n: Optional[int] = None,
-                 logit_bias: Optional[Dict[int, float]] = None):
+    def __init__(
+        self,
+        connection: IBMConnection | None = None,
+        model_id: str = "meta-llama/llama-3-3-70b-instruct",
+        max_tokens: int = 3000,
+        temperature: float = 0.3,
+        top_p: float | None = None,
+        seed: int | None = None,
+        stop: list[str] | None = None,
+        frequency_penalty: float | None = None,
+        presence_penalty: float | None = None,
+        logprobs: bool | None = None,
+        top_logprobs: int | None = None,
+        n: int | None = None,
+        logit_bias: dict[int, float] | None = None,
+    ):
         """
         Initialize the IBM Watson X provider with dependency injection of connection.
 
@@ -91,8 +101,7 @@ class IBMWatsonXLLm(AbstractLLMProvider):
         """
         if connection is None:
             connection = self._get_connection_from_global_config(
-                Providers.IBM_WATSON,
-                "IBMWatsonXLLm"
+                Providers.IBM_WATSON, "IBMWatsonXLLm"
             )
 
         self.connection = connection
@@ -129,16 +138,16 @@ class IBMWatsonXLLm(AbstractLLMProvider):
             model_id=model_id,
             params=TextChatParameters(**params_dict),
             credentials=credentials,
-            project_id=self.connection.get_project_id()
+            project_id=self.connection.get_project_id(),
         )
 
     # ========== INVOKE ==========
 
     async def invoke(
         self,
-        messages: List[StandardMessage],
-        tools: List[ToolBase],
-        response_schema: Optional[Type["BaseModel"]] = None,
+        messages: list[StandardMessage],
+        tools: list[Tool],
+        response_schema: type["BaseModel"] | None = None,
     ) -> AssistantMessage:
         """
         Call the IBM Watson model with standardized messages and tools.
@@ -151,7 +160,9 @@ class IBMWatsonXLLm(AbstractLLMProvider):
         converted_tools = self._convert_tools(tools)
 
         for attempt in range(1, self.MAX_EXTRACTION_RETRIES + 1):
-            logger.debug(f"IBM Watson invoke: model={self.model_id}, messages={len(working_messages)}, tools={len(converted_tools)}, attempt={attempt}")
+            logger.debug(
+                f"IBM Watson invoke: model={self.model_id}, messages={len(working_messages)}, tools={len(converted_tools)}, attempt={attempt}"
+            )
 
             converted_messages = self._convert_messages(working_messages)
 
@@ -160,25 +171,28 @@ class IBMWatsonXLLm(AbstractLLMProvider):
                     self.client.chat,
                     messages=converted_messages,
                     tools=converted_tools,
-                    tool_choice_option="auto"
+                    tool_choice_option="auto",
                 )
             else:
                 response = await asyncio.to_thread(
-                    self.client.chat,
-                    messages=converted_messages
+                    self.client.chat, messages=converted_messages
                 )
 
             logger.info(f"IBM Watson chat completed: {self.model_id}")
 
             usage = response.get("usage", {})
             if usage:
-                logger.debug(f"IBM Watson tokens: input={usage.get('prompt_tokens')}, output={usage.get('completion_tokens')}, total={usage.get('total_tokens')}")
+                logger.debug(
+                    f"IBM Watson tokens: input={usage.get('prompt_tokens')}, output={usage.get('completion_tokens')}, total={usage.get('total_tokens')}"
+                )
 
             try:
                 return self._convert_response_to_assistant_message(response)
             except ToolCallExtractionError as e:
                 if attempt >= self.MAX_EXTRACTION_RETRIES:
-                    logger.error(f"Tool call extraction failed after {attempt} attempts: {e}")
+                    logger.error(
+                        f"Tool call extraction failed after {attempt} attempts: {e}"
+                    )
                     raise
 
                 logger.warning(f"Tool call extraction failed (attempt {attempt}): {e}")
@@ -192,7 +206,7 @@ class IBMWatsonXLLm(AbstractLLMProvider):
 
     # ========== MESSAGE CONVERSION ==========
 
-    def _convert_messages(self, messages: List[StandardMessage]) -> List[dict]:
+    def _convert_messages(self, messages: list[StandardMessage]) -> list[dict]:
         """
         Convert standardized messages to IBM Watson format (OpenAI-compatible dicts).
         """
@@ -202,19 +216,13 @@ class IBMWatsonXLLm(AbstractLLMProvider):
             logger.trace(f"msg[{i}] {format_message_for_trace(msg)}")
 
             if isinstance(msg, SystemMessage):
-                converted.append({
-                    "role": "system",
-                    "content": msg.content
-                })
+                converted.append({"role": "system", "content": msg.content})
 
             elif isinstance(msg, HumanMessage):
-                converted.append({
-                    "role": "user",
-                    "content": msg.content
-                })
+                converted.append({"role": "user", "content": msg.content})
 
             elif isinstance(msg, AssistantMessage):
-                assistant_msg: Dict[str, Any] = {"role": "assistant"}
+                assistant_msg: dict[str, Any] = {"role": "assistant"}
 
                 if msg.content:
                     assistant_msg["content"] = msg.content
@@ -226,8 +234,8 @@ class IBMWatsonXLLm(AbstractLLMProvider):
                             "id": tc.id,
                             "function": {
                                 "name": tc.name,
-                                "arguments": json.dumps(tc.arguments)
-                            }
+                                "arguments": json.dumps(tc.arguments),
+                            },
                         }
                         for tc in msg.tool_calls
                     ]
@@ -239,18 +247,24 @@ class IBMWatsonXLLm(AbstractLLMProvider):
 
             elif isinstance(msg, ToolMessage):
                 for result in msg.tool_results:
-                    converted.append({
-                        "role": "tool",
-                        "tool_call_id": result.tool_call_id,
-                        "content": str(result.result) if result.result is not None else (result.error or "No result")
-                    })
+                    converted.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": result.tool_call_id,
+                            "content": str(result.result)
+                            if result.result is not None
+                            else (result.error or "No result"),
+                        }
+                    )
 
-        logger.debug(f"Converted {len(messages)} messages to {len(converted)} IBM Watson messages")
+        logger.debug(
+            f"Converted {len(messages)} messages to {len(converted)} IBM Watson messages"
+        )
         return converted
 
     # ========== TOOL CONVERSION ==========
 
-    def _convert_tools(self, tools: List[ToolBase]) -> List[dict]:
+    def _convert_tools(self, tools: list[Tool]) -> list[dict]:
         """Convert tool list to OpenAI-compatible function format."""
         if not tools:
             return []
@@ -258,21 +272,23 @@ class IBMWatsonXLLm(AbstractLLMProvider):
         converted = []
         for tool in tools:
             schema = tool.create_schema()
-            converted.append({
-                "type": "function",
-                "function": {
-                    "name": schema.name,
-                    "description": schema.description,
-                    "parameters": schema.inputSchema
+            converted.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": schema.name,
+                        "description": schema.description,
+                        "parameters": schema.inputSchema,
+                    },
                 }
-            })
+            )
 
         logger.debug(f"Converted {len(tools)} tools to IBM Watson format")
         return converted
 
     # ========== TOOL CALL EXTRACTION ==========
 
-    def _extract_tool_calls(self, response: dict) -> List[ToolCall]:
+    def _extract_tool_calls(self, response: dict) -> list[ToolCall]:
         """
         Extract and validate tool calls from IBM Watson response.
 
@@ -310,9 +326,7 @@ class IBMWatsonXLLm(AbstractLLMProvider):
                     arguments = json.loads(arguments, strict=False)
 
                 tool_call = ToolCall(
-                    id=call["id"],
-                    name=function["name"],
-                    arguments=arguments
+                    id=call["id"], name=function["name"], arguments=arguments
                 )
                 tool_calls.append(tool_call)
 
@@ -327,7 +341,8 @@ class IBMWatsonXLLm(AbstractLLMProvider):
 
         if errors:
             raise ToolCallExtractionError(
-                "Failed to extract tool calls:\n" + "\n".join(f"  - {err}" for err in errors)
+                "Failed to extract tool calls:\n"
+                + "\n".join(f"  - {err}" for err in errors)
             )
 
         return tool_calls
@@ -342,7 +357,7 @@ class IBMWatsonXLLm(AbstractLLMProvider):
 
         return choices[0].get("message", {}).get("content", "") or ""
 
-    def _extract_usage(self, response: dict) -> Optional[Usage]:
+    def _extract_usage(self, response: dict) -> Usage | None:
         """Extract usage information from IBM Watson response."""
         usage = response.get("usage")
         if not usage:
@@ -351,10 +366,12 @@ class IBMWatsonXLLm(AbstractLLMProvider):
         return Usage(
             input_tokens=usage.get("prompt_tokens", 0),
             output_tokens=usage.get("completion_tokens", 0),
-            total_tokens=usage.get("total_tokens", 0)
+            total_tokens=usage.get("total_tokens", 0),
         )
 
-    def _convert_response_to_assistant_message(self, response: dict) -> AssistantMessage:
+    def _convert_response_to_assistant_message(
+        self, response: dict
+    ) -> AssistantMessage:
         """
         Convert IBM Watson response to standardized AssistantMessage.
 
@@ -369,8 +386,4 @@ class IBMWatsonXLLm(AbstractLLMProvider):
             f"IBM Watson response: content_length={len(content)}, tool_calls={len(tool_calls)}"
         )
 
-        return AssistantMessage(
-            content=content,
-            tool_calls=tool_calls,
-            usage=usage
-        )
+        return AssistantMessage(content=content, tool_calls=tool_calls, usage=usage)

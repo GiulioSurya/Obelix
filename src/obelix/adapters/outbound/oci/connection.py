@@ -16,13 +16,13 @@ import hashlib
 import json
 import os
 import threading
-from typing import Any, Optional, Union
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 import httpx
 
-from obelix.ports.outbound.llm_connection import AbstractLLMConnection
 from obelix.infrastructure.logging import get_logger
+from obelix.ports.outbound.llm_connection import AbstractLLMConnection
 
 _logger = get_logger(__name__)
 
@@ -43,8 +43,8 @@ def _build_service_endpoint(region: str) -> str:
 
 def _snake_to_camel(name: str) -> str:
     """Convert snake_case to camelCase."""
-    components = name.split('_')
-    return components[0] + ''.join(x.title() for x in components[1:])
+    components = name.split("_")
+    return components[0] + "".join(x.title() for x in components[1:])
 
 
 def _serialize_oci_model(obj: Any) -> Any:
@@ -79,7 +79,6 @@ def _serialize_oci_model(obj: Any) -> Any:
     return obj
 
 
-
 class DotDict:
     """
     Wrapper that allows dict access with dot notation.
@@ -97,13 +96,15 @@ class DotDict:
         self.data = data
 
     def __getattr__(self, key: str) -> Any:
-        if key == 'data':
-            return object.__getattribute__(self, 'data')
+        if key == "data":
+            return object.__getattribute__(self, "data")
 
-        raw_data = object.__getattribute__(self, 'data')
+        raw_data = object.__getattribute__(self, "data")
 
         if not isinstance(raw_data, dict):
-            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{key}'")
+            raise AttributeError(
+                f"'{type(self).__name__}' object has no attribute '{key}'"
+            )
 
         # Try exact key first
         if key in raw_data:
@@ -117,16 +118,16 @@ class DotDict:
         return None
 
     def __getitem__(self, key: Any) -> Any:
-        raw_data = object.__getattribute__(self, 'data')
+        raw_data = object.__getattribute__(self, "data")
         if isinstance(raw_data, (list, dict)):
             return self._wrap(raw_data[key])
         raise TypeError(f"'{type(self).__name__}' object is not subscriptable")
 
     def __len__(self) -> int:
-        return len(object.__getattribute__(self, 'data'))
+        return len(object.__getattribute__(self, "data"))
 
     def __iter__(self):
-        raw_data = object.__getattribute__(self, 'data')
+        raw_data = object.__getattribute__(self, "data")
         if isinstance(raw_data, list):
             for item in raw_data:
                 yield self._wrap(item)
@@ -135,7 +136,7 @@ class DotDict:
                 yield key
 
     def __bool__(self) -> bool:
-        return bool(object.__getattribute__(self, 'data'))
+        return bool(object.__getattribute__(self, "data"))
 
     def __repr__(self) -> str:
         return f"DotDict({object.__getattribute__(self, 'data')!r})"
@@ -184,7 +185,6 @@ class OCIResponse:
         return f"OCIResponse({self._json_data!r})"
 
 
-
 class OCIServiceError(Exception):
     """
     Base OCI service error with full response details.
@@ -193,8 +193,14 @@ class OCIServiceError(Exception):
     opc-request-id, and response headers so no error information is ever lost.
     """
 
-    def __init__(self, status: int, code: str | None, message: str,
-                 opc_request_id: str | None = None, headers: dict | None = None):
+    def __init__(
+        self,
+        status: int,
+        code: str | None,
+        message: str,
+        opc_request_id: str | None = None,
+        headers: dict | None = None,
+    ):
         self.status = status
         self.code = code
         self.message = message
@@ -211,16 +217,19 @@ class OCIServiceError(Exception):
 
 class OCIRateLimitError(OCIServiceError):
     """Rate limit error (429) - retryable."""
+
     pass
 
 
 class OCIServerError(OCIServiceError):
     """Server error (5xx) - retryable."""
+
     pass
 
 
 class OCIIncorrectStateError(OCIServiceError):
     """Incorrect state error (409 with code=IncorrectState) - retryable."""
+
     pass
 
 
@@ -235,7 +244,6 @@ class OCIContentModerationError(OCIServiceError):
     def __init__(self, status: int, code: str | None, message: str, **kwargs):
         self.technical_message = message
         super().__init__(status, code, self.USER_MESSAGE, **kwargs)
-
 
 
 class OCIAsyncHttpClient:
@@ -274,7 +282,9 @@ class OCIAsyncHttpClient:
             pass_phrase=config.get("pass_phrase"),
         )
         self._client: httpx.AsyncClient | None = None
-        self._client_loop: asyncio.AbstractEventLoop | None = None  # Track which event loop owns the client
+        self._client_loop: asyncio.AbstractEventLoop | None = (
+            None  # Track which event loop owns the client
+        )
 
     async def _get_client(self) -> httpx.AsyncClient:
         """
@@ -294,10 +304,10 @@ class OCIAsyncHttpClient:
         # 2. Event loop has changed
         # 3. Previous event loop is closed
         need_new_client = (
-            self._client is None or
-            self._client_loop is None or
-            self._client_loop != current_loop or
-            self._client_loop.is_closed()
+            self._client is None
+            or self._client_loop is None
+            or self._client_loop != current_loop
+            or self._client_loop.is_closed()
         )
 
         if need_new_client:
@@ -431,7 +441,10 @@ class OCIAsyncHttpClient:
 
         _logger.error(
             "OCI API error: status=%s code=%s opc-request-id=%s message=%s",
-            status, error_kwargs["code"], opc_request_id, message,
+            status,
+            error_kwargs["code"],
+            opc_request_id,
+            message,
         )
 
         if status == 429:
@@ -444,8 +457,7 @@ class OCIAsyncHttpClient:
             raise OCIIncorrectStateError(**error_kwargs)
 
         if status == 400 and (
-            "Unsafe Text detected" in message
-            or "moderation system flagged" in message
+            "Unsafe Text detected" in message or "moderation system flagged" in message
         ):
             raise OCIContentModerationError(**error_kwargs)
 
@@ -476,26 +488,26 @@ class OCIConnection(AbstractLLMConnection):
             - dict: configuration dictionary with keys: user, fingerprint, key_content/key_file, tenancy, region
     """
 
-    _instance: Optional['OCIConnection'] = None
+    _instance: Optional["OCIConnection"] = None
     _lock = threading.Lock()
     _client = None
     _client_lock = threading.Lock()
     _initialized = False
 
-    def __new__(cls, oci_config: Optional[Union[dict, str]] = None):
+    def __new__(cls, oci_config: dict | str | None = None):
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
                     cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, oci_config: Optional[Union[dict, str]] = None):
+    def __init__(self, oci_config: dict | str | None = None):
         if self._initialized:
             return
         self._oci_config = self._resolve_config(oci_config)
         self._initialized = True
 
-    def _resolve_config(self, oci_config: Optional[Union[dict, str]]) -> dict:
+    def _resolve_config(self, oci_config: dict | str | None) -> dict:
         """
         Resolves the OCI configuration from various input types.
 
@@ -511,7 +523,9 @@ class OCIConnection(AbstractLLMConnection):
         if isinstance(oci_config, dict):
             return oci_config
 
-        config_path = oci_config if isinstance(oci_config, str) else DEFAULT_OCI_CONFIG_PATH
+        config_path = (
+            oci_config if isinstance(oci_config, str) else DEFAULT_OCI_CONFIG_PATH
+        )
 
         if not os.path.exists(config_path):
             raise ValueError(

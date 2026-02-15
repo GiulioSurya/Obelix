@@ -2,7 +2,7 @@
 import asyncio
 import inspect
 import time
-from typing import List, Optional, Dict, Any, Union, Type, Tuple, Set, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
@@ -11,17 +11,23 @@ from obelix.infrastructure.logging import get_logger
 if TYPE_CHECKING:
     from obelix.core.agent.shared_memory import SharedMemoryGraph
 
-from obelix.core.model.system_message import SystemMessage
-from obelix.core.model.human_message import HumanMessage
-from obelix.core.model.assistant_message import AssistantMessage, AssistantResponse
-from obelix.core.model.tool_message import ToolMessage, ToolCall, ToolResult, ToolStatus, ToolRequirement
-from obelix.core.agent.hooks import AgentEvent, Hook, AgentStatus, HookDecision, Outcome
 from obelix.core.agent.event_contracts import EventContract, get_event_contracts
+from obelix.core.agent.hooks import AgentEvent, AgentStatus, Hook, HookDecision, Outcome
+from obelix.core.model.assistant_message import AssistantMessage, AssistantResponse
+from obelix.core.model.human_message import HumanMessage
 from obelix.core.model.standard_message import StandardMessage
+from obelix.core.model.system_message import SystemMessage
+from obelix.core.model.tool_message import (
+    ToolCall,
+    ToolMessage,
+    ToolRequirement,
+    ToolResult,
+    ToolStatus,
+)
 from obelix.core.model.usage import AgentUsage
-from obelix.core.tool.tool_base import ToolBase
-from obelix.ports.outbound.llm_provider import AbstractLLMProvider
+from obelix.core.tool.tool_base import Tool
 from obelix.infrastructure.config import GlobalConfig
+from obelix.ports.outbound.llm_provider import AbstractLLMProvider
 
 logger = get_logger(__name__)
 
@@ -30,28 +36,30 @@ class BaseAgent:
     def __init__(
         self,
         system_message: str,
-        provider: Optional[AbstractLLMProvider] = None,
+        provider: AbstractLLMProvider | None = None,
         max_iterations: int = 15,
-        tools: Optional[Union[ToolBase, Type[ToolBase], List[Union[Type[ToolBase], ToolBase]]]] = None,
-        tool_policy: Optional[List[ToolRequirement]] = None,
-        exit_on_success: Optional[List[str]] = None,
-        response_schema: Optional[Type[BaseModel]] = None,
+        tools: Tool | type[Tool] | list[type[Tool] | Tool] | None = None,
+        tool_policy: list[ToolRequirement] | None = None,
+        exit_on_success: list[str] | None = None,
+        response_schema: type[BaseModel] | None = None,
     ):
         self.system_message = SystemMessage(content=system_message)
         self.max_iterations = max_iterations
-        self._exit_on_success: Set[str] = set(exit_on_success) if exit_on_success else set()
+        self._exit_on_success: set[str] = (
+            set(exit_on_success) if exit_on_success else set()
+        )
         self.response_schema = response_schema
 
         self.provider = provider or GlobalConfig().get_current_provider_instance()
 
-        self.registered_tools: List[ToolBase] = []
-        self.conversation_history: List[StandardMessage] = [self.system_message]
+        self.registered_tools: list[Tool] = []
+        self.conversation_history: list[StandardMessage] = [self.system_message]
         self.agent_usage = AgentUsage(model_id=self.provider.model_id)
         self._tool_policy = tool_policy or []
 
         # Hook system
-        self._hooks: Dict[AgentEvent, List[Hook]] = {event: [] for event in AgentEvent}
-        self._event_contracts: Dict[AgentEvent, EventContract] = get_event_contracts()
+        self._hooks: dict[AgentEvent, list[Hook]] = {event: [] for event in AgentEvent}
+        self._event_contracts: dict[AgentEvent, EventContract] = get_event_contracts()
 
         # Register tools from constructor parameter
         if tools:
@@ -62,30 +70,31 @@ class BaseAgent:
                 self.register_tool(tool_instance)
 
         if self._tool_policy:
-            self.on(AgentEvent.BEFORE_FINAL_RESPONSE) \
-                .when(self._tool_policy_should_fail) \
-                .handle(
-                    decision=HookDecision.FAIL,
-                    effects=[self._tool_policy_inject_message],
-                )
-            self.on(AgentEvent.BEFORE_FINAL_RESPONSE) \
-                .when(self._tool_policy_should_retry) \
-                .handle(
-                    decision=HookDecision.RETRY,
-                    effects=[self._tool_policy_inject_message],
-                )
+            self.on(AgentEvent.BEFORE_FINAL_RESPONSE).when(
+                self._tool_policy_should_fail
+            ).handle(
+                decision=HookDecision.FAIL,
+                effects=[self._tool_policy_inject_message],
+            )
+            self.on(AgentEvent.BEFORE_FINAL_RESPONSE).when(
+                self._tool_policy_should_retry
+            ).handle(
+                decision=HookDecision.RETRY,
+                effects=[self._tool_policy_inject_message],
+            )
 
         # Shared memory (set by factory or manually, None if not used)
-        self.memory_graph: Optional['SharedMemoryGraph'] = None
-        self.agent_id: Optional[str] = None
+        self.memory_graph: SharedMemoryGraph | None = None
+        self.agent_id: str | None = None
         self._register_memory_hooks()
 
-    def register_tool(self, tool: ToolBase):
+    def register_tool(self, tool: Tool):
         """
         Registers a tool for the agent
         """
         try:
             from obelix.plugins.mcp.mcp_tool import MCPTool
+
             if isinstance(tool, MCPTool):
                 if not tool.manager.is_connected():
                     logger.error(
@@ -101,8 +110,10 @@ class BaseAgent:
 
         if tool not in self.registered_tools:
             self.registered_tools.append(tool)
-            tool_name = getattr(tool, 'tool_name', None) or tool.__class__.__name__
-            logger.info(f"Agent {self.__class__.__name__}: tool '{tool_name}' registered")
+            tool_name = getattr(tool, "tool_name", None) or tool.__class__.__name__
+            logger.info(
+                f"Agent {self.__class__.__name__}: tool '{tool_name}' registered"
+            )
 
     def on(self, event: AgentEvent) -> Hook:
         """
@@ -119,23 +130,16 @@ class BaseAgent:
             return isinstance(value, expected)
         return isinstance(value, expected)
 
-    def _retryable_events(self) -> List[AgentEvent]:
+    def _retryable_events(self) -> list[AgentEvent]:
         return [evt for evt, c in self._event_contracts.items() if c.retryable]
 
     async def _run_hooks(
-        self,
-        event: AgentEvent,
-        current_value: Any = None,
-        **ctx_kwargs
+        self, event: AgentEvent, current_value: Any = None, **ctx_kwargs
     ) -> Outcome:
         """
         Executes all hooks registered for an event.
         """
-        agent_status = AgentStatus(
-            event=event,
-            agent=self,
-            **ctx_kwargs
-        )
+        agent_status = AgentStatus(event=event, agent=self, **ctx_kwargs)
 
         contract = self._event_contracts[event]
         if not self._is_valid_value(current_value, contract.input_type):
@@ -161,7 +165,9 @@ class BaseAgent:
             if outcome.decision == HookDecision.STOP:
                 if contract.stop_output is None:
                     raise RuntimeError(f"STOP not allowed for event {event.value}.")
-                if outcome.value is None or not isinstance(outcome.value, contract.stop_output):
+                if outcome.value is None or not isinstance(
+                    outcome.value, contract.stop_output
+                ):
                     raise RuntimeError(
                         f"STOP requires value of type {contract.stop_output} for event {event.value}."
                     )
@@ -180,8 +186,7 @@ class BaseAgent:
         return Outcome(HookDecision.CONTINUE, result_value)
 
     async def execute_query_async(
-        self,
-        query: Union[str, List[StandardMessage]]
+        self, query: str | list[StandardMessage]
     ) -> AssistantResponse:
         """
         Execute query asynchronously (for FastAPI).
@@ -189,16 +194,13 @@ class BaseAgent:
         self._validate_query_input(query)
         return await self._async_execute_query(query)
 
-    def execute_query(
-        self,
-        query: Union[str, List[StandardMessage]]
-    ) -> AssistantResponse:
+    def execute_query(self, query: str | list[StandardMessage]) -> AssistantResponse:
         """
         Execute query synchronously (for CLI).
         """
         return asyncio.run(self.execute_query_async(query))
 
-    def _validate_query_input(self, query: Union[str, List[StandardMessage]]) -> None:
+    def _validate_query_input(self, query: str | list[StandardMessage]) -> None:
         """
         Validates the query input.
         """
@@ -215,7 +217,9 @@ class BaseAgent:
                 f"received {type(query).__name__}"
             )
 
-    async def _async_execute_query(self, query: Union[str, List[StandardMessage]]) -> AssistantResponse:
+    async def _async_execute_query(
+        self, query: str | list[StandardMessage]
+    ) -> AssistantResponse:
         """
         Asynchronous query execution (core execution engine)
         """
@@ -240,15 +244,17 @@ class BaseAgent:
             )
 
         for iteration in range(1, self.max_iterations + 1):
-            outcome = await self._run_hooks(AgentEvent.BEFORE_LLM_CALL, iteration=iteration)
+            outcome = await self._run_hooks(
+                AgentEvent.BEFORE_LLM_CALL, iteration=iteration
+            )
             if outcome.decision == HookDecision.STOP:
                 assistant_msg = outcome.value
                 response = self._build_final_response(
-                    assistant_msg,
-                    collected_tool_results,
-                    execution_error
+                    assistant_msg, collected_tool_results, execution_error
                 )
-                await self._run_hooks(AgentEvent.QUERY_END, current_value=response, iteration=iteration)
+                await self._run_hooks(
+                    AgentEvent.QUERY_END, current_value=response, iteration=iteration
+                )
                 return response
             if outcome.decision == HookDecision.FAIL:
                 raise RuntimeError("Hook BEFORE_LLM_CALL requested FAIL")
@@ -261,7 +267,7 @@ class BaseAgent:
                 AgentEvent.AFTER_LLM_CALL,
                 current_value=assistant_msg,
                 iteration=iteration,
-                assistant_message=assistant_msg
+                assistant_message=assistant_msg,
             )
             if outcome.decision == HookDecision.RETRY:
                 continue
@@ -270,11 +276,11 @@ class BaseAgent:
             if outcome.decision == HookDecision.STOP:
                 assistant_msg = outcome.value
                 response = self._build_final_response(
-                    assistant_msg,
-                    collected_tool_results,
-                    execution_error
+                    assistant_msg, collected_tool_results, execution_error
                 )
-                await self._run_hooks(AgentEvent.QUERY_END, current_value=response, iteration=iteration)
+                await self._run_hooks(
+                    AgentEvent.QUERY_END, current_value=response, iteration=iteration
+                )
                 return response
             assistant_msg = outcome.value
 
@@ -288,19 +294,21 @@ class BaseAgent:
                     AgentEvent.BEFORE_FINAL_RESPONSE,
                     current_value=assistant_msg,
                     iteration=iteration,
-                    assistant_message=assistant_msg
+                    assistant_message=assistant_msg,
                 )
                 if outcome.decision == HookDecision.RETRY:
                     continue
                 if outcome.decision == HookDecision.FAIL:
-                    raise RuntimeError("Required tool call missing before final response")
+                    raise RuntimeError(
+                        "Required tool call missing before final response"
+                    )
                 assistant_msg = outcome.value
                 response = self._build_final_response(
-                    assistant_msg,
-                    collected_tool_results,
-                    execution_error
+                    assistant_msg, collected_tool_results, execution_error
                 )
-                await self._run_hooks(AgentEvent.QUERY_END, current_value=response, iteration=iteration)
+                await self._run_hooks(
+                    AgentEvent.QUERY_END, current_value=response, iteration=iteration
+                )
                 return response
 
             if assistant_msg.tool_calls:
@@ -308,22 +316,31 @@ class BaseAgent:
                     assistant_msg, collected_tool_results, execution_error, iteration
                 )
 
-                if self._should_exit_on_success(iteration_results) and execution_error is None:
+                if (
+                    self._should_exit_on_success(iteration_results)
+                    and execution_error is None
+                ):
                     outcome = await self._run_hooks(
                         AgentEvent.BEFORE_FINAL_RESPONSE,
                         current_value=assistant_msg,
                         iteration=iteration,
-                        assistant_message=assistant_msg
+                        assistant_message=assistant_msg,
                     )
                     if outcome.decision == HookDecision.RETRY:
                         continue
                     if outcome.decision == HookDecision.FAIL:
-                        raise RuntimeError("Required tool call missing before final response")
+                        raise RuntimeError(
+                            "Required tool call missing before final response"
+                        )
                     assistant_msg = outcome.value
                     response = self._build_final_response(
                         assistant_msg, collected_tool_results, execution_error
                     )
-                    await self._run_hooks(AgentEvent.QUERY_END, current_value=response, iteration=iteration)
+                    await self._run_hooks(
+                        AgentEvent.QUERY_END,
+                        current_value=response,
+                        iteration=iteration,
+                    )
                     return response
 
                 continue
@@ -336,7 +353,7 @@ class BaseAgent:
                 AgentEvent.BEFORE_FINAL_RESPONSE,
                 current_value=assistant_msg,
                 iteration=iteration,
-                assistant_message=assistant_msg
+                assistant_message=assistant_msg,
             )
             if outcome.decision == HookDecision.RETRY:
                 continue
@@ -346,7 +363,9 @@ class BaseAgent:
             response = self._build_final_response(
                 assistant_msg, collected_tool_results, execution_error
             )
-            await self._run_hooks(AgentEvent.QUERY_END, current_value=response, iteration=iteration)
+            await self._run_hooks(
+                AgentEvent.QUERY_END, current_value=response, iteration=iteration
+            )
             return response
 
         return self._build_timeout_response(
@@ -356,15 +375,17 @@ class BaseAgent:
     async def _process_tool_calls(
         self,
         assistant_msg: AssistantMessage,
-        collected_tool_results: List[ToolResult],
-        execution_error: Optional[str],
-        iteration: int
-    ) -> Tuple[Optional[str], List[ToolResult]]:
+        collected_tool_results: list[ToolResult],
+        execution_error: str | None,
+        iteration: int,
+    ) -> tuple[str | None, list[ToolResult]]:
         logger.debug(f"Processing {len(assistant_msg.tool_calls)} tool call(s)")
         logger.debug(f"Tool names: {[tc.name for tc in assistant_msg.tool_calls]}")
 
         batch_start_time = time.perf_counter()
-        logger.debug(f"START ELABORATING TOOLS: n {len(assistant_msg.tool_calls)} tools @ t=0.000s")
+        logger.debug(
+            f"START ELABORATING TOOLS: n {len(assistant_msg.tool_calls)} tools @ t=0.000s"
+        )
 
         tasks = [
             self._execute_single_tool_with_hooks(call, iteration, batch_start_time)
@@ -373,7 +394,9 @@ class BaseAgent:
         tool_results = await asyncio.gather(*tasks)
 
         batch_duration = time.perf_counter() - batch_start_time
-        logger.debug(f"PARALLEL END: {len(tool_results)} tools completed in {batch_duration:.3f}s")
+        logger.debug(
+            f"PARALLEL END: {len(tool_results)} tools completed in {batch_duration:.3f}s"
+        )
 
         collected_tool_results.extend(tool_results)
 
@@ -393,11 +416,13 @@ class BaseAgent:
         tool_message = ToolMessage(tool_results=tool_results)
         self.conversation_history.extend([assistant_msg, tool_message])
 
-        logger.debug(f"Added {len(tool_results)} tool result(s) to conversation history")
+        logger.debug(
+            f"Added {len(tool_results)} tool result(s) to conversation history"
+        )
 
         return execution_error, tool_results
 
-    def _should_exit_on_success(self, iteration_results: List[ToolResult]) -> bool:
+    def _should_exit_on_success(self, iteration_results: list[ToolResult]) -> bool:
         if not self._exit_on_success:
             return False
         called_tools = {r.tool_name for r in iteration_results}
@@ -406,13 +431,17 @@ class BaseAgent:
     def _build_final_response(
         self,
         assistant_msg: AssistantMessage,
-        collected_tool_results: List[ToolResult],
-        execution_error: Optional[str]
+        collected_tool_results: list[ToolResult],
+        execution_error: str | None,
     ) -> AssistantResponse:
-        final_content = assistant_msg.content if assistant_msg.content else "Execution completed."
+        final_content = (
+            assistant_msg.content if assistant_msg.content else "Execution completed."
+        )
 
         logger.info(f"Assistant response generated for agent {self.__class__.__name__}")
-        logger.debug(f"Final response: tool_results count={len(collected_tool_results) if collected_tool_results else 0}")
+        logger.debug(
+            f"Final response: tool_results count={len(collected_tool_results) if collected_tool_results else 0}"
+        )
 
         # Avoid duplicates - message may already be in history from BEFORE_FINAL_RESPONSE
         # Use identity check (is) because Pydantic __eq__ may have edge cases
@@ -423,14 +452,14 @@ class BaseAgent:
             agent_name=self.__class__.__name__,
             content=final_content,
             tool_results=collected_tool_results if collected_tool_results else None,
-            error=execution_error
+            error=execution_error,
         )
 
     def _build_timeout_response(
         self,
         max_iterations: int,
-        collected_tool_results: List[ToolResult],
-        execution_error: Optional[str]
+        collected_tool_results: list[ToolResult],
+        execution_error: str | None,
     ) -> AssistantResponse:
         warning_msg = f"Reached iteration limit of {max_iterations}. Execution stopped."
         print(warning_msg)
@@ -440,25 +469,24 @@ class BaseAgent:
             agent_name=self.__class__.__name__,
             content=f"Execution stopped after {max_iterations} iterations.",
             tool_results=collected_tool_results if collected_tool_results else None,
-            error=execution_error or warning_msg
+            error=execution_error or warning_msg,
         )
 
     async def _execute_single_tool_with_hooks(
-        self,
-        call: ToolCall,
-        iteration: int,
-        batch_start_time: float = None
+        self, call: ToolCall, iteration: int, batch_start_time: float = None
     ) -> ToolResult:
         tool_start_time = time.perf_counter()
         if batch_start_time:
             relative_start = tool_start_time - batch_start_time
-            logger.debug(f"TOOL START: {call.name} (ID: {call.id[-12:]}) @ t={relative_start:.3f}s")
+            logger.debug(
+                f"TOOL START: {call.name} (ID: {call.id[-12:]}) @ t={relative_start:.3f}s"
+            )
 
         outcome = await self._run_hooks(
             AgentEvent.BEFORE_TOOL_EXECUTION,
             current_value=call,
             iteration=iteration,
-            tool_call=call
+            tool_call=call,
         )
         if outcome.decision == HookDecision.FAIL:
             raise RuntimeError("Hook BEFORE_TOOL_EXECUTION requested FAIL")
@@ -472,14 +500,14 @@ class BaseAgent:
                 tool_call_id=call.id,
                 result=None,
                 status=ToolStatus.ERROR,
-                error=f"Tool {call.name} not found or not executable"
+                error=f"Tool {call.name} not found or not executable",
             )
 
         outcome = await self._run_hooks(
             AgentEvent.AFTER_TOOL_EXECUTION,
             current_value=result,
             iteration=iteration,
-            tool_result=result
+            tool_result=result,
         )
         if outcome.decision == HookDecision.FAIL:
             raise RuntimeError("Hook AFTER_TOOL_EXECUTION requested FAIL")
@@ -491,7 +519,7 @@ class BaseAgent:
                 current_value=result,
                 iteration=iteration,
                 tool_result=result,
-                error=result.error
+                error=result.error,
             )
             if outcome.decision == HookDecision.FAIL:
                 raise RuntimeError("Hook ON_TOOL_ERROR requested FAIL")
@@ -512,9 +540,9 @@ class BaseAgent:
 
         return result
 
-    async def _async_execute_tool(self, tool_call: ToolCall) -> Optional[ToolResult]:
+    async def _async_execute_tool(self, tool_call: ToolCall) -> ToolResult | None:
         for tool in self.registered_tools:
-            tool_name = getattr(tool, 'tool_name', None)
+            tool_name = getattr(tool, "tool_name", None)
             if tool_name == tool_call.name:
                 try:
                     result = await tool.execute(tool_call)
@@ -525,15 +553,19 @@ class BaseAgent:
                         tool_call_id=tool_call.id,
                         result=None,
                         status="error",
-                        error=f"Tool execution error: {e}"
+                        error=f"Tool execution error: {e}",
                     )
 
         logger.error(f"Tool {tool_call.name} not found among registered tools")
-        logger.error(f"Registered tools: {[getattr(t, 'tool_name', t.__class__.__name__) for t in self.registered_tools]}")
+        logger.error(
+            f"Registered tools: {[getattr(t, 'tool_name', t.__class__.__name__) for t in self.registered_tools]}"
+        )
         return None
 
-    def _collect_tool_results(self, history: Optional[List[StandardMessage]] = None) -> List[ToolResult]:
-        results: List[ToolResult] = []
+    def _collect_tool_results(
+        self, history: list[StandardMessage] | None = None
+    ) -> list[ToolResult]:
+        results: list[ToolResult] = []
         target_history = history if history is not None else self.conversation_history
         for message in target_history:
             if isinstance(message, ToolMessage):
@@ -543,7 +575,7 @@ class BaseAgent:
     def _get_tool_policy_violation(
         self,
         status: AgentStatus,
-    ) -> Tuple[Optional[HookDecision], Optional[str]]:
+    ) -> tuple[HookDecision | None, str | None]:
         if not self._tool_policy:
             return None, None
 
@@ -586,7 +618,9 @@ class BaseAgent:
                 return decision, msg
 
             if req.require_success:
-                success_count = sum(1 for r in matching if r.status == ToolStatus.SUCCESS)
+                success_count = sum(
+                    1 for r in matching if r.status == ToolStatus.SUCCESS
+                )
                 if success_count < req.min_calls:
                     msg = req.error_message or (
                         f"Tool '{req.tool_name}' failed. "
@@ -625,12 +659,11 @@ class BaseAgent:
             status.agent.conversation_history.append(SystemMessage(content=msg))
 
     @property
-    def get_conversation_history(self) -> List[StandardMessage]:
+    def get_conversation_history(self) -> list[StandardMessage]:
         """
         Return the conversation history
         """
         return self.conversation_history.copy()
-
 
     def _register_memory_hooks(self) -> None:
         """Register hooks for shared memory injection and publication.
@@ -669,7 +702,9 @@ class BaseAgent:
                     break
 
             if existing_idx is not None:
-                existing_ts = history[existing_idx].metadata.get("shared_memory_timestamp")
+                existing_ts = history[existing_idx].metadata.get(
+                    "shared_memory_timestamp"
+                )
                 if existing_ts == mem.timestamp:
                     continue
                 # Rimuovi il vecchio e re-inserisci in fondo per mantenere rilevanza
@@ -685,7 +720,7 @@ class BaseAgent:
                     "shared_memory": True,
                     "shared_memory_source": mem.source_id,
                     "shared_memory_timestamp": mem.timestamp,
-                }
+                },
             )
             history.append(msg)
             logger.debug(
@@ -700,7 +735,9 @@ class BaseAgent:
 
         # Publish final response
         if status.assistant_message and status.assistant_message.content:
-            await self.memory_graph.publish(self.agent_id, status.assistant_message.content)
+            await self.memory_graph.publish(
+                self.agent_id, status.assistant_message.content
+            )
             logger.debug(
                 f"SharedMemory: '{self.agent_id}' published final "
                 f"({len(status.assistant_message.content)} chars)"
@@ -709,19 +746,25 @@ class BaseAgent:
         # Publish last successful tool result (serialized as JSON)
         last_tool_content = self._extract_last_tool_result()
         if last_tool_content:
-            await self.memory_graph.publish(self.agent_id, last_tool_content, kind="tool_result")
+            await self.memory_graph.publish(
+                self.agent_id, last_tool_content, kind="tool_result"
+            )
             logger.debug(
                 f"SharedMemory: '{self.agent_id}' published tool_result "
                 f"({len(last_tool_content)} chars)"
             )
 
-    def _extract_last_tool_result(self) -> Optional[str]:
+    def _extract_last_tool_result(self) -> str | None:
         """Extract the last successful tool result from conversation history, serialized as JSON."""
         import json
+
         for msg in reversed(self.conversation_history):
             if isinstance(msg, ToolMessage):
                 for result in reversed(msg.tool_results):
-                    if result.status == ToolStatus.SUCCESS and result.result is not None:
+                    if (
+                        result.status == ToolStatus.SUCCESS
+                        and result.result is not None
+                    ):
                         if isinstance(result.result, (dict, list)):
                             return json.dumps(result.result, ensure_ascii=False)
                         return str(result.result)
@@ -729,7 +772,7 @@ class BaseAgent:
 
     def register_agent(
         self,
-        agent: 'BaseAgent',
+        agent: "BaseAgent",
         *,
         name: str,
         description: str,
@@ -756,9 +799,7 @@ class BaseAgent:
             stateless=stateless,
         )
         self.registered_tools.append(wrapper)
-        logger.info(
-            f"Agent {self.__class__.__name__}: sub-agent '{name}' registered"
-        )
+        logger.info(f"Agent {self.__class__.__name__}: sub-agent '{name}' registered")
 
     def clear_conversation_history(self, keep_system_message: bool = True):
         """

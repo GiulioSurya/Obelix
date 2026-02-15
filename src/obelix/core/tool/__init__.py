@@ -1,11 +1,11 @@
 """
-Tool module - Base classes and decorators for tool creation.
+Tool module - Protocol and decorator for tool creation.
 """
 
-from obelix.core.tool.tool_base import ToolBase
+from obelix.core.tool.tool_base import Tool
 from obelix.core.tool.tool_decorator import tool
 
 __all__ = [
-    "ToolBase",
+    "Tool",
     "tool",
 ]

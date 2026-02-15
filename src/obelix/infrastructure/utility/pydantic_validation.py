@@ -7,6 +7,7 @@ Provides consistent error formatting for ValidationError across:
 - ToolCall creation (provider-level extraction)
 - Structured output validation (future)
 """
+
 from pydantic import ValidationError
 
 
@@ -34,7 +35,12 @@ def get_validation_action(err: dict, field_name: str) -> str:
         return f"Remove '{field_name}' - it is not a valid parameter."
     elif err_type in ("too_short", "too_long", "string_too_short", "string_too_long"):
         return f"Adjust length of '{field_name}'."
-    elif err_type in ("greater_than", "less_than", "greater_than_equal", "less_than_equal"):
+    elif err_type in (
+        "greater_than",
+        "less_than",
+        "greater_than_equal",
+        "less_than_equal",
+    ):
         return f"Adjust value of '{field_name}'."
     elif err_type in ("enum", "literal_error"):
         return f"Use an allowed value for '{field_name}'."

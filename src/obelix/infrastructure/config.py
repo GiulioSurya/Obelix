@@ -1,4 +1,5 @@
-from typing import Dict, Any, Optional
+from typing import Any
+
 from obelix.infrastructure.providers import Providers
 from obelix.ports.outbound.llm_connection import AbstractLLMConnection
 
@@ -12,9 +13,10 @@ class GlobalConfig:
     - Singleton connection for each provider (passed explicitly)
     - Factory to create provider instances with custom parameters
     """
+
     _instance = None
     _current_provider = None
-    _connections: Dict[Providers, Any] = {}
+    _connections: dict[Providers, Any] = {}
 
     def __new__(cls):
         if cls._instance is None:
@@ -22,7 +24,9 @@ class GlobalConfig:
             cls._connections = {}  # Initialize connections dict
         return cls._instance
 
-    def set_provider(self, provider: Providers, connection: Optional[AbstractLLMConnection] = None):
+    def set_provider(
+        self, provider: Providers, connection: AbstractLLMConnection | None = None
+    ):
         """
         Set the current provider and its connection.
 
@@ -89,7 +93,9 @@ class GlobalConfig:
         connection = self._connections[self._current_provider]
 
         # Create provider with connection + custom kwargs
-        return self._create_provider_instance(self._current_provider, connection, **kwargs)
+        return self._create_provider_instance(
+            self._current_provider, connection, **kwargs
+        )
 
     def _create_provider_instance(self, provider: Providers, connection, **kwargs):
         """
@@ -105,23 +111,27 @@ class GlobalConfig:
         """
         if provider == Providers.OCI_GENERATIVE_AI:
             from obelix.adapters.outbound.oci.provider import OCILLm
+
             return OCILLm(connection, **kwargs)
         elif provider == Providers.IBM_WATSON:
             from obelix.adapters.outbound.ibm.provider import IBMWatsonXLLm
+
             return IBMWatsonXLLm(connection, **kwargs)
         elif provider == Providers.ANTHROPIC:
             from obelix.adapters.outbound.anthropic.provider import AnthropicProvider
+
             return AnthropicProvider(connection, **kwargs)
         elif provider == Providers.OLLAMA:
             from obelix.adapters.outbound.ollama.provider import OllamaProvider
+
             return OllamaProvider(**kwargs)
         elif provider == Providers.VLLM:
             from obelix.adapters.outbound.vllm.provider import VLLMProvider
+
             return VLLMProvider(**kwargs)
         elif provider == Providers.OPENAI:
             from obelix.adapters.outbound.openai.provider import OpenAIProvider
+
             return OpenAIProvider(connection, **kwargs)
         else:
             raise ValueError(f"Provider {provider} not supported")
-
-

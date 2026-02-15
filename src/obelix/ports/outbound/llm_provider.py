@@ -5,14 +5,15 @@ Abstract LLM Provider interface.
 Pure ABC contract: each provider implements invoke() and is fully
 self-contained for message/tool conversion and response parsing.
 """
+
 from abc import ABC, abstractmethod
-from typing import List, Any, Optional, Type, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
-from obelix.core.model.standard_message import StandardMessage
 from obelix.core.model.assistant_message import AssistantMessage
-from obelix.core.tool.tool_base import ToolBase
+from obelix.core.model.standard_message import StandardMessage
+from obelix.core.tool.tool_base import Tool
 from obelix.infrastructure.logging import get_logger
 
 if TYPE_CHECKING:
@@ -43,9 +44,9 @@ class AbstractLLMProvider(ABC):
     @abstractmethod
     async def invoke(
         self,
-        messages: List[StandardMessage],
-        tools: List[ToolBase],
-        response_schema: Optional[Type[BaseModel]] = None,
+        messages: list[StandardMessage],
+        tools: list[Tool],
+        response_schema: type[BaseModel] | None = None,
     ) -> AssistantMessage:
         """
         Call the LLM with standardized messages and tools.
@@ -66,8 +67,7 @@ class AbstractLLMProvider(ABC):
 
     @staticmethod
     def _get_connection_from_global_config(
-        expected_provider: "Providers",
-        provider_class_name: str
+        expected_provider: "Providers", provider_class_name: str
     ) -> Any:
         """
         Get connection from GlobalConfig with provider validation.
@@ -77,7 +77,9 @@ class AbstractLLMProvider(ABC):
         """
         from obelix.infrastructure.config import GlobalConfig
 
-        logger.debug(f"Getting connection from GlobalConfig for {provider_class_name} (expected: {expected_provider.name})")
+        logger.debug(
+            f"Getting connection from GlobalConfig for {provider_class_name} (expected: {expected_provider.name})"
+        )
 
         config = GlobalConfig()
 
@@ -101,6 +103,8 @@ class AbstractLLMProvider(ABC):
             )
 
         if current_provider not in config._connections:
-            config._connections[current_provider] = config._create_connection(current_provider)
+            config._connections[current_provider] = config._create_connection(
+                current_provider
+            )
 
         return config._connections[current_provider]

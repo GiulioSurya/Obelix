@@ -1,8 +1,8 @@
 # src/embedding_providers/abstract_embedding_provider.py
-from abc import ABC, abstractmethod, ABCMeta
-from typing import List, Union
-import numpy as np
 import threading
+from abc import ABC, ABCMeta, abstractmethod
+
+import numpy as np
 
 
 class SingletonEmbeddingMeta(ABCMeta):
@@ -10,6 +10,7 @@ class SingletonEmbeddingMeta(ABCMeta):
     Thread-safe singleton metaclass to ensure a single instance
     of each Embedding Provider class in the system.
     """
+
     _instances = {}
     _lock = threading.Lock()
 
@@ -18,7 +19,7 @@ class SingletonEmbeddingMeta(ABCMeta):
             with cls._lock:
                 # Double-checked locking pattern
                 if cls not in cls._instances:
-                    cls._instances[cls] = super(SingletonEmbeddingMeta, cls).__call__(*args, **kwargs)
+                    cls._instances[cls] = super().__call__(*args, **kwargs)
         return cls._instances[cls]
 
 
@@ -34,7 +35,7 @@ class AbstractEmbeddingProvider(ABC, metaclass=SingletonEmbeddingMeta):
     """
 
     @abstractmethod
-    def embed(self, texts: Union[str, List[str]]) -> Union[np.ndarray, List[np.ndarray]]:
+    def embed(self, texts: str | list[str]) -> np.ndarray | list[np.ndarray]:
         """
         Generates embeddings for one or more texts.
 

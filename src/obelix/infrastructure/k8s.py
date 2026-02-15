@@ -13,9 +13,10 @@ Example:
     >>> model_id = chart_cfg["model_id"]
 """
 
-import yaml
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 
 class YamlConfig:
@@ -41,13 +42,13 @@ class YamlConfig:
         """
         path = Path(yaml_path)
         if not path.is_absolute():
-            project_root = Path(__file__).parent.parent.parent
+            project_root = Path(__file__).parent.parent.parent.parent
             path = project_root / path
 
         if not path.exists():
             raise FileNotFoundError(f"Config file not found: {path}")
 
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(path, encoding="utf-8") as f:
             self._data = yaml.safe_load(f)
 
         if not isinstance(self._data, dict):

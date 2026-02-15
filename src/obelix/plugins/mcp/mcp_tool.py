@@ -2,12 +2,16 @@
 import time
 from typing import Any
 
-from obelix.core.tool.tool_base import ToolBase
-from obelix.core.model.tool_message import ToolCall, ToolResult, ToolStatus, MCPToolSchema
+from obelix.core.model.tool_message import (
+    MCPToolSchema,
+    ToolCall,
+    ToolResult,
+    ToolStatus,
+)
 from obelix.plugins.mcp.run_time_manager import MCPRuntimeManager
 
 
-class MCPTool(ToolBase):
+class MCPTool:
     """
     Tool that wraps an external MCP tool using Runtime Manager.
 
@@ -77,9 +81,9 @@ class MCPTool(ToolBase):
             name=tool.name,
             description=tool.description,
             inputSchema=tool.inputSchema,
-            title=getattr(tool, 'title', None),
-            outputSchema=getattr(tool, 'outputSchema', None),
-            annotations=getattr(tool, 'annotations', None)
+            title=getattr(tool, "title", None),
+            outputSchema=getattr(tool, "outputSchema", None),
+            annotations=getattr(tool, "annotations", None),
         )
 
     async def execute(self, tool_call: ToolCall) -> ToolResult:
@@ -120,7 +124,7 @@ class MCPTool(ToolBase):
                 tool_call_id=tool_call.id,
                 result=self._extract_content(mcp_result),
                 status=ToolStatus.SUCCESS,
-                execution_time=execution_time
+                execution_time=execution_time,
             )
 
         except Exception as e:
@@ -132,7 +136,7 @@ class MCPTool(ToolBase):
                 result=None,
                 status=ToolStatus.ERROR,
                 error=str(e),
-                execution_time=execution_time
+                execution_time=execution_time,
             )
 
     def _extract_content(self, mcp_result) -> Any:
@@ -148,10 +152,10 @@ class MCPTool(ToolBase):
         Returns:
             Any: Extracted and formatted content
         """
-        if hasattr(mcp_result, 'content'):
+        if hasattr(mcp_result, "content"):
             if isinstance(mcp_result.content, list) and len(mcp_result.content) > 0:
                 first_item = mcp_result.content[0]
-                if hasattr(first_item, 'text'):
+                if hasattr(first_item, "text"):
                     content = first_item.text
 
                     # Error enrichment for debugging - behavior unchanged
@@ -160,4 +164,3 @@ class MCPTool(ToolBase):
 
                     return content
         return str(mcp_result)
-

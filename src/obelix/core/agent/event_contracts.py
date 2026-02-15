@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any
 
 from obelix.core.agent.hooks import AgentEvent
 from obelix.core.model.assistant_message import AssistantMessage, AssistantResponse
@@ -14,7 +14,7 @@ class EventContract:
     stop_output: Any
 
 
-def get_event_contracts() -> Dict[AgentEvent, EventContract]:
+def get_event_contracts() -> dict[AgentEvent, EventContract]:
     return {
         AgentEvent.BEFORE_LLM_CALL: EventContract(
             input_type=None,

@@ -1,29 +1,33 @@
 # src/core/model/usage.py
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Usage(BaseModel):
     """Model for tracking LLM token usage"""
-    input_tokens: int = Field(..., ge=0, description="Number of input tokens (prompt)")
-    output_tokens: int = Field(..., ge=0, description="Number of output tokens (completion)")
-    total_tokens: int = Field(..., ge=0, description="Total number of tokens used")
 
-    class Config:
-        # Strict validation for assignment
-        validate_assignment = True
+    model_config = ConfigDict(validate_assignment=True)
+
+    input_tokens: int = Field(..., ge=0, description="Number of input tokens (prompt)")
+    output_tokens: int = Field(
+        ..., ge=0, description="Number of output tokens (completion)"
+    )
+    total_tokens: int = Field(..., ge=0, description="Total number of tokens used")
 
 
 class AgentUsage(BaseModel):
     """Accumulates total token usage for an agent"""
+
+    model_config = ConfigDict(validate_assignment=True)
+
     model_id: str = Field(..., description="ID of the LLM model")
-    total_input_tokens: int = Field(default=0, ge=0, description="Sum of all input tokens")
-    total_output_tokens: int = Field(default=0, ge=0, description="Sum of all output tokens")
+    total_input_tokens: int = Field(
+        default=0, ge=0, description="Sum of all input tokens"
+    )
+    total_output_tokens: int = Field(
+        default=0, ge=0, description="Sum of all output tokens"
+    )
     total_tokens: int = Field(default=0, ge=0, description="Total sum of all tokens")
     call_count: int = Field(default=0, ge=0, description="Number of LLM calls made")
-
-    class Config:
-        # Strict validation for assignment
-        validate_assignment = True
 
     def add_usage(self, usage: Usage) -> None:
         """

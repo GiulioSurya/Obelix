@@ -8,41 +8,49 @@ No external mapping dependencies.
 Supports OpenAI GPT models and any OpenAI-compatible API
 (via custom base_url in OpenAIConnection).
 """
+
 import json
 import logging
-from typing import List, Dict, Any, Optional, Type
+from typing import Any
 
-from pydantic import ValidationError
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
-    before_sleep_log,
-)
 from openai import (
     APIConnectionError,
-    APITimeoutError,
-    RateLimitError,
-    InternalServerError,
-    ConflictError,
     APIResponseValidationError,
+    APITimeoutError,
+    ConflictError,
+    InternalServerError,
+    RateLimitError,
+)
+from pydantic import ValidationError
+from tenacity import (
+    before_sleep_log,
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
 )
 
-from obelix.ports.outbound.llm_provider import AbstractLLMProvider
-from obelix.core.model import SystemMessage, HumanMessage, AssistantMessage, ToolMessage, StandardMessage
+from obelix.adapters.outbound.openai.connection import OpenAIConnection
+from obelix.core.model import (
+    AssistantMessage,
+    HumanMessage,
+    StandardMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from obelix.core.model.tool_message import ToolCall
 from obelix.core.model.usage import Usage
-from obelix.core.tool.tool_base import ToolBase
+from obelix.core.tool.tool_base import Tool
+from obelix.infrastructure.logging import format_message_for_trace, get_logger
 from obelix.infrastructure.providers import Providers
-from obelix.adapters.outbound.openai.connection import OpenAIConnection
-from obelix.infrastructure.logging import get_logger, format_message_for_trace
+from obelix.ports.outbound.llm_provider import AbstractLLMProvider
 
 logger = get_logger(__name__)
 
 
 class ToolCallExtractionError(Exception):
     """Raised when tool call extraction or validation fails."""
+
     pass
 
 
@@ -69,20 +77,22 @@ class OpenAIProvider(AbstractLLMProvider):
     def provider_type(self) -> Providers:
         return Providers.OPENAI
 
-    def __init__(self,
-                 connection: Optional[OpenAIConnection] = None,
-                 model_id: str = "gpt-4o",
-                 max_tokens: int = 4096,
-                 temperature: float = 0.1,
-                 top_p: Optional[float] = None,
-                 frequency_penalty: Optional[float] = None,
-                 presence_penalty: Optional[float] = None,
-                 seed: Optional[int] = None,
-                 stop: Optional[List[str]] = None,
-                 tool_choice: Optional[str] = None,
-                 parallel_tool_calls: Optional[bool] = None,
-                 response_format: Optional[Dict[str, Any]] = None,
-                 reasoning_effort: Optional[str] = None):
+    def __init__(
+        self,
+        connection: OpenAIConnection | None = None,
+        model_id: str = "gpt-4o",
+        max_tokens: int = 4096,
+        temperature: float = 0.1,
+        top_p: float | None = None,
+        frequency_penalty: float | None = None,
+        presence_penalty: float | None = None,
+        seed: int | None = None,
+        stop: list[str] | None = None,
+        tool_choice: str | None = None,
+        parallel_tool_calls: bool | None = None,
+        response_format: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
+    ):
         """
         Initialize the OpenAI provider with dependency injection of connection.
 
@@ -103,8 +113,7 @@ class OpenAIProvider(AbstractLLMProvider):
         """
         if connection is None:
             connection = self._get_connection_from_global_config(
-                Providers.OPENAI,
-                "OpenAIProvider"
+                Providers.OPENAI, "OpenAIProvider"
             )
 
         self.connection = connection
@@ -125,14 +134,16 @@ class OpenAIProvider(AbstractLLMProvider):
     # ========== INVOKE ==========
 
     @retry(
-        retry=retry_if_exception_type((
-            APIConnectionError,
-            APITimeoutError,
-            RateLimitError,
-            InternalServerError,
-            ConflictError,
-            APIResponseValidationError,
-        )),
+        retry=retry_if_exception_type(
+            (
+                APIConnectionError,
+                APITimeoutError,
+                RateLimitError,
+                InternalServerError,
+                ConflictError,
+                APIResponseValidationError,
+            )
+        ),
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         before_sleep=before_sleep_log(logger, logging.WARNING),
@@ -140,9 +151,9 @@ class OpenAIProvider(AbstractLLMProvider):
     )
     async def invoke(
         self,
-        messages: List[StandardMessage],
-        tools: List[ToolBase],
-        response_schema: Optional[Type["BaseModel"]] = None,
+        messages: list[StandardMessage],
+        tools: list[Tool],
+        response_schema: type["BaseModel"] | None = None,
     ) -> AssistantMessage:
         """
         Call the OpenAI model with standardized messages and tools.
@@ -163,7 +174,7 @@ class OpenAIProvider(AbstractLLMProvider):
 
             converted_messages = self._convert_messages(working_messages)
 
-            api_params: Dict[str, Any] = {
+            api_params: dict[str, Any] = {
                 "model": self.model_id,
                 "max_tokens": self.max_tokens,
                 "temperature": self.temperature,
@@ -196,7 +207,7 @@ class OpenAIProvider(AbstractLLMProvider):
 
             logger.info(f"OpenAI chat completed: {self.model_id}")
 
-            if hasattr(response, 'usage') and response.usage:
+            if hasattr(response, "usage") and response.usage:
                 logger.debug(
                     f"OpenAI tokens: input={response.usage.prompt_tokens}, "
                     f"output={response.usage.completion_tokens}, "
@@ -207,7 +218,9 @@ class OpenAIProvider(AbstractLLMProvider):
                 return self._convert_response_to_assistant_message(response)
             except ToolCallExtractionError as e:
                 if attempt >= self.MAX_EXTRACTION_RETRIES:
-                    logger.error(f"Tool call extraction failed after {attempt} attempts: {e}")
+                    logger.error(
+                        f"Tool call extraction failed after {attempt} attempts: {e}"
+                    )
                     raise
 
                 logger.warning(f"Tool call extraction failed (attempt {attempt}): {e}")
@@ -221,7 +234,7 @@ class OpenAIProvider(AbstractLLMProvider):
 
     # ========== MESSAGE CONVERSION ==========
 
-    def _convert_messages(self, messages: List[StandardMessage]) -> List[dict]:
+    def _convert_messages(self, messages: list[StandardMessage]) -> list[dict]:
         """
         Convert standardized messages to OpenAI format.
 
@@ -233,19 +246,13 @@ class OpenAIProvider(AbstractLLMProvider):
             logger.trace(f"msg[{i}] {format_message_for_trace(msg)}")
 
             if isinstance(msg, SystemMessage):
-                converted.append({
-                    "role": "system",
-                    "content": msg.content
-                })
+                converted.append({"role": "system", "content": msg.content})
 
             elif isinstance(msg, HumanMessage):
-                converted.append({
-                    "role": "user",
-                    "content": msg.content
-                })
+                converted.append({"role": "user", "content": msg.content})
 
             elif isinstance(msg, AssistantMessage):
-                assistant_msg: Dict[str, Any] = {"role": "assistant"}
+                assistant_msg: dict[str, Any] = {"role": "assistant"}
 
                 if msg.content:
                     assistant_msg["content"] = msg.content
@@ -257,8 +264,8 @@ class OpenAIProvider(AbstractLLMProvider):
                             "id": tc.id,
                             "function": {
                                 "name": tc.name,
-                                "arguments": json.dumps(tc.arguments)
-                            }
+                                "arguments": json.dumps(tc.arguments),
+                            },
                         }
                         for tc in msg.tool_calls
                     ]
@@ -270,18 +277,24 @@ class OpenAIProvider(AbstractLLMProvider):
 
             elif isinstance(msg, ToolMessage):
                 for result in msg.tool_results:
-                    converted.append({
-                        "role": "tool",
-                        "tool_call_id": result.tool_call_id,
-                        "content": str(result.result) if result.result is not None else (result.error or "No result")
-                    })
+                    converted.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": result.tool_call_id,
+                            "content": str(result.result)
+                            if result.result is not None
+                            else (result.error or "No result"),
+                        }
+                    )
 
-        logger.debug(f"Converted {len(messages)} messages to {len(converted)} OpenAI messages")
+        logger.debug(
+            f"Converted {len(messages)} messages to {len(converted)} OpenAI messages"
+        )
         return converted
 
     # ========== TOOL CONVERSION ==========
 
-    def _convert_tools(self, tools: List[ToolBase]) -> List[dict]:
+    def _convert_tools(self, tools: list[Tool]) -> list[dict]:
         """Convert tool list to OpenAI function format."""
         if not tools:
             return []
@@ -289,21 +302,23 @@ class OpenAIProvider(AbstractLLMProvider):
         converted = []
         for tool in tools:
             schema = tool.create_schema()
-            converted.append({
-                "type": "function",
-                "function": {
-                    "name": schema.name,
-                    "description": schema.description,
-                    "parameters": schema.inputSchema
+            converted.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": schema.name,
+                        "description": schema.description,
+                        "parameters": schema.inputSchema,
+                    },
                 }
-            })
+            )
 
         logger.debug(f"Converted {len(tools)} tools to OpenAI format")
         return converted
 
     # ========== TOOL CALL EXTRACTION ==========
 
-    def _extract_tool_calls(self, response) -> List[ToolCall]:
+    def _extract_tool_calls(self, response) -> list[ToolCall]:
         """
         Extract and validate tool calls from OpenAI response.
 
@@ -312,7 +327,7 @@ class OpenAIProvider(AbstractLLMProvider):
         Raises:
             ToolCallExtractionError: If JSON parsing or validation fails
         """
-        if not hasattr(response, 'choices') or not response.choices:
+        if not hasattr(response, "choices") or not response.choices:
             return []
 
         message = response.choices[0].message
@@ -323,7 +338,7 @@ class OpenAIProvider(AbstractLLMProvider):
         errors = []
 
         for call in message.tool_calls:
-            if getattr(call, 'type', None) != "function":
+            if getattr(call, "type", None) != "function":
                 continue
 
             try:
@@ -336,9 +351,7 @@ class OpenAIProvider(AbstractLLMProvider):
                     arguments = json.loads(arguments, strict=False)
 
                 tool_call = ToolCall(
-                    id=call.id,
-                    name=call.function.name,
-                    arguments=arguments
+                    id=call.id, name=call.function.name, arguments=arguments
                 )
                 tool_calls.append(tool_call)
 
@@ -347,13 +360,12 @@ class OpenAIProvider(AbstractLLMProvider):
                     f"Tool '{call.function.name}': Invalid JSON in arguments - {e.msg}"
                 )
             except ValidationError as e:
-                errors.append(
-                    f"Tool '{call.function.name}': {e.errors()[0]['msg']}"
-                )
+                errors.append(f"Tool '{call.function.name}': {e.errors()[0]['msg']}")
 
         if errors:
             raise ToolCallExtractionError(
-                "Failed to extract tool calls:\n" + "\n".join(f"  - {err}" for err in errors)
+                "Failed to extract tool calls:\n"
+                + "\n".join(f"  - {err}" for err in errors)
             )
 
         return tool_calls
@@ -362,21 +374,21 @@ class OpenAIProvider(AbstractLLMProvider):
 
     def _extract_content(self, response) -> str:
         """Extract text content from OpenAI response."""
-        if not hasattr(response, 'choices') or not response.choices:
+        if not hasattr(response, "choices") or not response.choices:
             return ""
 
         message = response.choices[0].message
         return message.content if message.content else ""
 
-    def _extract_usage(self, response) -> Optional[Usage]:
+    def _extract_usage(self, response) -> Usage | None:
         """Extract usage information from OpenAI response."""
-        if not hasattr(response, 'usage') or not response.usage:
+        if not hasattr(response, "usage") or not response.usage:
             return None
 
         return Usage(
             input_tokens=response.usage.prompt_tokens,
             output_tokens=response.usage.completion_tokens,
-            total_tokens=response.usage.total_tokens
+            total_tokens=response.usage.total_tokens,
         )
 
     def _convert_response_to_assistant_message(self, response) -> AssistantMessage:
@@ -394,8 +406,4 @@ class OpenAIProvider(AbstractLLMProvider):
             f"OpenAI response: content_length={len(content)}, tool_calls={len(tool_calls)}"
         )
 
-        return AssistantMessage(
-            content=content,
-            tool_calls=tool_calls,
-            usage=usage
-        )
+        return AssistantMessage(content=content, tool_calls=tool_calls, usage=usage)

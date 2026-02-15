@@ -18,13 +18,12 @@ from pydantic import Field
 from obelix.core.agent import BaseAgent, SharedMemoryGraph
 from obelix.core.agent.agent_factory import AgentFactory
 from obelix.core.agent.shared_memory import PropagationPolicy
-from obelix.core.tool.tool_base import ToolBase
+from obelix.core.tool.tool_base import Tool
 from obelix.core.tool.tool_decorator import tool
 from obelix.infrastructure.config import GlobalConfig
 from obelix.infrastructure.providers import Providers
 from obelix.adapters.outbound.openai.connection import OpenAIConnection
 from obelix.adapters.outbound.anthropic.connection import AnthropicConnection
-from obelix.adapters.outbound.ollama.provider import OllamaProvider
 from obelix.adapters.outbound.oci.connection import OCIConnection
 from obelix.adapters.outbound.openai.provider import OpenAIProvider
 from obelix.adapters.outbound.anthropic.provider import AnthropicProvider
@@ -65,9 +64,6 @@ oci_config = {
 }
 
 oci_connection = OCIConnection(oci_config)
-#ollama
-
-ollama = OllamaProvider(model_id="MFDoom/deepseek-r1-tool-calling:8b")
 
 
 GlobalConfig().set_provider(provider=Providers.OCI_GENERATIVE_AI, connection=oci_connection)
@@ -75,7 +71,7 @@ GlobalConfig().set_provider(provider=Providers.OCI_GENERATIVE_AI, connection=oci
 
 # ========== TOOL ==========
 @tool(name="calculator", description="Performs basic arithmetic operations")
-class CalculatorTool(ToolBase):
+class CalculatorTool(Tool):
     operation: str = Field(..., description="Operation: add, subtract, multiply, divide")
     a: float = Field(..., description="First number")
     b: float = Field(..., description="Second number")

@@ -7,45 +7,46 @@ Supports: Meta Llama, Google Gemini, xAI Grok, OpenAI GPT-OSS
 This strategy is self-contained - all conversion logic is inline,
 no external mapping dependencies.
 """
+
 import json
 import uuid
-from typing import List, Any, Optional, Dict
+from typing import Any
 
-from pydantic import ValidationError
-
+from oci.generative_ai_inference.models import AssistantMessage as OCIAssistantMessage
 from oci.generative_ai_inference.models import (
-    GenericChatRequest,
     BaseChatRequest,
-    UserMessage,
-    SystemMessage as OCISystemMessage,
-    AssistantMessage as OCIAssistantMessage,
-    ToolMessage as OCIToolMessage,
-    TextContent,
     FunctionCall,
     FunctionDefinition,
+    GenericChatRequest,
+    TextContent,
     ToolChoiceAuto,
+    ToolChoiceNone,
     ToolChoiceRequired,
-    ToolChoiceNone
+    UserMessage,
 )
+from oci.generative_ai_inference.models import SystemMessage as OCISystemMessage
+from oci.generative_ai_inference.models import ToolMessage as OCIToolMessage
+from pydantic import ValidationError
 
 from obelix.adapters.outbound.oci.strategies.base_strategy import OCIRequestStrategy
-from obelix.core.model.standard_message import StandardMessage
-from obelix.core.model.human_message import HumanMessage
-from obelix.core.model.system_message import SystemMessage
 from obelix.core.model.assistant_message import AssistantMessage
-from obelix.core.model.tool_message import ToolMessage, ToolCall
-from obelix.core.tool.tool_base import ToolBase
-from obelix.infrastructure.logging import get_logger, format_message_for_trace
+from obelix.core.model.human_message import HumanMessage
+from obelix.core.model.standard_message import StandardMessage
+from obelix.core.model.system_message import SystemMessage
+from obelix.core.model.tool_message import ToolCall, ToolMessage
+from obelix.core.tool.tool_base import Tool
+from obelix.infrastructure.logging import format_message_for_trace, get_logger
 
 logger = get_logger(__name__)
 
 
 class ToolCallExtractionError(Exception):
     """Raised when tool call extraction fails due to malformed JSON or invalid structure."""
+
     pass
 
 
-def _inline_schema_refs(schema: Dict[str, Any]) -> Dict[str, Any]:
+def _inline_schema_refs(schema: dict[str, Any]) -> dict[str, Any]:
     """
     Inline JSON Schema $ref using local $defs to avoid OCI Generic rejection.
 
@@ -81,7 +82,7 @@ class GenericRequestStrategy(OCIRequestStrategy):
 
     # ========== MESSAGE CONVERSION ==========
 
-    def convert_messages(self, messages: List[StandardMessage]) -> List[Any]:
+    def convert_messages(self, messages: list[StandardMessage]) -> list[Any]:
         """
         Convert StandardMessage objects to OCI Generic format.
 
@@ -109,17 +110,15 @@ class GenericRequestStrategy(OCIRequestStrategy):
                 )
 
             elif isinstance(message, AssistantMessage):
-                converted_messages.append(
-                    self._convert_assistant_message(message)
-                )
+                converted_messages.append(self._convert_assistant_message(message))
 
             elif isinstance(message, ToolMessage):
                 # ToolMessage produces a list of OCIToolMessage (one per result)
-                converted_messages.extend(
-                    self._convert_tool_message(message)
-                )
+                converted_messages.extend(self._convert_tool_message(message))
 
-        logger.debug(f"Converted {len(converted_messages)} messages to OCI GENERIC format")
+        logger.debug(
+            f"Converted {len(converted_messages)} messages to OCI GENERIC format"
+        )
         return converted_messages
 
     def _convert_assistant_message(self, msg: AssistantMessage) -> OCIAssistantMessage:
@@ -129,33 +128,31 @@ class GenericRequestStrategy(OCIRequestStrategy):
         tool_calls = None
         if msg.tool_calls:
             tool_calls = [
-                FunctionCall(
-                    id=tc.id,
-                    name=tc.name,
-                    arguments=json.dumps(tc.arguments)
-                )
+                FunctionCall(id=tc.id, name=tc.name, arguments=json.dumps(tc.arguments))
                 for tc in msg.tool_calls
             ]
 
         return OCIAssistantMessage(content=content, tool_calls=tool_calls)
 
-    def _convert_tool_message(self, msg: ToolMessage) -> List[OCIToolMessage]:
+    def _convert_tool_message(self, msg: ToolMessage) -> list[OCIToolMessage]:
         """Convert internal ToolMessage to list of OCI ToolMessage."""
         return [
             OCIToolMessage(
-                content=[TextContent(
-                    text=str(result.result) if result.result else result.error
-                )],
-                tool_call_id=result.tool_call_id
+                content=[
+                    TextContent(
+                        text=str(result.result) if result.result else result.error
+                    )
+                ],
+                tool_call_id=result.tool_call_id,
             )
             for result in msg.tool_results
         ]
 
     # ========== TOOL CONVERSION ==========
 
-    def convert_tools(self, tools: List[ToolBase]) -> List[FunctionDefinition]:
+    def convert_tools(self, tools: list[Tool]) -> list[FunctionDefinition]:
         """
-        Convert ToolBase objects to OCI FunctionDefinition format.
+        Convert Tool objects to OCI FunctionDefinition format.
         """
         if not tools:
             logger.debug("No tools to convert for OCI GENERIC format")
@@ -177,7 +174,7 @@ class GenericRequestStrategy(OCIRequestStrategy):
                     type="FUNCTION",
                     name=schema.name,
                     description=schema.description,
-                    parameters=input_schema
+                    parameters=input_schema,
                 )
             )
 
@@ -186,7 +183,7 @@ class GenericRequestStrategy(OCIRequestStrategy):
 
     # ========== TOOL CALL EXTRACTION ==========
 
-    def extract_tool_calls(self, response) -> List[ToolCall]:
+    def extract_tool_calls(self, response) -> list[ToolCall]:
         """
         Extract tool calls from OCI Generic response.
 
@@ -226,9 +223,7 @@ class GenericRequestStrategy(OCIRequestStrategy):
 
                 # Create ToolCall - Pydantic validates arguments is Dict[str, Any]
                 tool_call = ToolCall(
-                    id=call.id or str(uuid.uuid4()),
-                    name=call.name,
-                    arguments=arguments
+                    id=call.id or str(uuid.uuid4()), name=call.name, arguments=arguments
                 )
                 tool_calls.append(tool_call)
 
@@ -237,13 +232,12 @@ class GenericRequestStrategy(OCIRequestStrategy):
                     f"Tool '{call.name}': Invalid JSON in arguments - {e.msg}"
                 )
             except ValidationError as e:
-                errors.append(
-                    f"Tool '{call.name}': {e.errors()[0]['msg']}"
-                )
+                errors.append(f"Tool '{call.name}': {e.errors()[0]['msg']}")
 
         if errors:
             raise ToolCallExtractionError(
-                f"Failed to extract tool calls:\n" + "\n".join(f"  - {err}" for err in errors)
+                "Failed to extract tool calls:\n"
+                + "\n".join(f"  - {err}" for err in errors)
             )
 
         return tool_calls
@@ -252,17 +246,17 @@ class GenericRequestStrategy(OCIRequestStrategy):
 
     def build_request(
         self,
-        converted_messages: List[Any],
-        converted_tools: List[Any],
+        converted_messages: list[Any],
+        converted_tools: list[Any],
         max_tokens: int,
         temperature: float,
-        top_p: Optional[float] = None,
-        top_k: Optional[int] = None,
-        frequency_penalty: Optional[float] = None,
-        presence_penalty: Optional[float] = None,
-        stop_sequences: Optional[List[str]] = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        frequency_penalty: float | None = None,
+        presence_penalty: float | None = None,
+        stop_sequences: list[str] | None = None,
         is_stream: bool = False,
-        **kwargs
+        **kwargs,
     ) -> BaseChatRequest:
         """
         Build a GenericChatRequest for Llama, Gemini, Grok, and OpenAI models.
@@ -313,10 +307,12 @@ class GenericRequestStrategy(OCIRequestStrategy):
                 tool_choice_map = {
                     "AUTO": ToolChoiceAuto(),
                     "REQUIRED": ToolChoiceRequired(),
-                    "NONE": ToolChoiceNone()
+                    "NONE": ToolChoiceNone(),
                 }
                 if tool_choice_value.upper() in tool_choice_map:
-                    request_params["tool_choice"] = tool_choice_map[tool_choice_value.upper()]
+                    request_params["tool_choice"] = tool_choice_map[
+                        tool_choice_value.upper()
+                    ]
                 else:
                     raise ValueError(
                         f"Invalid tool_choice value: '{tool_choice_value}'. "
@@ -333,7 +329,7 @@ class GenericRequestStrategy(OCIRequestStrategy):
         """Returns API_FORMAT_GENERIC"""
         return BaseChatRequest.API_FORMAT_GENERIC
 
-    def get_supported_model_prefixes(self) -> List[str]:
+    def get_supported_model_prefixes(self) -> list[str]:
         """
         Returns model ID prefixes supported by GENERIC format.
         """

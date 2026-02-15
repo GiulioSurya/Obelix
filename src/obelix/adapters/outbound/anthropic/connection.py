@@ -13,7 +13,7 @@ class AnthropicConnection(AbstractLLMConnection):
     Client is lazy initialized on first access.
     """
 
-    _instance: Optional['AnthropicConnection'] = None
+    _instance: Optional["AnthropicConnection"] = None
     _lock = threading.Lock()
     _client = None
     _client_lock = threading.Lock()
