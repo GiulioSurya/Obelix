@@ -9,10 +9,10 @@ A multi-provider LLM agent framework with tool support, hooks system, and seamle
 
 - **Multi-Provider Support**: OpenAI, Anthropic, Oracle Cloud (OCI), IBM Watson, Ollama, vLLM
 - **Tool System**: Declarative tool creation with automatic validation
-- **Sub-Agent Orchestration**: Compose hierarchical agent workflows with `@orchestrator` and `@subagent`
+- **Sub-Agent Orchestration**: Compose hierarchical agent workflows with the Agent Factory
 - **Parallel Tool Calls**: Execute multiple tools concurrently for improved performance
 - **Hooks System**: Intercept and modify agent behavior at runtime
-- **Async-First Architecture**: All providers use async `invoke()` - native async clients (Anthropic, OpenAI, Ollama) or `asyncio.to_thread()` for sync SDKs (OCI, IBM, vLLM). Event loop never blocks.
+- **Async-First Architecture**: All providers use async `invoke()` - native async clients (Anthropic, OpenAI, Ollama, OCI) or `asyncio.to_thread()` for sync SDKs (IBM, vLLM). Event loop never blocks.
 - **Thread-Safe Execution**: Parallel agent and tool calls don't share mutable state
 - **Loguru Logging**: Structured logging with rotation and color output
 
@@ -21,44 +21,78 @@ A multi-provider LLM agent framework with tool support, hooks system, and seamle
 ## Requirements
 
 - **Python 3.13+**
+- **[uv](https://docs.astral.sh/uv/)** package manager
 - One or more LLM provider credentials
+
+## Installing uv
+
+uv is a fast Python package manager. Install it with:
+
+```bash
+# macOS/Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# With pip (any OS)
+pip install uv
+```
 
 ## Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/obelix/obelix.git
-cd obelix
+git clone https://github.com/GiulioSurya/Obelix.git
+cd Obelix
+```
 
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+### Option 1: uv sync (Recommended)
 
+```bash
 # Install core dependencies only
-pip install -e .
+uv sync
 
 # Install with specific provider(s)
-pip install -e ".[openai]"             # OpenAI GPT models (also works with OpenAI-compatible APIs)
-pip install -e ".[anthropic]"          # Anthropic Claude
-pip install -e ".[oci]"                # Oracle Cloud Infrastructure
-pip install -e ".[ibm]"                # IBM Watson X
-pip install -e ".[ollama]"             # Ollama (local models)
-pip install -e ".[vllm]"               # vLLM (self-hosted inference)
+uv sync --extra openai             # OpenAI GPT models (also works with OpenAI-compatible APIs)
+uv sync --extra anthropic          # Anthropic Claude
+uv sync --extra oci                # Oracle Cloud Infrastructure
+uv sync --extra ibm                # IBM Watson X
+uv sync --extra ollama             # Ollama (local models)
+uv sync --extra vllm               # vLLM (self-hosted inference)
 
 # Install with MCP support
-pip install -e ".[mcp]"
+uv sync --extra mcp
 
 # Install multiple providers
-pip install -e ".[anthropic,oci]"
+uv sync --extra anthropic --extra oci
 
 # Install all LLM providers
-pip install -e ".[all-llm]"
+uv sync --extra all-llm
 
 # Install everything (all providers + MCP)
-pip install -e ".[all]"
+uv sync --extra all
 
 # Install with development tools
-pip install -e ".[dev]"
+uv sync --group dev
+```
+
+### Option 2: uv pip install (Editable mode)
+
+If you prefer `pip`-style installation:
+
+```bash
+# Create and activate a virtual environment first
+uv venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install in editable mode
+uv pip install -e .
+
+# Install with extras
+uv pip install -e ".[anthropic]"
+uv pip install -e ".[anthropic,oci]"
+uv pip install -e ".[all]"
 ```
 
 ### Available Extras
@@ -74,8 +108,35 @@ pip install -e ".[dev]"
 | `mcp` | Model Context Protocol support |
 | `all-llm` | All LLM providers |
 | `all` | All providers + MCP |
-| `dev` | Development tools (pytest, coverage) |
 
+## Development
+
+### Running Commands with uv
+
+Use `uv run` to execute commands within the virtual environment without activating it:
+
+```bash
+# Run Python scripts
+uv run python your_script.py
+
+# Run tests
+uv run pytest
+
+### Linting and Formatting
+
+```bash
+# Check for linting issues
+uv run ruff check
+
+# Auto-fix linting issues
+uv run ruff check --fix
+
+# Format code
+uv run ruff format
+
+# Check formatting without changes
+uv run ruff format --check
+```
 
 ## Powered by Pydantic
 
@@ -102,19 +163,17 @@ class CalculatorTool(ToolBase):
 When an LLM generates invalid tool arguments, Pydantic catches the error which is automatically added to the conversation history, allowing the agent to self-correct without any extra configuration:
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  LLM generates tool call with wrong arguments                   │
-│         ↓                                                       │
-│  Pydantic validates arguments → ValidationError                 │
-│         ↓                                                       │
-│  Error caught and wrapped in ToolResult(status=ERROR)           │
-│         ↓                                                       │
-│  ToolResult added to conversation history (built-in behavior)   │
-│         ↓                                                       │
-│  LLM sees the error and generates corrected arguments           │
-│         ↓                                                       │
-│  Tool executes successfully ✓                                   │
-└─────────────────────────────────────────────────────────────────┘
+LLM generates tool call with wrong arguments
+       |
+Pydantic validates arguments -> ValidationError
+       |
+Error caught and wrapped in ToolResult(status=ERROR)
+       |
+ToolResult added to conversation history (built-in behavior)
+       |
+LLM sees the error and generates corrected arguments
+       |
+Tool executes successfully
 ```
 
 This works out of the box - no hooks required. The error message from Pydantic is descriptive enough for the LLM to understand what went wrong and fix it.
@@ -124,19 +183,12 @@ This works out of the box - no hooks required. The error message from Pydantic i
 ## Quick Start
 
 ```python
-from src.base_agent.base_agent import BaseAgent
-from src.logging_config import setup_logging
+from obelix.domain.agent import BaseAgent
+from obelix.infrastructure.logging import setup_logging
 
-# Initialize logging
 setup_logging()
 
-# Create a simple agent
-agent = BaseAgent(
-    system_message="You are a helpful assistant.",
-    agent_name="SimpleAgent"
-)
-
-# Execute a query
+agent = BaseAgent(system_message="You are a helpful assistant.")
 response = agent.execute_query("Hello, how can you help me?")
 print(response.content)
 ```
@@ -152,10 +204,9 @@ Tools allow agents to perform concrete actions like fetching data, creating char
 Tools are created by extending `ToolBase` and using the `@tool` decorator:
 
 ```python
-from src.tools.tool_decorator import tool
-from src.tools.tool_base import ToolBase
+from obelix.domain.tool.tool_decorator import tool
+from obelix.domain.tool.tool_base import ToolBase
 from pydantic import Field
-from typing import Any
 
 @tool(name="calculator", description="Performs basic arithmetic operations")
 class CalculatorTool(ToolBase):
@@ -163,7 +214,7 @@ class CalculatorTool(ToolBase):
     a: float = Field(..., description="First operand")
     b: float = Field(..., description="Second operand")
 
-    def execute(self) -> dict:
+    async def execute(self) -> dict:
         operations = {
             "add": lambda x, y: x + y,
             "subtract": lambda x, y: x - y,
@@ -190,7 +241,7 @@ class WeatherTool(ToolBase):
     def __init__(self, api_client):
         self.api_client = api_client
 
-    def execute(self) -> dict:
+    async def execute(self) -> dict:
         data = self.api_client.get_weather(self.city)
         return {
             "city": self.city,
@@ -203,7 +254,7 @@ class WeatherTool(ToolBase):
 
 - Use the `@tool` decorator with `name` and `description` (both required)
 - Define input parameters using Pydantic `Field`
-- Implement `def execute(self)` method (the decorator handles async wrapping)
+- Implement `async def execute(self)` method
 - The decorator handles validation, error wrapping, and result formatting
 
 ### Interactive Questions Tool
@@ -211,16 +262,13 @@ class WeatherTool(ToolBase):
 The `AskUserQuestionTool` allows agents to gather user input through structured, interactive questions with multiple-choice options:
 
 ```python
-from src.tools.tool.ask_user_question_tool import AskUserQuestionTool
+from obelix.plugins.builtin.ask_user_question_tool import AskUserQuestionTool
 
 class InteractiveAgent(BaseAgent):
     def __init__(self):
         super().__init__(
-            system_message="You are an assistant that gathers user preferences.",
-            agent_name="PreferenceAgent"
+            system_message="You are an assistant that gathers user preferences."
         )
-
-        # Register the question tool
         self.register_tool(AskUserQuestionTool())
 ```
 
@@ -260,15 +308,12 @@ Agents orchestrate conversations with LLMs and execute tools based on the model'
 ### Basic Agent
 
 ```python
-from src.base_agent.base_agent import BaseAgent
+from obelix.domain.agent import BaseAgent
 
 class MyAgent(BaseAgent):
-    def __init__(self, provider=None):
+    def __init__(self):
         super().__init__(
             system_message="You are a specialized assistant for data analysis.",
-            provider=provider,
-            agent_name="DataAnalysisAgent",
-            description="Analyzes data and generates insights"
         )
 ```
 
@@ -277,13 +322,11 @@ class MyAgent(BaseAgent):
 Tools can be registered via the `tools` parameter or the `register_tool()` method:
 
 ```python
-from src.base_agent.base_agent import BaseAgent
-from src.tools.my_tool import CalculatorTool, WeatherTool
+from obelix.domain.agent import BaseAgent
 
 # Option 1: tools parameter (single tool or list)
 agent = BaseAgent(
     system_message="You are a helpful assistant.",
-    agent_name="MyAgent",
     tools=[CalculatorTool, WeatherTool]  # Classes auto-instantiated
 )
 
@@ -299,207 +342,190 @@ class ToolEquippedAgent(BaseAgent):
     def __init__(self):
         super().__init__(
             system_message="You are an assistant with calculation capabilities.",
-            agent_name="CalculatorAgent"
         )
         self.register_tool(CalculatorTool())
 ```
 
-### Agent with Hooks
+### Hooks System
 
-Hooks allow intercepting events during the agent lifecycle. Each hook receives an `AgentStatus` with relevant information.
+Hooks intercept agent lifecycle events enabling **validation**, **error recovery**, **context injection**, and **flow control**. Each hook receives an `AgentStatus` and can return a `HookDecision` to control execution.
+
+**Common use cases:**
+- **Output validation**: Ensure LLM response contains required elements, retry if missing
+- **Error recovery**: Inject context (e.g., database schema) when tools fail
+- **Context injection**: Add plans or data before LLM calls
+- **Result enrichment**: Transform tool results (e.g., fetch docs for error codes)
 
 ```python
-from src.base_agent.base_agent import BaseAgent
-from src.base_agent.hooks import AgentEvent
-from src.messages.human_message import HumanMessage
+from obelix.domain.agent import BaseAgent
+from obelix.domain.agent.hooks import AgentEvent, HookDecision, AgentStatus
+from obelix.domain.model import SystemMessage
 
-class SmartAgent(BaseAgent):
+
+class ValidatingAgent(BaseAgent):
     def __init__(self):
-        super().__init__(
-            system_message="You are an intelligent assistant.",
-            agent_name="SmartAgent"
+        super().__init__(system_message="...")
+
+        # Validate output contains required tag, retry if missing
+        self.on(AgentEvent.BEFORE_FINAL_RESPONSE) \
+            .when(self._missing_answer_tag) \
+            .handle(
+                decision=HookDecision.RETRY,
+                effects=[self._inject_format_guidance]
+            )
+
+    def _missing_answer_tag(self, ctx: AgentStatus) -> bool:
+        content = ctx.assistant_message.content or ""
+        return "<answer>" not in content
+
+    def _inject_format_guidance(self, ctx: AgentStatus) -> None:
+        ctx.conversation_history.append(
+            SystemMessage(content="Your response must include <answer>...</answer> tags.")
         )
-        self._schema_injected = False
-
-        # Inject database schema on "invalid identifier" errors
-        self.on(AgentEvent.ON_TOOL_ERROR) \
-            .when(self._is_invalid_identifier) \
-            .inject(self._create_schema_message)
-
-    def _is_invalid_identifier(self, agent_status) -> bool:
-        # agent_status.error contains the error message from the tool
-        # agent_status.tool_result contains the full ToolResult object
-        return (
-            agent_status.error is not None and
-            "invalid identifier" in agent_status.error and
-            not self._schema_injected
-        )
-
-    def _create_schema_message(self, agent_status) -> HumanMessage:
-        self._schema_injected = True
-        # agent_status.agent gives access to the agent instance
-        # agent_status.conversation_history gives access to the full history
-        return HumanMessage(content="Database schema: ... Please correct the query.")
 ```
 
-### AgentStatus
+#### Hook Decisions
 
-The `AgentStatus` object provides access to the current state. Available fields depend on the event:
+| Decision | Effect |
+|----------|--------|
+| `CONTINUE` | Proceed normally (default) |
+| `RETRY` | Restart current LLM iteration |
+| `FAIL` | Raise RuntimeError |
+| `STOP` | Return immediately with provided value |
+
+#### AgentStatus Fields
 
 | Event | `iteration` | `tool_call` | `tool_result` | `assistant_message` | `error` |
 |-------|:-----------:|:-----------:|:-------------:|:-------------------:|:-------:|
-| `ON_QUERY_START` | 0 | - | - | - | - |
-| `BEFORE_LLM_CALL` | ✓ | - | - | - | - |
-| `AFTER_LLM_CALL` | ✓ | - | - | ✓ | - |
-| `BEFORE_TOOL_EXECUTION` | ✓ | ✓ | - | - | - |
-| `AFTER_TOOL_EXECUTION` | ✓ | - | ✓ | - | - |
-| `ON_TOOL_ERROR` | ✓ | - | ✓ | - | ✓ |
-| `ON_QUERY_END` | ✓ | - | - | - | - |
-| `ON_MAX_ITERATIONS` | ✓ | - | - | - | - |
+| `BEFORE_LLM_CALL` | x | - | - | - | - |
+| `AFTER_LLM_CALL` | x | - | - | x | - |
+| `BEFORE_TOOL_EXECUTION` | x | x | - | - | - |
+| `AFTER_TOOL_EXECUTION` | x | - | x | - | - |
+| `ON_TOOL_ERROR` | x | - | x | - | x |
+| `BEFORE_FINAL_RESPONSE` | x | - | - | x | - |
+| `QUERY_END` | x | - | - | - | - |
 
-**Always available**: `agent_status.agent` (the agent instance), `agent_status.conversation_history` (list of messages)
+**Always available**: `ctx.agent`, `ctx.conversation_history`
 
-### Hook Methods
+#### Hook API
 
-| Method | Description |
-|--------|-------------|
-| `.when(fn)` | Condition to trigger the hook: `fn(agent_status) -> bool` |
-| `.inject(fn)` | Append a message to history: `fn(agent_status) -> Message` |
-| `.inject_at(pos, fn)` | Insert message at position: `fn(agent_status) -> Message` |
-| `.transform(fn)` | Transform the current value: `fn(value, agent_status) -> new_value` |
-| `.do(fn)` | Execute side effect: `fn(agent_status)` |
+```python
+self.on(AgentEvent.EVENT_NAME) \
+    .when(condition_fn) \           # fn(ctx) -> bool
+    .handle(
+        decision=HookDecision.X,    # CONTINUE | RETRY | FAIL | STOP
+        value=transform_fn,         # Optional: fn(ctx, current_value) -> new_value
+        effects=[effect_fn, ...]    # Optional: list of fn(ctx) -> None
+    )
+```
+
+---
+
+### Tool Policy
+
+Tool policies enforce that specific tools must be called before the agent can respond. Useful for ensuring required actions are performed.
+
+```python
+from obelix.domain.model.tool_message import ToolRequirement
+
+agent = BaseAgent(
+    system_message="You are a SQL assistant.",
+    tool_policy=[
+        ToolRequirement(
+            tool_name="sql_executor",
+            min_calls=1,
+            require_success=True,
+            error_message="You must execute the SQL query before responding."
+        )
+    ]
+)
+```
+
+If violated: agent retries with guidance message, or fails at max iterations.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `tool_name` | `str` | required | Tool to enforce |
+| `min_calls` | `int` | `1` | Minimum calls required |
+| `require_success` | `bool` | `False` | Must succeed (not error) |
+| `error_message` | `str` | `None` | Custom guidance message |
 
 ### Sub-Agent Orchestration
 
-Obelix supports hierarchical agent composition through the `@orchestrator` and `@subagent` decorators. An orchestrator agent can register other agents as "virtual tools", delegating specialized tasks through function calling.
+Obelix supports hierarchical agent composition. Any agent can register other agents as sub-agents via `register_agent()`, or use the **Agent Factory** for centralized composition.
 
-#### Creating a Sub-Agent
-
-Sub-agents are specialized agents that can be registered and invoked by orchestrators:
+#### Direct Registration
 
 ```python
-from src.base_agent.subagent_decorator import subagent
-from src.base_agent.base_agent import BaseAgent
-from pydantic import Field
+from obelix.domain.agent import BaseAgent
 
-@subagent(name="sql_analyzer", description="Analyzes SQL errors and suggests fixes")
 class SQLAnalyzerAgent(BaseAgent):
-    # Optional context fields (in addition to mandatory 'query')
-    error_context: str = Field(default="", description="Error context from database")
-    schema_info: str = Field(default="", description="Optional schema information")
-
     def __init__(self):
-        super().__init__(
-            system_message="You are a SQL expert that analyzes errors and suggests fixes.",
-            agent_name="SQLAnalyzer"
-        )
-        # Sub-agents can have their own tools
+        super().__init__(system_message="You are a SQL expert.")
         self.register_tool(SQLQueryTool())
-```
 
-**Key points**:
-- `@subagent` requires `name` and `description` (validated at import time)
-- Define optional context fields using Pydantic `Field`
-- The `query` field is automatically added as the first parameter
-- Sub-agents are autonomous and can have their own tools and hooks
-
-#### Stateless vs Stateful Sub-Agents
-
-The `stateless` parameter controls how sub-agents handle concurrent calls and conversation history:
-
-```python
-# Stateless: allows parallel calls, each on isolated copy
-@subagent(name="translator", description="Translates text", stateless=True)
-class TranslatorAgent(BaseAgent):
-    ...
-
-# Stateful (default): calls serialized with lock, preserves conversation history
-@subagent(name="analyst", description="Analyzes data with context")
-class AnalystAgent(BaseAgent):
-    ...
-```
-
-| `stateless` | Parallel Calls | Conversation History | Use Case |
-|-------------|----------------|---------------------|----------|
-| `True` | Yes (concurrent) | Fork of current state, discarded after | One-shot tasks, translations, validations |
-| `False` (default) | No (serialized via lock) | Preserved across calls | Multi-turn analysis, agents needing context |
-
-**How stateless works**:
-- Each call creates a shallow copy of the agent with a forked `conversation_history`
-- The copy is discarded after execution (original agent unchanged)
-- `agent_usage` is still accumulated on the original agent
-- Multiple calls can run truly in parallel without state collision
-
-#### Creating an Orchestrator
-
-Orchestrators coordinate multiple sub-agents:
-
-```python
-from src.base_agent.orchestrator_decorator import orchestrator
-from src.base_agent.base_agent import BaseAgent
-
-@orchestrator(name="db_coordinator", description="Coordinates database operations")
-class DatabaseCoordinator(BaseAgent):
+class CoordinatorAgent(BaseAgent):
     def __init__(self):
-        super().__init__(
-            system_message="You coordinate database tasks and delegate to specialists.",
-            agent_name="DBCoordinator"
-        )
-        # Orchestrators can have their own tools
-        self.register_tool(DatabaseConnectionTool())
+        super().__init__(system_message="You coordinate database tasks.")
 
-# Create orchestrator and register sub-agents
-coordinator = DatabaseCoordinator()
-coordinator.register_agent(SQLAnalyzerAgent())
-coordinator.register_agent(QueryOptimizerAgent())
+# Any agent can register sub-agents directly
+coordinator = CoordinatorAgent()
+coordinator.register_agent(
+    SQLAnalyzerAgent(),
+    name="sql_analyzer",
+    description="Analyzes SQL errors and suggests fixes",
+)
+
+response = coordinator.execute_query("Why is this query failing? Error: ORA-00942")
 ```
 
-**Key points**:
-- `@orchestrator` adds the `register_agent()` method
-- Only agents decorated with `@subagent` can be registered
-- Sub-agents are wrapped as tools and appear in the LLM's tool schema
-- Orchestrators can mix regular tools and sub-agents
+#### Using Agent Factory
 
-#### How Sub-Agents are Invoked
+```python
+from obelix.domain.agent import BaseAgent
+from obelix.domain.agent.agent_factory import AgentFactory
 
-When the LLM calls a registered sub-agent, it provides arguments like a regular tool:
+factory = AgentFactory()
 
-```json
-{
-  "tool_calls": [{
-    "name": "sql_analyzer",
-    "arguments": {
-      "query": "Why is this query failing?",
-      "error_context": "ORA-00942: table or view does not exist",
-      "schema_info": "Tables: users, orders, products"
-    }
-  }]
-}
+factory.register("sql_analyzer", SQLAnalyzerAgent,
+                 subagent_description="Analyzes SQL errors and suggests fixes")
+
+factory.register("coordinator", CoordinatorAgent)
+
+# Create orchestrator with sub-agents
+coordinator = factory.create("coordinator", subagents=["sql_analyzer"])
+
+response = coordinator.execute_query("Why is this query failing? Error: ORA-00942")
 ```
 
-The framework automatically:
-1. Validates arguments against the sub-agent's schema
-2. Combines `query` and context fields into a complete query
-3. Executes the sub-agent in isolation (thread-safe copy)
-4. Returns the result as a `ToolResult` to the orchestrator
+#### Stateless vs Stateful
 
-#### Benefits
+| `stateless` | Behavior |
+|-------------|----------|
+| `False` (default) | Conversation history preserved across calls, serialized execution |
+| `True` | Each call isolated on a copy, allows parallel execution |
 
-- **Separation of concerns**: Each sub-agent focuses on a specific task
-- **Reusability**: Sub-agents can be registered with multiple orchestrators
-- **Parallel execution**: Multiple sub-agents can run concurrently
-- **No coupling**: Sub-agents don't know about orchestrators
-- **Declarative composition**: Build complex workflows with simple decorators
+```python
+# Direct
+coordinator.register_agent(translator, name="translator",
+                           description="Translates text", stateless=True)
+
+# Via factory
+factory.register("translator", TranslatorAgent,
+                 subagent_description="Translates text",
+                 stateless=True)
+```
 
 ### Constructor Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `system_message` | `str` | - | System prompt for the agent |
+| `system_message` | `str` | required | System prompt for the agent |
 | `provider` | `AbstractLLMProvider` | `None` | LLM provider (uses GlobalConfig if None) |
-| `agent_name` | `str` | `None` | Agent name (uses class name if None) |
-| `description` | `str` | `None` | Agent capabilities description |
-| `agent_comment` | `bool` | `True` | If True, LLM comments on tool results |
+| `max_iterations` | `int` | `15` | Maximum agent loop iterations |
+| `tools` | `ToolBase / List[ToolBase]` | `None` | Tools to register (classes or instances) |
+| `tool_policy` | `List[ToolRequirement]` | `None` | Required tool calls before responding |
+| `exit_on_success` | `List[str]` | `None` | Tool names that end the loop on success |
 
 ### Execution Methods
 
@@ -520,21 +546,16 @@ print(response.error)         # Error message if any
 
 ## Connections and Providers
 
-Obelix uses a layered architecture: **Connection → Provider → Agent**.
+Obelix uses a layered architecture: **Connection -> Provider -> Agent**.
 
 ### Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                         Agent                               │
-│  (orchestrates conversation, executes tools)                │
-├─────────────────────────────────────────────────────────────┤
-│                        Provider                             │
-│  (model parameters, invoke(), message formatting)           │
-├─────────────────────────────────────────────────────────────┤
-│                       Connection                            │
-│  (credentials, singleton client, thread-safe)               │
-└─────────────────────────────────────────────────────────────┘
+Agent      (orchestrates conversation, executes tools)
+   |
+Provider   (model parameters, invoke(), message formatting)
+   |
+Connection (credentials, singleton client, thread-safe)
 ```
 
 ### Creating a Provider
@@ -543,9 +564,9 @@ Obelix uses a layered architecture: **Connection → Provider → Agent**.
 2. **Provider**: Uses the connection and defines model parameters
 
 ```python
-from src.connections.llm_connection import AnthropicConnection
-from src.llm_providers.anthropic_provider import AnthropicProvider
-from src.base_agent.base_agent import BaseAgent
+from obelix.adapters.outbound.anthropic.connection import AnthropicConnection
+from obelix.adapters.outbound.anthropic.provider import AnthropicProvider
+from obelix.domain.agent import BaseAgent
 
 # 1. Create connection (reads ANTHROPIC_API_KEY from env)
 connection = AnthropicConnection()
@@ -562,7 +583,6 @@ provider = AnthropicProvider(
 agent = BaseAgent(
     system_message="You are a helpful assistant.",
     provider=provider,
-    agent_name="MyAgent"
 )
 ```
 
@@ -572,11 +592,8 @@ agent = BaseAgent(
 
 #### Step 1: Initialize Connection
 
-Create a connection by passing the required credentials:
-
 ```python
-from src.connections.llm_connection import AnthropicConnection
-# or: IBMConnection, OCIConnection, etc.
+from obelix.adapters.outbound.anthropic.connection import AnthropicConnection
 
 connection = AnthropicConnection(api_key="your_api_key")
 ```
@@ -584,8 +601,8 @@ connection = AnthropicConnection(api_key="your_api_key")
 #### Step 2: Configure GlobalConfig
 
 ```python
-from src.config import GlobalConfig
-from src.providers import Providers
+from obelix.infrastructure.config import GlobalConfig
+from obelix.infrastructure.providers import Providers
 
 config = GlobalConfig()
 config.set_provider(Providers.ANTHROPIC, connection=connection)
@@ -596,12 +613,11 @@ config.set_provider(Providers.ANTHROPIC, connection=connection)
 Any agent will automatically use the configured provider if no provider is passed:
 
 ```python
-from src.base_agent.base_agent import BaseAgent
+from obelix.domain.agent import BaseAgent
 
 agent = BaseAgent(
     system_message="You are a helpful assistant.",
-    agent_name="MyAgent"
-    # provider=None → uses GlobalConfig
+    # provider=None -> uses GlobalConfig
 )
 
 response = agent.execute_query("What can you help me with?")
@@ -609,8 +625,6 @@ print(response.content)
 ```
 
 #### Customize Provider Parameters
-
-You can customize model parameters while using GlobalConfig:
 
 ```python
 provider = config.get_current_provider_instance(
@@ -622,7 +636,6 @@ provider = config.get_current_provider_instance(
 agent = BaseAgent(
     system_message="You are a helpful assistant.",
     provider=provider,
-    agent_name="MyAgent"
 )
 ```
 
@@ -630,8 +643,8 @@ agent = BaseAgent(
 
 | Connection | Credentials |
 |------------|-------------|
-| `OpenAIConnection(api_key, base_url=None)` | OpenAI API key (or any OpenAI-compatible API) |
 | `AnthropicConnection(api_key)` | Anthropic API key |
+| `OpenAIConnection(api_key, base_url=None)` | OpenAI API key (or any OpenAI-compatible API) |
 | `OCIConnection(oci_config)` | OCI config (file path or dict) |
 | `IBMConnection(api_key, project_id, url)` | IBM Watson X credentials |
 
@@ -644,7 +657,7 @@ Obelix uses [Loguru](https://github.com/Delgan/loguru) for structured logging wi
 ### Setup (Once at Application Start)
 
 ```python
-from src.logging_config import setup_logging
+from obelix.infrastructure.logging import setup_logging
 
 # Default configuration
 setup_logging()
@@ -661,9 +674,8 @@ setup_logging(
 ### Usage in Modules
 
 ```python
-from src.logging_config import get_logger
+from obelix.infrastructure.logging import get_logger
 
-# Get a logger bound to current module
 logger = get_logger(__name__)
 
 def my_function():
@@ -687,73 +699,61 @@ def my_function():
 | ERROR | 40 | Errors that prevent an operation |
 | CRITICAL | 50 | Fatal errors requiring shutdown |
 
-### Logging with Context
-
-```python
-# With variables (f-string)
-logger.debug(f"Processing user {user_id} with params {params}")
-
-# With exception traceback
-try:
-    risky_operation()
-except Exception:
-    logger.exception("Operation failed")  # Includes full traceback
-```
-
-### Log Output Format
-
-**File** (with rotation at 50 MB, 7 days retention):
-```
-2024-01-15 10:30:45.123 | INFO     | src.agents.my_agent:execute:42 | Query executed
-```
-
-**Console** (with colors):
-```
-INFO     | src.agents.my_agent:execute | Query executed
-```
-
 ---
 
 ## Project Structure
 
 ```
-obelix/
-├── src/
-│   ├── base_agent/                # Agent infrastructure
-│   │   ├── base_agent.py          # BaseAgent class
-│   │   ├── hooks.py               # Hooks system
-│   │   ├── orchestrator_decorator.py  # @orchestrator decorator
-│   │   ├── subagent_decorator.py      # @subagent decorator
-│   │   └── agents/                # Concrete agent implementations
-│   ├── tools/                     # Tool implementations
-│   │   ├── tool_base.py           # Abstract ToolBase
-│   │   └── tool_decorator.py      # @tool decorator
-│   ├── llm_providers/             # LLM provider implementations
-│   │   ├── anthropic_provider.py
-│   │   ├── oci_provider.py
-│   │   ├── ibm_provider.py
-│   │   └── ollama_provider.py
-│   ├── connections/               # LLM connections (singleton clients)
-│   ├── messages/                  # Message types
-│   ├── logging_config.py          # Loguru configuration
-│   └── config.py                  # Global configuration
-├── config/                        # YAML configuration files
-├── tests/                         # Test suite
-├── LICENSE                        # Apache 2.0 License
-├── setup.py                       # Package configuration
-└── README.md                      # This file
+src/
+└── obelix/
+    ├── domain/                          # Business logic
+    │   ├── agent/                       # Agent infrastructure
+    │   │   ├── base_agent.py            # BaseAgent class (execution engine)
+    │   │   ├── agent_factory.py         # AgentFactory for agent creation/composition
+    │   │   ├── subagent_wrapper.py      # SubAgentWrapper (BaseAgent -> ToolBase bridge)
+    │   │   ├── hooks.py                 # Hooks system + AgentEvent/AgentStatus
+    │   │   └── event_contracts.py       # Event validation specifications
+    │   ├── model/                       # Message types (Pydantic)
+    │   │   ├── human_message.py         # HumanMessage
+    │   │   ├── assistant_message.py     # AssistantMessage, AssistantResponse
+    │   │   ├── system_message.py        # SystemMessage
+    │   │   ├── tool_message.py          # ToolMessage, ToolCall, ToolResult
+    │   │   └── standard_message.py      # StandardMessage union type
+    │   └── tool/                        # Tool infrastructure
+    │       ├── tool_base.py             # Abstract ToolBase
+    │       └── tool_decorator.py        # @tool decorator
+    ├── ports/
+    │   └── outbound/                    # Abstract interfaces (ABCs)
+    │       ├── llm_provider.py          # AbstractLLMProvider
+    │       ├── llm_connection.py        # AbstractLLMConnection
+    │       └── embedding_provider.py    # AbstractEmbeddingProvider
+    ├── adapters/
+    │   └── outbound/                    # Provider implementations
+    │       ├── anthropic/               # Anthropic Claude
+    │       ├── openai/                  # OpenAI + compatible APIs
+    │       ├── oci/                     # Oracle Cloud Infrastructure
+    │       ├── ibm/                     # IBM Watson X
+    │       ├── ollama/                  # Ollama (local models)
+    │       └── vllm/                    # vLLM (self-hosted)
+    ├── infrastructure/                  # Cross-cutting concerns
+    │   ├── config.py                    # GlobalConfig singleton
+    │   ├── logging.py                   # Loguru configuration
+    │   └── providers.py                 # Providers enum
+    └── plugins/                         # Optional extensions
+        ├── builtin/                     # Built-in tools (AskUserQuestionTool)
+        └── mcp/                         # Model Context Protocol support
 ```
 
 ## Supported LLM Providers
 
 | Provider | Module | Description |
 |----------|--------|-------------|
-| OpenAI | `openai_provider.py` | GPT models + OpenAI-compatible APIs |
-| Anthropic | `anthropic_provider.py` | Claude models (native SDK) |
-| Oracle Cloud (OCI) | `oci_provider.py` | OCI Generative AI |
-| IBM Watson | `ibm_provider.py` | WatsonX AI |
-| Ollama | `ollama_provider.py` | Local models |
-| vLLM | `vllm_provider.py` | Self-hosted inference |
+| OpenAI | `adapters/outbound/openai/` | GPT models + OpenAI-compatible APIs |
+| Anthropic | `adapters/outbound/anthropic/` | Claude models (native SDK) |
+| Oracle Cloud (OCI) | `adapters/outbound/oci/` | OCI Generative AI |
+| IBM Watson | `adapters/outbound/ibm/` | WatsonX AI |
+| Ollama | `adapters/outbound/ollama/` | Local models |
+| vLLM | `adapters/outbound/vllm/` | Self-hosted inference |
 
 ## License
 

@@ -359,8 +359,10 @@ test-results/
 
 # Claude Code instructions and planning docs
 CLAUDE.md
-src/base_agent/subagent_implementation_plan.md
-src/base_agent/blackboard.md
+docs/shared_memory_plan.md
+docs/INBOUND_ARCHITECTURE_PLAN.md
+
+
 
 # ============================================================================
 # Miscellaneous
@@ -387,5 +389,3 @@ dist/
 build/
 *.whl
 
-# Documentation (Local/Working)
-docs/
