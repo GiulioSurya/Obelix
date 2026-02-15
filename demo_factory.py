@@ -1,26 +1,35 @@
-# demo_factory.py - Demo of Agent Factory
+# demo_factory.py - Demo of Agent Factory + Shared Memory
 """
-This demo shows how to use the AgentFactory to create and compose agents.
+This demo shows how to use the AgentFactory with SharedMemoryGraph.
+
+Flow:
+  math_agent  ──▶  report_agent
+      │                 │
+      └────────┬────────┘
+          coordinator (orchestrator)
+
+The coordinator calls math_agent first, which publishes its result
+to the SharedMemoryGraph. When report_agent runs, it pulls the math
+result via shared memory and produces a formatted report.
 """
 from dotenv import load_dotenv
 from pydantic import Field
 
-from src.domain.agent import BaseAgent
-from src.domain.agent.agent_factory import AgentFactory
-from src.domain.tool.tool_base import ToolBase
-from src.domain.tool.tool_decorator import tool
-from src.infrastructure.config import GlobalConfig
-from src.infrastructure.providers import Providers
-from src.adapters.outbound.openai.connection import OpenAIConnection
-from src.adapters.outbound.anthropic.connection import AnthropicConnection
-from src.adapters.outbound.oci.connection import OCIConnection
-from src.adapters.outbound.openai.provider import OpenAIProvider
-from src.adapters.outbound.anthropic.provider import AnthropicProvider
-from src.adapters.outbound.oci.provider import OCILLm
-from src.infrastructure.k8s import YamlConfig
-from src.domain.model.tool_message import ToolRequirement
-from src.infrastructure.logging import setup_logging
-from src.plugins.builtin.ask_user_question_tool import AskUserQuestionTool
+from obelix.core.agent import BaseAgent, SharedMemoryGraph
+from obelix.core.agent.agent_factory import AgentFactory
+from obelix.core.agent.shared_memory import PropagationPolicy
+from obelix.core.tool.tool_base import Tool
+from obelix.core.tool.tool_decorator import tool
+from obelix.adapters.outbound.openai.connection import OpenAIConnection
+from obelix.adapters.outbound.anthropic.connection import AnthropicConnection
+from obelix.adapters.outbound.oci.connection import OCIConnection
+from obelix.adapters.outbound.openai.provider import OpenAIProvider
+from obelix.adapters.outbound.anthropic.provider import AnthropicProvider
+from obelix.adapters.outbound.oci.provider import OCILLm
+from obelix.infrastructure.k8s import YamlConfig
+from obelix.core.model.tool_message import ToolRequirement
+from obelix.infrastructure.logging import setup_logging
+from obelix.plugins.builtin.ask_user_question_tool import AskUserQuestionTool
 import os
 
 load_dotenv()
@@ -30,16 +39,17 @@ setup_logging(console_level="TRACE")
 
 # ========== CONFIGURAZIONE PROVIDER ==========
 api_key = os.getenv("ANTHROPIC_API_KEY")
-if not api_key:
-    raise ValueError("ANTHROPIC_API_KEY non trovata in .env")
 
+#open ai
 openai_connection = OpenAIConnection(
     api_key=api_key,
     base_url="https://api.anthropic.com/v1/"
 )
 
+#anthrtopic
 anthropic_connection = AnthropicConnection(api_key=api_key)
 
+#oci
 infra_config = YamlConfig(os.getenv("INFRASTRUCTURE_CONFIG_PATH"))
 oci_provider_config = infra_config.get("llm_providers.oci")
 
@@ -52,12 +62,11 @@ oci_config = {
 }
 
 oci_connection = OCIConnection(oci_config)
-GlobalConfig().set_provider(provider=Providers.OCI_GENERATIVE_AI, connection=oci_connection)
 
 
 # ========== TOOL ==========
 @tool(name="calculator", description="Performs basic arithmetic operations")
-class CalculatorTool(ToolBase):
+class CalculatorTool(Tool):
     operation: str = Field(..., description="Operation: add, subtract, multiply, divide")
     a: float = Field(..., description="First number")
     b: float = Field(..., description="Second number")
@@ -99,18 +108,44 @@ class MathAgent(BaseAgent):
         self.register_tool(CalculatorTool())
 
 
+class ReportAgent(BaseAgent):
+    """Report agent that formats math results into a structured summary.
+
+    Depends on math_agent via SharedMemoryGraph: it receives calculation
+    results as injected context and produces a formatted report.
+    """
+
+    def __init__(self):
+        super().__init__(
+            system_message=(
+                "Sei un agente specializzato nella creazione di report.\n"
+                "Riceverai i risultati di calcoli matematici come contesto condiviso.\n"
+                "Il tuo compito è:\n"
+                "1. Analizzare i risultati ricevuti\n"
+                "2. Produrre un report formattato con:\n"
+                "   - Le espressioni originali\n"
+                "   - I risultati calcolati\n"
+                "   - Una verifica logica (i numeri hanno senso?)\n"
+                "   - Un breve commento riassuntivo\n"
+                "Rispondi SEMPRE in formato strutturato."
+            ),
+            provider=OCILLm(connection=oci_connection, model_id="openai.gpt-oss-120b"),
+        )
+
+
 class CoordinatorAgent(BaseAgent):
     """Coordinator agent."""
 
     def __init__(self):
         super().__init__(
             system_message=(
-                "Sei un agente orchestratore con un Math Agent.\n"
+                "Sei un agente orchestratore con un Math Agent e un Report Agent.\n"
                 "REGOLE OBBLIGATORIE:\n"
                 "- Devi SEMPRE usare ask_user_question per raccogliere o confermare input.\n"
                 "- NON puoi chiamare il Math Agent senza aver prima usato ask_user_question.\n"
                 "- Se mancano o sono ambigue informazioni, fermati e chiedi chiarimenti.\n"
                 "- Solo dopo la risposta dell'utente puoi chiamare il Math Agent.\n"
+                "- Dopo che il Math Agent ha risposto, chiama il Report Agent per formattare i risultati.\n"
                 "utilizza almeno una volta il tool ask user question"
             ),
             provider=OCILLm(connection=oci_connection, model_id="openai.gpt-oss-120b"),
@@ -118,15 +153,38 @@ class CoordinatorAgent(BaseAgent):
         )
 
 
+# ========== SHARED MEMORY GRAPH ==========
+def create_memory_graph() -> SharedMemoryGraph:
+    """Create the dependency graph: math_agent -> report_agent."""
+    graph = SharedMemoryGraph()
+    graph.add_agent("math_agent")
+    graph.add_agent("report_agent")
+    graph.add_edge("math_agent", "report_agent", policy=PropagationPolicy.FINAL_RESPONSE_ONLY)
+    return graph
+
+
 # ========== FACTORY SETUP ==========
 def create_factory() -> AgentFactory:
-    """Create and configure the agent factory."""
+    """Create and configure the agent factory with shared memory."""
+    memory_graph = create_memory_graph()
+
     factory = AgentFactory()
+    factory.with_memory_graph(memory_graph)
 
     factory.register(
         name="math_agent",
         cls=MathAgent,
         subagent_description="A math expert that can perform calculations",
+        stateless=True,
+    )
+
+    factory.register(
+        name="report_agent",
+        cls=ReportAgent,
+        subagent_description=(
+            "A report writer that formats calculation results into a structured summary. "
+            "Call this AFTER the math agent has produced results."
+        ),
         stateless=True,
     )
 
@@ -140,20 +198,20 @@ def create_factory() -> AgentFactory:
 
 # ========== TEST ==========
 if __name__ == "__main__":
-    # Create factory
     factory = create_factory()
 
-    # Create orchestrator with math_agent as subagent
-    # This is the key difference: ONE line creates everything!
+    # Create orchestrator with both subagents.
+    # The factory injects the dependency awareness message so the coordinator
+    # knows to call math_agent before report_agent.
     coordinator = factory.create(
         "coordinator",
-        subagents=["math_agent"]
+        subagents=["math_agent", "report_agent"]
     )
 
     # Execute query
     response = coordinator.execute_query(
-        "mi dici quanto fa ((18 + 6) * (14 - 8) e risolvi anche ((48-5)+25/8*(35+9)) "
-        "risolverli chiamando i due sub agent parallelamente?"
+        "mi dici quanto fa ((18 + 6) * (14 - 8)) e risolvi anche ((48-5)+25/8*(35+9))? "
+        "Dopo i calcoli, genera un report formattato dei risultati."
     )
 
     # Print conversation history

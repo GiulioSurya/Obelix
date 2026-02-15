@@ -1,279 +1,512 @@
-# Hooks API (User Guide)
+# Hooks System Guide
 
-This guide explains how to **use hooks** in the agent system. It is written for developers who want to understand **what hooks represent conceptually** and **how to implement them correctly**.
-
----
-
-## 1) What is a Hook (conceptually)
-A hook is an **interceptor** in the agent lifecycle. It lets you:
-- **observe** a specific moment (event)
-- **change agent state** (effects)
-- **transform the pipeline value** (value)
-- **control the flow** (decision)
-
-Think of the agent as a pipeline that produces an answer. A hook is a point where you can step in, inspect the state, and decide what happens next.
+Hooks are interceptors that let you observe and modify agent behavior at specific lifecycle moments. They enable validation, error recovery, context injection, and flow control without changing the core agent logic.
 
 ---
 
-## 2) Events (where hooks run)
-An event is a **named lifecycle moment**. Each event has a **contract** (see Section 6).
+## Core Concepts
 
-Supported events:
-- before_llm_call
-- after_llm_call
-- before_tool_execution
-- after_tool_execution
-- on_tool_error
-- before_final_response
-- query_end
+### What is a Hook?
 
-### Event meaning (conceptual)
-- **before_llm_call**: just before the LLM is invoked.
-- **after_llm_call**: immediately after the LLM returned a message.
-- **before_tool_execution**: right before a tool call is executed.
-- **after_tool_execution**: right after a tool returns a result.
-- **on_tool_error**: only when a tool returns an error.
-- **before_final_response**: right before building the final response.
-- **query_end**: after a response has been prepared (end of execution).
+A hook is a named lifecycle event where you can:
+1. **Observe** the current state via `AgentStatus`
+2. **Change state** via side effects (modifying conversation history, flags, etc.)
+3. **Transform values** that flow through the pipeline
+4. **Control flow** with decisions (CONTINUE, RETRY, FAIL, STOP)
 
----
+### Hook vs Effect vs Value
 
-## 3) Context (AgentStatus)
-Hooks receive a **context** object that represents the current state.
-
-### What it represents
-- A snapshot of the **agent state** at the moment of the event.
-- A way to access or mutate the conversation history.
-- Event-specific data (tool call, tool result, assistant message).
-
-### Fields
-- event: current event
-- agent: agent instance
-- iteration: current iteration number
-- tool_call / tool_result / assistant_message / error: event-specific data
-- conversation_history: list of messages
-
-**Note:** Only some fields are populated depending on the event. Others are None.
-
----
-
-## 4) Decision (flow control)
-Every hook returns a **decision**, which is the control signal for the pipeline:
-- **CONTINUE**: keep going to the next hook.
-- **RETRY**: rerun the LLM phase (allowed only on retryable events).
-- **FAIL**: stop execution with an error.
-- **STOP**: stop execution and return a specific value.
-
-Conceptually:
-- **RETRY** is for forcing the LLM to try again (e.g., missing <plan> tag).
-- **STOP** is for early exit when you already have a final answer (e.g., cached response).
-
----
-
-## 5) Value vs Effects
-This is the most important distinction.
-
-### Value (pipeline data)
-- Represents **the data that flows through the event** (e.g., AssistantMessage, ToolResult).
-- Used when you want to **transform** the output of a stage.
-
-### Effects (state mutation)
-- Represent **side-effects** on agent state (history, flags, logs).
-- Do not change the pipeline value.
+- **Hook**: The registration point (what event, when to trigger, what to do)
+- **Effect**: A function that mutates state (e.g., injecting a message into history). Returns None.
+- **Value**: A function that transforms the pipeline data (e.g., modifying a message). Returns the modified value.
 
 **Rule of thumb:**
-- Use **value** to change what the pipeline consumes next.
-- Use **effects** to change the agent's memory or state.
+- Use **effects** to change agent memory or state
+- Use **value** to transform what flows through the pipeline
 
 ---
 
-## 6) Event Contracts (very important)
-Each event has a contract that defines:
-- **input type** (what value comes in)
-- **output type** (what value must come out)
-- **retryable** (whether RETRY is allowed)
-- **stop_output** (what type STOP must return)
+## Lifecycle Events
 
-These rules are enforced at runtime. If you break them, you get a clear error.
+### BEFORE_LLM_CALL
 
-### Contracts summary
-- before_llm_call: input=None, output=None, retryable=False, stop_output=AssistantMessage
-- after_llm_call: input=AssistantMessage, output=AssistantMessage, retryable=True, stop_output=AssistantMessage
-- before_tool_execution: input=ToolCall, output=ToolCall, retryable=False, stop_output=None
-- after_tool_execution: input=ToolResult, output=ToolResult, retryable=False, stop_output=None
-- on_tool_error: input=ToolResult, output=ToolResult, retryable=False, stop_output=None
-- before_final_response: input=AssistantMessage, output=AssistantMessage, retryable=True, stop_output=AssistantMessage
-- query_end: input=AssistantResponse or None, output=AssistantResponse or None, retryable=False, stop_output=None
+Fires before each LLM invocation (at the start of every iteration).
 
-### Why contracts matter
-They prevent mistakes such as:
-- returning the wrong value type
-- retrying an event that cannot be retried
-- using STOP where it is not meaningful
+- **current_value**: `None`
+- **Retryable**: No
+- **Typical use**: Inject real-time context, validate history
+
+```python
+self.on(AgentEvent.BEFORE_LLM_CALL).handle(
+    decision=HookDecision.CONTINUE,
+    effects=[self._inject_context],
+)
+```
+
+### AFTER_LLM_CALL
+
+Fires after the LLM returns with a message.
+
+- **current_value**: `AssistantMessage`
+- **Retryable**: Yes
+- **Typical use**: Validate LLM output, transform response format
+
+```python
+self.on(AgentEvent.AFTER_LLM_CALL).when(
+    lambda s: "INVALID" in (s.assistant_message.content or "")
+).handle(
+    decision=HookDecision.RETRY,
+    effects=[self._inject_correction_guidance],
+)
+```
+
+### BEFORE_TOOL_EXECUTION
+
+Fires before executing each tool call.
+
+- **current_value**: `ToolCall`
+- **Retryable**: No
+- **Typical use**: Log tool invocations, validate tool arguments
+
+```python
+self.on(AgentEvent.BEFORE_TOOL_EXECUTION).handle(
+    decision=HookDecision.CONTINUE,
+    effects=[self._log_tool_call],
+)
+```
+
+### AFTER_TOOL_EXECUTION
+
+Fires after a tool completes successfully.
+
+- **current_value**: `ToolResult`
+- **Retryable**: No
+- **Typical use**: Enrich tool results, log execution
+
+```python
+self.on(AgentEvent.AFTER_TOOL_EXECUTION).handle(
+    decision=HookDecision.CONTINUE,
+    value=self._enrich_result,  # Transform the ToolResult
+)
+```
+
+### ON_TOOL_ERROR
+
+Fires when a tool returns an error (including validation failures).
+
+- **current_value**: `ToolResult` (with error status)
+- **Retryable**: No
+- **Typical use**: Provide error context, suggest recovery actions
+
+```python
+self.on(AgentEvent.ON_TOOL_ERROR).when(
+    lambda s: "database" in (s.error or "").lower()
+).handle(
+    decision=HookDecision.CONTINUE,
+    effects=[self._inject_database_schema],
+)
+```
+
+### BEFORE_FINAL_RESPONSE
+
+Fires before building the final response (when the LLM stops requesting tools).
+
+- **current_value**: `AssistantMessage`
+- **Retryable**: Yes
+- **Typical use**: Validate output format, enforce required fields
+
+```python
+self.on(AgentEvent.BEFORE_FINAL_RESPONSE).when(
+    lambda s: "<answer>" not in (s.assistant_message.content or "")
+).handle(
+    decision=HookDecision.RETRY,
+    effects=[self._inject_format_guidance],
+)
+```
+
+### QUERY_END
+
+Fires after execution completes (successful or failed).
+
+- **current_value**: `AssistantResponse | None`
+- **Retryable**: No
+- **Typical use**: Cleanup, logging, telemetry
+
+```python
+self.on(AgentEvent.QUERY_END).handle(
+    decision=HookDecision.CONTINUE,
+    effects=[self._log_execution],
+)
+```
 
 ---
 
-## 7) How to Build a Callable (mandatory signatures)
-This section defines the **required input/output** for every callable you pass to hooks.
+## Hook Decisions
 
-### 7.1 Condition callable
-Used in `when(...)`.
+Every hook must return a decision that controls the pipeline:
 
-**Signature**:
+| Decision | Effect | Allowed Events |
+|----------|--------|----------------|
+| `CONTINUE` | Proceed normally | All |
+| `RETRY` | Restart LLM phase | `AFTER_LLM_CALL`, `BEFORE_FINAL_RESPONSE` |
+| `FAIL` | Stop with error | All |
+| `STOP` | Return immediately with value | All (but requires specific value type) |
+
+### CONTINUE
+
+The default. Execution proceeds as normal:
+
+```python
+self.on(AgentEvent.BEFORE_LLM_CALL).handle(decision=HookDecision.CONTINUE)
 ```
-condition(status) -> bool
+
+### RETRY
+
+Restart the LLM phase. Only valid for retryable events:
+
+```python
+self.on(AgentEvent.AFTER_LLM_CALL).when(
+    self._output_invalid
+).handle(decision=HookDecision.RETRY)
 ```
-- Input: `status` (AgentStatus)
-- Output: bool
-- Sync or async allowed
 
-### 7.2 Value callable
-Used in `handle(value=...)`.
+If used on a non-retryable event, raises `RuntimeError`.
 
-**Signature**:
+### FAIL
+
+Stop immediately with an error:
+
+```python
+self.on(AgentEvent.BEFORE_LLM_CALL).when(
+    lambda s: not self._has_context(s)
+).handle(decision=HookDecision.FAIL)
 ```
-value_fn(status, current_value) -> new_value
+
+### STOP
+
+Return immediately with a provided value. Each event has specific `STOP` constraints:
+
+```python
+self.on(AgentEvent.BEFORE_LLM_CALL).when(
+    lambda s: self._cache_hit(s)
+).handle(
+    decision=HookDecision.STOP,
+    value=self._cached_response(),  # Must be AssistantMessage
+)
 ```
-- Inputs:
-  - `status` (AgentStatus)
-  - `current_value` (pipeline value for the event)
-- Output: **new_value** of the type required by the event contract
-- Sync or async allowed
-
-If you return the wrong type, execution fails with a runtime error.
-
-### 7.3 Effect callable
-Used in `handle(effects=[...])`.
-
-**Signature**:
-```
-effect_fn(status) -> None
-```
-- Input: `status` (AgentStatus)
-- Output: None (return value is ignored)
-- Sync or async allowed
-
-Effects must mutate state through `status` (e.g., history, flags).
 
 ---
 
-## 8) Available Values by Event (what you can read/write)
-This list tells you **which pipeline value exists** and which **context fields are populated**.
+## AgentStatus - The Hook Context
 
-### before_llm_call
-- current_value: None
-- populated: status.iteration, status.agent, status.conversation_history
+Every hook receives an `AgentStatus` object with the current state:
 
-### after_llm_call
-- current_value: AssistantMessage
-- populated: status.assistant_message
+```python
+@dataclass
+class AgentStatus:
+    event: AgentEvent               # Which event fired
+    agent: BaseAgent                # The agent instance
+    iteration: int                  # Current iteration number
+    tool_call: Optional[ToolCall]  # Set for tool execution events
+    tool_result: Optional[ToolResult]  # Set for tool result events
+    assistant_message: Optional[AssistantMessage]  # Set for LLM events
+    error: Optional[str]            # Set for error events
+```
 
-### before_tool_execution
-- current_value: ToolCall
-- populated: status.tool_call
-
-### after_tool_execution
-- current_value: ToolResult
-- populated: status.tool_result
-
-### on_tool_error
-- current_value: ToolResult (error)
-- populated: status.tool_result, status.error
-
-### before_final_response
-- current_value: AssistantMessage
-- populated: status.assistant_message
-
-### query_end
-- current_value: AssistantResponse or None
-- populated: none specific (only core fields)
+Access conversation history via `status.agent.conversation_history`.
 
 ---
 
-## 9) API Usage (when + handle)
-The hook API is intentionally simple:
+## Hook Registration API
 
-```
-agent.on(event)
-    .when(condition)
-    .handle(decision=..., value=..., effects=[...])
+### Basic Pattern
+
+```python
+self.on(event)                  # Register hook for event
+    .when(condition)            # Optional: when to trigger
+    .handle(
+        decision=...,           # How to proceed
+        value=...,              # Optional: transform value
+        effects=...,            # Optional: side effects
+    )
 ```
 
 ### when(condition)
-- **Mandatory parameterization**: condition must accept `status`.
-- Signature: `condition(status) -> bool`
-- Can be sync or async.
 
-### handle(...)
-Parameters:
-- decision: CONTINUE | RETRY | FAIL | STOP
-- value: optional
-  - direct value
-  - or function `value_fn(status, current_value) -> new_value`
-- effects: optional list of functions `effect_fn(status) -> None`
+Optional condition function. If provided, hook only triggers when `condition(status)` returns `True`:
+
+```python
+self.on(AgentEvent.BEFORE_FINAL_RESPONSE).when(
+    lambda status: "<answer>" not in (status.assistant_message.content or "")
+).handle(
+    decision=HookDecision.RETRY,
+    effects=[...],
+)
+```
+
+Condition must be a callable with signature:
+```python
+def condition(status: AgentStatus) -> bool:
+    ...
+```
+
+Can be sync or async.
+
+### handle(decision, value=None, effects=None)
+
+Define what happens when the hook triggers:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `decision` | `HookDecision` | `CONTINUE`, `RETRY`, `FAIL`, or `STOP` |
+| `value` | callable or direct value | Optional: transform pipeline data |
+| `effects` | `List[callable]` | Optional: side effects to execute |
 
 ---
 
-## 10) Practical Examples
+## Effects and Values
 
-### Example 1: Validate <plan> and force retry
-Event: before_final_response
-```
-self.on(AgentEvent.BEFORE_FINAL_RESPONSE) \
-    .when(self._missing_plan_tag) \
-    .handle(
-        decision=HookDecision.RETRY,
-        effects=[self._inject_plan_guidance]
-    )
-```
+### Effects (State Mutations)
 
-### Example 2: Enrich tool error
-Event: after_tool_execution
-```
-self.on(AgentEvent.AFTER_TOOL_EXECUTION) \
-    .when(self._is_oracle_error_with_docs) \
-    .handle(
-        decision=HookDecision.CONTINUE,
-        value=self._enrich_with_oracle_docs
+Effects modify agent state. They receive `status` and return `None`:
+
+```python
+def _inject_guidance(status: AgentStatus) -> None:
+    """Add a message to conversation history."""
+    status.agent.conversation_history.append(
+        SystemMessage(content="Follow this format...")
     )
+
+self.on(AgentEvent.BEFORE_FINAL_RESPONSE).handle(
+    decision=HookDecision.CONTINUE,
+    effects=[_inject_guidance],
+)
 ```
 
-### Example 3: Inject schema on tool error
-Event: on_tool_error
-```
-self.on(AgentEvent.ON_TOOL_ERROR) \
-    .when(self._is_invalid_identifier_error) \
-    .handle(
-        decision=HookDecision.CONTINUE,
-        effects=[self._inject_schema_message]
+Effects can be sync or async:
+
+```python
+async def _fetch_and_inject_context(status: AgentStatus) -> None:
+    """Async effect that fetches data before injecting."""
+    context = await self._fetch_from_db()
+    status.agent.conversation_history.append(
+        SystemMessage(content=f"Context: {context}")
     )
+
+self.on(AgentEvent.BEFORE_LLM_CALL).handle(
+    decision=HookDecision.CONTINUE,
+    effects=[_fetch_and_inject_context],  # Async OK
+)
 ```
 
-### Example 4: Early exit before LLM
-Event: before_llm_call
+### Values (Transformations)
+
+Values transform the current pipeline value. They receive `(status, current_value)` and return the transformed value:
+
+```python
+def _uppercase_response(status: AgentStatus, msg: AssistantMessage) -> AssistantMessage:
+    """Transform response to uppercase."""
+    msg.content = (msg.content or "").upper()
+    return msg
+
+self.on(AgentEvent.BEFORE_FINAL_RESPONSE).handle(
+    decision=HookDecision.CONTINUE,
+    value=_uppercase_response,
+)
 ```
-self.on(AgentEvent.BEFORE_LLM_CALL) \
-    .when(self._cache_hit) \
-    .handle(
-        decision=HookDecision.STOP,
-        value=self._cached_assistant_message
-    )
+
+The returned value type must match the event contract. Signature:
+```python
+def transform(status: AgentStatus, current_value: T) -> T:
+    ...
+```
+
+Can be sync or async.
+
+---
+
+## Complete Hook Examples
+
+### Example 1: Output Validation
+
+Ensure final response contains required tags:
+
+```python
+from obelix.core.agent import BaseAgent
+from obelix.core.agent.hooks import AgentEvent, HookDecision
+from obelix.core.model.system_message import SystemMessage
+
+
+class ValidatingAgent(BaseAgent):
+    def __init__(self):
+        super().__init__(system_message="...")
+
+        self.on(AgentEvent.BEFORE_FINAL_RESPONSE).when(
+            self._missing_answer_tag
+        ).handle(
+            decision=HookDecision.RETRY,
+            effects=[self._inject_format_guidance],
+        )
+
+    def _missing_answer_tag(self, status) -> bool:
+        content = status.assistant_message.content or ""
+        return "<answer>" not in content
+
+    def _inject_format_guidance(self, status) -> None:
+        status.agent.conversation_history.append(
+            SystemMessage(content="Format your answer with <answer>...</answer> tags.")
+        )
+```
+
+### Example 2: Error Recovery
+
+Provide schema when database errors occur:
+
+```python
+class RobustAgent(BaseAgent):
+    def __init__(self):
+        super().__init__(system_message="...")
+
+        self.on(AgentEvent.ON_TOOL_ERROR).when(
+            lambda s: "database" in (s.error or "").lower()
+        ).handle(
+            decision=HookDecision.CONTINUE,
+            effects=[self._inject_schema],
+        )
+
+    def _inject_schema(self, status) -> None:
+        schema = "Tables: users (id, name), orders (id, user_id, total)"
+        status.agent.conversation_history.append(
+            SystemMessage(content=f"Database schema:\n{schema}")
+        )
+```
+
+### Example 3: Context Injection
+
+Inject real-time data before each LLM call:
+
+```python
+class ContextAwareAgent(BaseAgent):
+    def __init__(self):
+        super().__init__(system_message="...")
+
+        self.on(AgentEvent.BEFORE_LLM_CALL).handle(
+            decision=HookDecision.CONTINUE,
+            effects=[self._inject_current_context],
+        )
+
+    async def _inject_current_context(self, status) -> None:
+        # Fetch real-time data
+        timestamp = datetime.now().isoformat()
+        stock_price = await self._fetch_stock_price()
+
+        msg = SystemMessage(
+            content=f"Current time: {timestamp}, Stock price: ${stock_price}"
+        )
+        status.agent.conversation_history.append(msg)
+
+    async def _fetch_stock_price(self) -> float:
+        # Connect to API or database
+        ...
+```
+
+### Example 4: Conditional Early Exit
+
+Return cached response without calling LLM:
+
+```python
+class CachedAgent(BaseAgent):
+    def __init__(self):
+        super().__init__(system_message="...")
+        self._cache = {}
+
+        self.on(AgentEvent.BEFORE_LLM_CALL).when(
+            self._cache_hit
+        ).handle(
+            decision=HookDecision.STOP,
+            value=self._get_cached_response,
+        )
+
+    def _cache_hit(self, status) -> bool:
+        query = status.agent.conversation_history[-1].content
+        return query in self._cache
+
+    def _get_cached_response(self, status):
+        query = status.agent.conversation_history[-1].content
+        cached_text = self._cache[query]
+        return AssistantMessage(content=cached_text)
+```
+
+### Example 5: Result Enrichment
+
+Add additional information to tool results:
+
+```python
+class EnrichingAgent(BaseAgent):
+    def __init__(self):
+        super().__init__(system_message="...")
+
+        self.on(AgentEvent.AFTER_TOOL_EXECUTION).handle(
+            decision=HookDecision.CONTINUE,
+            value=self._enrich_result,
+        )
+
+    def _enrich_result(self, status, result: ToolResult) -> ToolResult:
+        if result.tool_name == "fetch_data":
+            # Add metadata
+            result.result["enriched_at"] = datetime.now().isoformat()
+            result.result["count"] = len(result.result.get("items", []))
+        return result
 ```
 
 ---
 
-## 11) Best Practices
-- Use **effects** for state changes (history, flags).
-- Use **value** only to transform pipeline data.
-- Use **RETRY** only where it makes sense (after_llm_call, before_final_response).
-- Do not use STOP on events that do not allow it.
-- Keep hooks small and single-purpose.
+## Tips and Best Practices
+
+1. **Use `when()` to limit scope**: Only run expensive effects when needed.
+
+   ```python
+   self.on(AgentEvent.ON_TOOL_ERROR).when(
+       lambda s: "database" in (s.error or "")
+   ).handle(...)
+   ```
+
+2. **Keep effects simple**: Complex logic makes debugging harder. Use hooks for cross-cutting concerns.
+
+3. **Use retryable events for control flow**: Only AFTER_LLM_CALL and BEFORE_FINAL_RESPONSE support RETRY.
+
+4. **Async effects for I/O**: Write async effects when fetching external data.
+
+   ```python
+   async def fetch_and_inject(status):
+       data = await self._fetch_data()
+       status.agent.conversation_history.append(...)
+   ```
+
+5. **Be careful with STOP**: It bypasses normal execution. Use only for well-defined scenarios like caching.
+
+6. **Test hooks independently**: Create test fixtures that exercise each hook.
 
 ---
 
-## 12) Common Errors (and why)
-- **RETRY on non-retryable event** -> explicit runtime error.
-- **STOP without proper value** -> explicit runtime error.
-- **Returning wrong value type** -> explicit runtime error.
+## Event Contract Reference
 
-These errors are intentional guardrails to prevent silent bugs.
+Quick reference of what's available in each event:
+
+| Event | iteration | tool_call | tool_result | assistant_message | error |
+|-------|:---------:|:---------:|:-----------:|:-----------------:|:-----:|
+| BEFORE_LLM_CALL | x | - | - | - | - |
+| AFTER_LLM_CALL | x | - | - | x | - |
+| BEFORE_TOOL_EXECUTION | x | x | - | - | - |
+| AFTER_TOOL_EXECUTION | x | - | x | - | - |
+| ON_TOOL_ERROR | x | - | x | - | x |
+| BEFORE_FINAL_RESPONSE | x | - | - | x | - |
+| QUERY_END | x | - | - | - | - |
+
+---
+
+## See Also
+
+- [BaseAgent Guide](base_agent.md) - Creating and using agents
+- [Agent Factory](agent_factory.md) - Composing agents
+- [README](../README.md) - Installation and quick start

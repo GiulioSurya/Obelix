@@ -241,6 +241,7 @@ config/
 .env.*
 !.env.example
 .envrc
+.claude/
 
 # Credentials and secrets
 credentials.json
@@ -269,6 +270,7 @@ logs/
 
 # Demo files
 demo_subagent.py
+demo_factory.py
 
 # Helm charts (if you want to ignore them)
 # helm/

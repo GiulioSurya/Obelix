@@ -1,334 +1,312 @@
-# Agent Factory
+# Agent Factory Guide
 
-The Agent Factory is the centralized API for creating and composing agents in Obelix. It handles agent registration, instantiation, and sub-agent orchestration without requiring manual decorator usage.
+The Agent Factory is the centralized API for creating and composing agents in Obelix. It enables declarative agent registration, standalone agent creation, and hierarchical sub-agent orchestration with optional shared memory support.
+
+---
 
 ## Quick Start
 
 ```python
-from src.base_agent import BaseAgent
-from src.base_agent.agent_factory import AgentFactory
+from obelix.core.agent import BaseAgent
+from obelix.core.agent.agent_factory import AgentFactory
 
-# Create factory
+
+# Define your agents
+class AnalyzerAgent(BaseAgent):
+    def __init__(self):
+        super().__init__(system_message="You are a data analyst.")
+
+
+class CoordinatorAgent(BaseAgent):
+    def __init__(self):
+        super().__init__(system_message="You coordinate tasks.")
+
+
+# Create factory and register agents
 factory = AgentFactory()
+factory.register("analyzer", AnalyzerAgent, subagent_description="Analyzes data")
+factory.register("coordinator", CoordinatorAgent)
 
-# Register agents
-factory.register("weather", WeatherAgent,
-                 expose_as_subagent=True,
-                 subagent_description="Provides weather forecasts")
-factory.register("planner", PlannerAgent)
+# Create agents
+analyzer = factory.create("analyzer")
+coordinator = factory.create("coordinator", subagents=["analyzer"])
 
-# Create standalone agent
-weather = factory.create("weather")
-
-# Create orchestrator with sub-agents
-planner = factory.create("planner", subagents=["weather"])
+# Use the agents
+response = coordinator.execute_query("Analyze the Q4 report")
+print(response.content)
 ```
 
 ---
 
-## AgentFactory
+## Factory Initialization
 
-### Constructor
+### Basic Factory
 
 ```python
-AgentFactory(global_defaults: Optional[Dict[str, Any]] = None)
+from obelix.core.agent.agent_factory import AgentFactory
+
+factory = AgentFactory()
 ```
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `global_defaults` | `Dict[str, Any]` | `None` | Default constructor arguments applied to ALL agents created by this factory. Can be overridden per-agent. |
+### Factory with Global Defaults
 
-**Example:**
-```python
-factory = AgentFactory(global_defaults={"max_iterations": 10})
-```
-
----
-
-## Registration
-
-### `register()`
-
-Registers an agent class with the factory.
+Set constructor defaults that apply to all registered agents:
 
 ```python
-factory.register(
-    name: str,
-    cls: Type[BaseAgent],
-    *,
-    expose_as_subagent: bool = False,
-    subagent_name: Optional[str] = None,
-    subagent_description: Optional[str] = None,
-    stateless: bool = False,
-    override_decorator: bool = False,
-    defaults: Optional[Dict[str, Any]] = None,
-) -> AgentFactory
-```
-
-### Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `name` | `str` | required | Unique identifier in the registry. Used in `create()` and `subagents` lists. |
-| `cls` | `Type[BaseAgent]` | required | The BaseAgent subclass to register. |
-| `expose_as_subagent` | `bool` | `False` | If `True`, this agent can be used as a sub-agent in orchestrators. |
-| `subagent_name` | `str` | `name` | Tool name exposed to LLM when used as sub-agent. Defaults to registry `name`. |
-| `subagent_description` | `str` | required* | Description of sub-agent capabilities for LLM. *Required if `expose_as_subagent=True` and class lacks `@subagent` decorator. |
-| `stateless` | `bool` | `False` | If `False` (default), conversation history preserved across calls. If `True`, each execution is isolated (parallel-safe). |
-| `override_decorator` | `bool` | `False` | If `True`, factory values override any existing `@subagent` decorator on the class. |
-| `defaults` | `Dict[str, Any]` | `{}` | Default constructor arguments for this specific agent. |
-
-### Returns
-
-Returns `self` for method chaining.
-
-### Raises
-
-- `ValueError`: If `name` is already registered.
-- `ValueError`: If `expose_as_subagent=True` but no description is available.
-
-### Examples
-
-**Basic registration:**
-```python
-factory.register("weather", WeatherAgent,
-                 expose_as_subagent=True,
-                 subagent_description="Provides weather forecasts")
-```
-
-**With defaults:**
-```python
-factory.register("sql", SQLAgent,
-                 expose_as_subagent=True,
-                 subagent_description="Executes SQL queries",
-                 defaults={"max_iterations": 15})
-```
-
-**Method chaining:**
-```python
-factory.register("weather", WeatherAgent, expose_as_subagent=True, subagent_description="...")
-       .register("sql", SQLAgent, expose_as_subagent=True, subagent_description="...")
-       .register("planner", PlannerAgent)
-```
-
----
-
-## Creation
-
-### `create()`
-
-Creates an agent instance from a registered class.
-
-```python
-factory.create(
-    name: str,
-    *,
-    subagents: Optional[List[Union[str, BaseAgent]]] = None,
-    subagent_config: Optional[Dict[str, Dict[str, Any]]] = None,
-    **overrides: Any,
-) -> BaseAgent
-```
-
-### Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `name` | `str` | required | Registered agent name. |
-| `subagents` | `List[str \| BaseAgent]` | `None` | List of sub-agents to attach. If provided (even empty `[]`), creates an orchestrator. Accepts registry names (strings) or existing `BaseAgent` instances. |
-| `subagent_config` | `Dict[str, Dict]` | `None` | Per-subagent constructor overrides. Keys are registry names, values are dicts of kwargs. Only applies to string-based subagents. |
-| `**overrides` | `Any` | - | Override constructor parameters for the main agent. |
-
-### Returns
-
-Configured `BaseAgent` instance (standalone or orchestrator).
-
-### Raises
-
-- `ValueError`: If agent not registered.
-- `ValueError`: If subagent not registered or not exposed as subagent.
-- `ValueError`: If `subagent_config` contains keys not in `subagents` list.
-
-### Agent Types
-
-The presence of `subagents` determines the agent type:
-
-| `subagents` | Result |
-|-------------|--------|
-| `None` (not provided) | Standalone agent |
-| `[]` (empty list) | Empty orchestrator |
-| `["a", "b"]` | Orchestrator with sub-agents |
-
-### Examples
-
-**Standalone agent:**
-```python
-weather = factory.create("weather")
-```
-
-**With overrides:**
-```python
-weather = factory.create("weather", max_iterations=5, provider=custom_provider)
-```
-
-**Orchestrator with sub-agents:**
-```python
-planner = factory.create("planner", subagents=["weather", "sql"])
-```
-
-**Per-subagent configuration:**
-```python
-planner = factory.create(
-    "planner",
-    subagents=["weather", "sql"],
-    subagent_config={
-        "weather": {"max_iterations": 3},
-        "sql": {"max_iterations": 10, "provider": powerful_provider}
+factory = AgentFactory(
+    global_defaults={
+        "max_iterations": 10,
+        "agent_comment": True,
     }
 )
 ```
 
-**Shared sub-agent instance:**
-```python
-shared_weather = factory.create("weather")
+Constructor arguments passed when creating agents override global defaults:
 
-orch1 = factory.create("planner", subagents=[shared_weather])
-orch2 = factory.create("analyst", subagents=[shared_weather])
-# Both orchestrators share the SAME weather instance
+```python
+# This agent uses max_iterations=15 (overrides default of 10)
+agent = factory.create("analyzer", max_iterations=15)
+```
+
+---
+
+## Registering Agents
+
+### Basic Registration
+
+Register an agent class that will be available for creation:
+
+```python
+factory.register(
+    name="analyzer",
+    cls=AnalyzerAgent,
+)
+```
+
+### Registration with Subagent Configuration
+
+Make the agent available to be used as a sub-agent:
+
+```python
+factory.register(
+    name="analyzer",
+    cls=AnalyzerAgent,
+    subagent_description="Analyzes datasets and generates insights",  # Required if exposed as subagent
+)
+```
+
+### Registration Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `name` | `str` | Required | Unique identifier in registry (used in `create()` and `subagents` lists) |
+| `cls` | `Type[BaseAgent]` | Required | The BaseAgent subclass to register |
+| `subagent_description` | `str` | `None` | Description of capabilities (required if agent will be used as sub-agent) |
+| `stateless` | `bool` | `False` | If `True`, each execution is isolated. If `False`, conversation history persists |
+| `defaults` | `dict` | `None` | Constructor defaults for this specific agent |
+
+### Method Chaining
+
+Registrations return `self` for method chaining:
+
+```python
+factory.register("analyzer", AnalyzerAgent, subagent_description="Analyzes data") \
+       .register("designer", DesignerAgent, subagent_description="Designs systems") \
+       .register("implementer", ImplementerAgent, subagent_description="Implements code")
+```
+
+---
+
+## Creating Agents
+
+### Standalone Agent
+
+Create a single agent without sub-agents:
+
+```python
+analyzer = factory.create("analyzer")
+response = analyzer.execute_query("Analyze this dataset")
+```
+
+### Standalone with Overrides
+
+Override constructor parameters at creation time:
+
+```python
+analyzer = factory.create(
+    "analyzer",
+    max_iterations=5,          # Lower iteration limit
+    agent_comment=False,       # Skip comment generation
+)
+```
+
+### Orchestrator with Sub-Agents
+
+Create an agent with registered sub-agents. Pass `subagents` as a list of registered names:
+
+```python
+coordinator = factory.create(
+    "coordinator",
+    subagents=["analyzer", "designer", "implementer"],
+)
+
+response = coordinator.execute_query("Build a complete system")
+```
+
+When an agent has sub-agents:
+- Each sub-agent is automatically registered as a tool on the main agent
+- The LLM can invoke sub-agents via function calling
+- Sub-agents receive the query passed by the orchestrator
+
+### Empty Orchestrator
+
+Create an orchestrator without sub-agents (useful for testing or dynamic composition):
+
+```python
+empty_orchestrator = factory.create("coordinator", subagents=[])
+# Can register agents later via coordinator.register_agent()
+```
+
+### Per-Subagent Configuration
+
+Override constructor parameters for specific sub-agents:
+
+```python
+coordinator = factory.create(
+    "coordinator",
+    subagents=["analyzer", "designer"],
+    subagent_config={
+        "analyzer": {"max_iterations": 3},
+        "designer": {"max_iterations": 10, "provider": custom_provider},
+    }
+)
+```
+
+### Shared Sub-Agent Instance
+
+Pass an already-created agent instance as a sub-agent. Useful for sharing state across multiple orchestrators:
+
+```python
+# Create a shared instance
+shared_analyzer = factory.create("analyzer")
+
+# Use in multiple orchestrators
+coordinator1 = factory.create("coordinator", subagents=[shared_analyzer])
+coordinator2 = factory.create("coordinator", subagents=[shared_analyzer])
+
+# Both orchestrators share the exact same analyzer instance (and its history)
 ```
 
 ---
 
 ## Configuration Merge Order
 
-Constructor arguments are merged in this order (later wins):
+Constructor arguments are merged in this order (later overwrites earlier):
 
 ```
-global_defaults < spec.defaults < subagent_config[name] < overrides
+global_defaults < agent_spec.defaults < subagent_config[name] < create_overrides
 ```
 
-**For main agent:**
+For the main agent:
 ```python
-config = {**global_defaults, **spec.defaults, **overrides}
+# For agent "coordinator" with global_defaults and spec.defaults
+config = {**global_defaults, **spec.defaults, **create_overrides}
+coordinator = CoordinatorAgent(**config)
 ```
 
-**For sub-agents (from string name):**
+For sub-agents:
 ```python
-config = {**global_defaults, **spec.defaults, **(subagent_config.get(name, {}))}
+# For sub-agent "analyzer" with registry and subagent_config
+sub_config = {**global_defaults, **sub_spec.defaults, **subagent_config.get("analyzer", {})}
+analyzer = AnalyzerAgent(**sub_config)
 ```
-
-**For sub-agents (passed as instance):**
-No merge. Instance is used as-is.
 
 ---
 
 ## Stateless vs Stateful Sub-Agents
 
-The `stateless` parameter controls how sub-agents handle concurrent calls:
+The `stateless` parameter controls how sub-agents handle execution and state:
 
-| `stateless` | Parallel Calls | Conversation History |
-|-------------|----------------|---------------------|
-| `False` (default) | Serialized (lock) | Preserved across calls |
-| `True` | Yes (concurrent) | Forked and discarded |
+| `stateless` | Conversation History | Parallel Calls | Use Case |
+|-------------|----------------------|----------------|----------|
+| `False` (default) | Persists across calls | Serialized (with lock) | Context-aware agents (remember previous interactions) |
+| `True` | Fresh copy each call | Yes (concurrent) | One-shot tasks (translations, validations) |
 
-**Stateful (default):**
-- Calls are serialized with an async lock
-- Conversation history accumulates across calls
-- Use for agents that need context from previous interactions
-
-**Stateless:**
-- Each call gets a shallow copy with forked history
-- Copy is discarded after execution
-- Multiple calls can run in parallel
-- Use for one-shot tasks (translations, validations)
+### Stateful (default)
 
 ```python
-# Stateful (default) - good for context-aware agents
-factory.register("analyst", AnalystAgent,
-                 expose_as_subagent=True,
-                 subagent_description="Analyzes data with context")
-
-# Stateless - good for parallel one-shot tasks
-factory.register("translator", TranslatorAgent,
-                 expose_as_subagent=True,
-                 subagent_description="Translates text",
-                 stateless=True)
+factory.register(
+    "analyst",
+    AnalystAgent,
+    subagent_description="Analyzes data with context",
+    stateless=False,  # Each call adds to the same history
+)
 ```
 
----
+When the orchestrator calls `analyst` multiple times, each call adds to the agent's conversation history. The agent remembers all previous interactions.
 
-## Sub-Agent Input Fields
+**Trade-off**: Better context, but calls are serialized (can be slow for concurrent calls).
 
-Sub-agents can define additional input fields using Pydantic `Field`:
+### Stateless
 
 ```python
-from pydantic import Field
-
-class SQLAnalyzerAgent(BaseAgent):
-    # These fields become part of the sub-agent's input schema
-    error_context: str = Field(default="", description="Error context from database")
-    schema_info: str = Field(default="", description="Optional schema information")
-
-    def __init__(self, **kwargs):
-        super().__init__(system_message="You are a SQL expert.", **kwargs)
+factory.register(
+    "translator",
+    TranslatorAgent,
+    subagent_description="Translates text",
+    stateless=True,  # Each call gets a fresh copy with forked history
+)
 ```
 
-When the LLM calls this sub-agent, it can provide:
-```json
-{
-  "name": "sql_analyzer",
-  "arguments": {
-    "query": "Why is this failing?",
-    "error_context": "ORA-00942: table not found",
-    "schema_info": "Tables: users, orders"
-  }
-}
-```
+When the orchestrator calls `translator` multiple times, each call gets a shallow copy with a forked (but isolated) conversation history. The history is discarded after execution.
 
-The `query` field is always added automatically as the first parameter.
+**Trade-off**: No context persistence, but calls can run in parallel.
 
 ---
 
 ## Utility Methods
 
-### `get_registered_names()`
+### get_registered_names()
 
-Returns all registered agent names.
+List all registered agent names:
 
 ```python
 names = factory.get_registered_names()
-# ['weather', 'sql', 'planner']
+# ['analyzer', 'designer', 'implementer', 'coordinator']
 ```
 
-### `is_registered(name)`
+### is_registered(name)
 
-Checks if a name is registered.
+Check if an agent name is registered:
 
 ```python
-if factory.is_registered("weather"):
-    ...
+if factory.is_registered("analyzer"):
+    print("Analyzer is available")
 ```
 
-### `get_spec(name)`
+### get_spec(name)
 
-Returns the `AgentSpec` for introspection.
+Get the `AgentSpec` for an agent (for introspection):
 
 ```python
-spec = factory.get_spec("weather")
-print(spec.cls)  # <class 'WeatherAgent'>
-print(spec.expose_as_subagent)  # True
+spec = factory.get_spec("analyzer")
+print(spec.cls)                   # <class 'AnalyzerAgent'>
+print(spec.subagent_description)  # "Analyzes datasets..."
+print(spec.stateless)             # False
+print(spec.defaults)              # {"max_iterations": 10}
 ```
 
-### `unregister(name)`
+### unregister(name)
 
-Removes an agent from the registry.
+Remove an agent from the registry:
 
 ```python
-factory.unregister("weather")  # Returns True if found
+factory.unregister("analyzer")  # Returns True if found, False if not registered
 ```
 
-### `clear()`
+### clear()
 
-Removes all registered agents.
+Remove all agents from the registry:
 
 ```python
 factory.clear()
@@ -336,69 +314,186 @@ factory.clear()
 
 ---
 
+## Shared Memory Support
+
+Agents can share a graph-based memory to propagate outputs between dependent agents. This is useful for orchestrators where downstream agents need context from upstream agents.
+
+### Using Shared Memory
+
+```python
+from obelix.core.agent.shared_memory import SharedMemoryGraph
+
+# Create a graph of dependencies
+graph = SharedMemoryGraph()
+graph.add_edge("requirements", "designer")  # requirements -> designer
+graph.add_edge("requirements", "implementer")
+graph.add_edge("designer", "implementer")
+
+# Attach the graph to the factory
+factory = AgentFactory()
+factory.with_memory_graph(graph)
+
+# Register agents
+factory.register("requirements", RequirementsAgent, subagent_description="Extracts requirements", stateless=True)
+factory.register("designer", DesignerAgent, subagent_description="Designs architecture", stateless=True)
+factory.register("implementer", ImplementerAgent, subagent_description="Implements solution", stateless=True)
+
+# Create orchestrator
+coordinator = factory.create(
+    "coordinator",
+    subagents=["requirements", "designer", "implementer"],
+)
+
+# When executed:
+# 1. requirements runs -> outputs stored in graph
+# 2. designer runs -> automatically receives requirements output via SystemMessage
+# 3. implementer runs -> automatically receives outputs from both upstream agents
+```
+
+**Note**: Shared memory is optional. Agents without a memory graph work normally.
+
+---
+
 ## Complete Example
 
 ```python
-from src.base_agent import BaseAgent
-from src.base_agent.agent_factory import AgentFactory
-from src.tools import ToolBase, tool
+from obelix.core.agent import BaseAgent
+from obelix.core.agent.agent_factory import AgentFactory
+from obelix.core.tool.tool_decorator import tool
 from pydantic import Field
 
-# Define a tool
+
+# Define tools
 @tool(name="calculator", description="Performs arithmetic")
-class CalculatorTool(ToolBase):
-    operation: str = Field(...)
-    a: float = Field(...)
-    b: float = Field(...)
+class CalculatorTool:
+    a: float = Field(..., description="First number")
+    b: float = Field(..., description="Second number")
+    operation: str = Field(..., description="add, subtract, multiply, divide")
 
     async def execute(self) -> dict:
-        ops = {"add": lambda: self.a + self.b, "multiply": lambda: self.a * self.b}
+        ops = {
+            "add": lambda: self.a + self.b,
+            "subtract": lambda: self.a - self.b,
+            "multiply": lambda: self.a * self.b,
+            "divide": lambda: self.a / self.b if self.b != 0 else None,
+        }
         return {"result": ops[self.operation]()}
 
 
-# Define agents (no decorators needed!)
+# Define agents
 class MathAgent(BaseAgent):
-    context: str = Field(default="", description="Additional context")
-
     def __init__(self, **kwargs):
-        kwargs.setdefault("system_message", "You are a math expert.")
-        super().__init__(**kwargs)
-        self.register_tool(CalculatorTool())
+        super().__init__(
+            system_message="You are a math expert. Use the calculator tool.",
+            tools=[CalculatorTool],
+            **kwargs
+        )
+
+
+class VerifierAgent(BaseAgent):
+    def __init__(self, **kwargs):
+        super().__init__(
+            system_message="You verify mathematical results.",
+            **kwargs
+        )
 
 
 class CoordinatorAgent(BaseAgent):
     def __init__(self, **kwargs):
-        kwargs.setdefault("system_message", "You coordinate math tasks.")
-        super().__init__(**kwargs)
+        super().__init__(
+            system_message="You coordinate math tasks.",
+            **kwargs
+        )
 
 
-# Setup factory
-factory = AgentFactory(global_defaults={"max_iterations": 10})
+# Set up factory
+factory = AgentFactory(
+    global_defaults={"max_iterations": 15}
+)
 
-factory.register("math", MathAgent,
-                 expose_as_subagent=True,
-                 subagent_description="Performs calculations",
-                 stateless=True)
+# Register agents
+factory.register("math", MathAgent, subagent_description="Performs math calculations", stateless=True) \
+       .register("verifier", VerifierAgent, subagent_description="Verifies results", stateless=True) \
+       .register("coordinator", CoordinatorAgent)
 
-factory.register("coordinator", CoordinatorAgent)
+# Create orchestrator
+coordinator = factory.create(
+    "coordinator",
+    subagents=["math", "verifier"],
+    subagent_config={
+        "math": {"max_iterations": 10},
+    }
+)
 
-
-# Create and use
-coordinator = factory.create("coordinator", subagents=["math"])
-
-response = coordinator.execute_query("Calculate 15 * 7 and 100 + 50")
+# Execute
+response = coordinator.execute_query("Calculate 123 * 456 and verify the result")
 print(response.content)
 ```
 
 ---
 
-## Error Messages
+## Error Handling
+
+The factory raises clear errors for invalid configurations:
 
 | Condition | Error |
 |-----------|-------|
-| Duplicate registration | `ValueError: Agent 'X' is already registered` |
-| Missing description | `ValueError: Agent 'X': expose_as_subagent=True requires subagent_description...` |
-| Unknown agent | `ValueError: Agent 'X' not registered. Available: [...]` |
-| Not exposed as subagent | `ValueError: Agent 'X' is not exposed as subagent...` |
-| Invalid subagent_config key | `ValueError: subagent_config contains keys not in subagents list: {...}` |
-| Instance not subagent-capable | `ValueError: Instance X must be subagent-capable...` |
+| Duplicate agent name | `ValueError: Agent 'X' is already registered` |
+| Agent not registered | `ValueError: Agent 'X' not registered. Available: [...]` |
+| Sub-agent not registered | `ValueError: Agent 'X' not registered or not exposed as subagent` |
+| Invalid subagent_config key | `ValueError: subagent_config contains keys not in subagents list` |
+
+---
+
+## Tips and Best Practices
+
+1. **Use Method Chaining**: Chain `register()` calls for cleaner setup.
+
+   ```python
+   factory.register("a", AgentA, ...) \
+          .register("b", AgentB, ...) \
+          .register("c", AgentC, ...)
+   ```
+
+2. **Separate Concerns**: Use different factories for different domains:
+
+   ```python
+   analytics_factory = AgentFactory()
+   analytics_factory.register("analyzer", AnalyzerAgent, ...)
+
+   marketing_factory = AgentFactory()
+   marketing_factory.register("writer", WriterAgent, ...)
+   ```
+
+3. **Use Defaults Wisely**: Set factory defaults only for settings that apply to all agents.
+
+   ```python
+   factory = AgentFactory(
+       global_defaults={
+           "max_iterations": 10,  # Reasonable default for all
+           "agent_comment": True,  # Always generate comments
+       }
+   )
+   ```
+
+4. **Prefer Stateless for Parallelism**: When sub-agents can be called concurrently, use `stateless=True`.
+
+   ```python
+   factory.register("translator", TranslatorAgent, stateless=True)
+   ```
+
+5. **Test Agent Creation**: Always test that agents can be instantiated:
+
+   ```python
+   # This catches missing dependencies early
+   test_agent = factory.create("analyzer")
+   ```
+
+---
+
+## See Also
+
+- [BaseAgent Guide](base_agent.md) - Creating and using agents
+- [Hooks API](hooks.md) - Hook system for agent customization
+- [SharedMemoryGraph](../README.md#shared-memory-support) - Sharing context between agents
+- [README](../README.md) - Installation and quick start
