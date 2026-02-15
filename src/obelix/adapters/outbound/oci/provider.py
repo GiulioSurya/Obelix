@@ -72,7 +72,7 @@ class OCILLm(AbstractLLMProvider):
 
     def __init__(
         self,
-        connection: OCIConnection | None = None,
+        connection: OCIConnection,
         model_id: str = "openai.gpt-oss-120b",
         max_tokens: int = 3500,
         temperature: float = 0.1,
@@ -90,7 +90,7 @@ class OCILLm(AbstractLLMProvider):
         Initialize the OCI provider with dependency injection of connection.
 
         Args:
-            connection: OCIConnection singleton (default: None, reuse from GlobalConfig)
+            connection: OCIConnection singleton
             model_id: OCI model ID
             max_tokens: Maximum number of tokens
             temperature: Sampling temperature
@@ -110,12 +110,6 @@ class OCILLm(AbstractLLMProvider):
         else:
             logging.getLogger("oci").setLevel(logging.WARNING)
             oci.base_client.is_http_log_enabled(False)
-
-        # Dependency injection of connection with fallback to GlobalConfig
-        if connection is None:
-            connection = self._get_connection_from_global_config(
-                Providers.OCI_GENERATIVE_AI, "OCILLm"
-            )
 
         self.connection = connection
 

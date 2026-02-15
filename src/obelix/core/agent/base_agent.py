@@ -26,7 +26,6 @@ from obelix.core.model.tool_message import (
 )
 from obelix.core.model.usage import AgentUsage
 from obelix.core.tool.tool_base import Tool
-from obelix.infrastructure.config import GlobalConfig
 from obelix.ports.outbound.llm_provider import AbstractLLMProvider
 
 logger = get_logger(__name__)
@@ -36,7 +35,7 @@ class BaseAgent:
     def __init__(
         self,
         system_message: str,
-        provider: AbstractLLMProvider | None = None,
+        provider: AbstractLLMProvider,
         max_iterations: int = 15,
         tools: Tool | type[Tool] | list[type[Tool] | Tool] | None = None,
         tool_policy: list[ToolRequirement] | None = None,
@@ -50,7 +49,7 @@ class BaseAgent:
         )
         self.response_schema = response_schema
 
-        self.provider = provider or GlobalConfig().get_current_provider_instance()
+        self.provider = provider
 
         self.registered_tools: list[Tool] = []
         self.conversation_history: list[StandardMessage] = [self.system_message]

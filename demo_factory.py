@@ -20,8 +20,6 @@ from obelix.core.agent.agent_factory import AgentFactory
 from obelix.core.agent.shared_memory import PropagationPolicy
 from obelix.core.tool.tool_base import Tool
 from obelix.core.tool.tool_decorator import tool
-from obelix.infrastructure.config import GlobalConfig
-from obelix.infrastructure.providers import Providers
 from obelix.adapters.outbound.openai.connection import OpenAIConnection
 from obelix.adapters.outbound.anthropic.connection import AnthropicConnection
 from obelix.adapters.outbound.oci.connection import OCIConnection
@@ -64,9 +62,6 @@ oci_config = {
 }
 
 oci_connection = OCIConnection(oci_config)
-
-
-GlobalConfig().set_provider(provider=Providers.OCI_GENERATIVE_AI, connection=oci_connection)
 
 
 # ========== TOOL ==========

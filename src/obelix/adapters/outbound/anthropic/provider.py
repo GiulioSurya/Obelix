@@ -68,7 +68,7 @@ class AnthropicProvider(AbstractLLMProvider):
 
     def __init__(
         self,
-        connection: AnthropicConnection | None = None,
+        connection: AnthropicConnection,
         model_id: str = "claude-haiku-4-5-20251001",
         max_tokens: int = 3000,
         temperature: float = 0.1,
@@ -80,22 +80,14 @@ class AnthropicProvider(AbstractLLMProvider):
         Initialize the Anthropic provider with dependency injection of connection.
 
         Args:
-            connection: AnthropicConnection singleton (default: None, reuse from GlobalConfig if provider matches)
+            connection: AnthropicConnection singleton
             model_id: Claude model ID (default: "claude-haiku-4-5-20251001")
             max_tokens: Maximum number of tokens (default: 3000)
             temperature: Sampling temperature (default: 0.1)
             top_p: Top-p sampling (default: None)
             thinking_mode: Enable extended thinking (default: False)
             thinking_params: Parameters for thinking mode (default: None)
-
-        Raises:
-            ValueError: If connection=None and GlobalConfig does not have ANTHROPIC set
         """
-        if connection is None:
-            connection = self._get_connection_from_global_config(
-                Providers.ANTHROPIC, "AnthropicProvider"
-            )
-
         self.connection = connection
 
         self.model_id = model_id

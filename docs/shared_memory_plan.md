@@ -1,3 +1,11 @@
+# Shared Memory Graph Design Plan
+
+**Status**: This document describes the design and implementation plan for shared memory between agents. The basic concept has been implemented in `obelix.core.agent.shared_memory`, but the full feature set described here is still under development.
+
+**Note**: This is design documentation, not user-facing documentation. For usage examples, see [Agent Factory Guide](agent_factory.md#shared-memory-support).
+
+---
+
 # Piano Shared Memory Graph + Orchestrator Awareness
 
 > **Stato**: da implementare

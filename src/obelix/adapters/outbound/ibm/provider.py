@@ -64,7 +64,7 @@ class IBMWatsonXLLm(AbstractLLMProvider):
 
     def __init__(
         self,
-        connection: IBMConnection | None = None,
+        connection: IBMConnection,
         model_id: str = "meta-llama/llama-3-3-70b-instruct",
         max_tokens: int = 3000,
         temperature: float = 0.3,
@@ -82,7 +82,7 @@ class IBMWatsonXLLm(AbstractLLMProvider):
         Initialize the IBM Watson X provider with dependency injection of connection.
 
         Args:
-            connection: IBMConnection singleton (default: None, reuse from GlobalConfig if provider matches)
+            connection: IBMConnection singleton
             model_id: Model ID (default: "meta-llama/llama-3-3-70b-instruct")
             max_tokens: Maximum number of tokens (default: 3000)
             temperature: Sampling temperature (default: 0.3)
@@ -95,15 +95,7 @@ class IBMWatsonXLLm(AbstractLLMProvider):
             top_logprobs: Number of top log probabilities (default: None)
             n: Number of completions to generate (default: None)
             logit_bias: Bias for specific tokens (default: None)
-
-        Raises:
-            ValueError: If connection=None and GlobalConfig does not have IBM_WATSON set
         """
-        if connection is None:
-            connection = self._get_connection_from_global_config(
-                Providers.IBM_WATSON, "IBMWatsonXLLm"
-            )
-
         self.connection = connection
         self.model_id = model_id
 

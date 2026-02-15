@@ -79,7 +79,7 @@ class OpenAIProvider(AbstractLLMProvider):
 
     def __init__(
         self,
-        connection: OpenAIConnection | None = None,
+        connection: OpenAIConnection,
         model_id: str = "gpt-4o",
         max_tokens: int = 4096,
         temperature: float = 0.1,
@@ -111,11 +111,6 @@ class OpenAIProvider(AbstractLLMProvider):
             response_format: Response format (e.g. {"type": "json_object"})
             reasoning_effort: Reasoning depth for o-series ("low", "medium", "high")
         """
-        if connection is None:
-            connection = self._get_connection_from_global_config(
-                Providers.OPENAI, "OpenAIProvider"
-            )
-
         self.connection = connection
 
         self.model_id = model_id

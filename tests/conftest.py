@@ -163,25 +163,6 @@ def make_agent(mock_provider):
 
 
 # ---------------------------------------------------------------------------
-# GlobalConfig isolation
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def _reset_global_config():
-    """Reset the GlobalConfig singleton between tests to prevent leakage."""
-    from obelix.infrastructure.config import GlobalConfig
-
-    GlobalConfig._instance = None
-    GlobalConfig._current_provider = None
-    GlobalConfig._connections = {}
-    yield
-    GlobalConfig._instance = None
-    GlobalConfig._current_provider = None
-    GlobalConfig._connections = {}
-
-
-# ---------------------------------------------------------------------------
 # Sample Tool (decorated) for integration-style tests
 # ---------------------------------------------------------------------------
 
