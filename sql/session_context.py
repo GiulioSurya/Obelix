@@ -9,7 +9,7 @@ Usa ContextVar per garantire isolamento tra richieste concorrenti.
 Pattern: Context Manager + ContextVar per isolamento async-safe.
 
 Usage:
-    from src.session_context import session_scope, get_session
+    from obelix.session_context import session_scope, get_session
 
     # Entry point (api.py, main.py)
     async with session_scope() as session:
@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Any
 from uuid import uuid4
 
-from src.infrastructure.logging import get_logger
+from obelix.infrastructure.logging import get_logger
 
 logger = get_logger(__name__)
 

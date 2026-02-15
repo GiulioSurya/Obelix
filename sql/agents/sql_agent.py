@@ -7,14 +7,14 @@ import httpx
 import pandas as pd
 from bs4 import BeautifulSoup
 from pydantic import Field
-from src.core.agent import BaseAgent, AgentEvent, HookDecision, AgentStatus
+from obelix.core.agent import BaseAgent, AgentEvent, HookDecision, AgentStatus
 from sql.sql_tools.sql_query_executor_tool import SqlQueryExecutorTool
 from sql.database.schema.semantic_builder import SemanticSchemaBuilder
 from sql.utils.dataframe.analyzer import DataFrameAnalyzer
-from src.core.model import ToolResult, ToolStatus, ToolRequirement, SystemMessage
-from src.ports.outbound import AbstractLLMProvider
-from src.infrastructure.k8s import YamlConfig
-from src.infrastructure.logging import get_logger
+from obelix.core.model import ToolResult, ToolStatus, ToolRequirement, SystemMessage
+from obelix.ports.outbound import AbstractLLMProvider
+from obelix.infrastructure.k8s import YamlConfig
+from obelix.infrastructure.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -137,7 +137,7 @@ class SqlAgent(BaseAgent):
 
     def _extract_enhanced_query(self, ctx: AgentStatus) -> str:
         """Estrae enhanced_query dalla HumanMessage (formato SubAgentWrapper: 'enhanced_query: ...')."""
-        from src.core.model.human_message import HumanMessage
+        from obelix.core.model.human_message import HumanMessage
 
         for msg in reversed(ctx.agent.conversation_history):
             if isinstance(msg, HumanMessage) and msg.content:

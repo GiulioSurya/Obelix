@@ -1,8 +1,8 @@
 """
 Modulo per estrazione e conversione di risultati da tool execution.
 """
-from src.messages.tool_message import ToolResult
-from src.utils.dataframe.converter import DataFrameConverter
+from obelix.messages.tool_message import ToolResult
+from obelix.utils.dataframe.converter import DataFrameConverter
 
 
 def is_sql_executor_tool(tool_result: ToolResult) -> bool:

@@ -62,7 +62,7 @@ class PostgresConfig:
         Raises:
             ValueError: Se mancano credenziali o configurazione database
         """
-        from src.infrastructure.k8s import YamlConfig
+        from obelix.infrastructure.k8s import YamlConfig
         import os
 
         # Leggi tutte le configurazioni da infrastructure.yaml (include credenziali)

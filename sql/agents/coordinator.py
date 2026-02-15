@@ -1,8 +1,8 @@
 from typing import List, Optional, Union, Type
 
-from src.core.agent import BaseAgent
-from src.core.tool.tool_base import ToolBase
-from src.ports.outbound.llm_provider import AbstractLLMProvider
+from obelix.core.agent import BaseAgent
+from obelix.core.tool.tool_base import ToolBase
+from obelix.ports.outbound.llm_provider import AbstractLLMProvider
 
 
 class CoordinatorAgent(BaseAgent):

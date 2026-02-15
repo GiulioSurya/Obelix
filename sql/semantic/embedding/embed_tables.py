@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import numpy as np
 
-from src.connections.db_connection.postgres_connection import PostgresConnection, get_postgres_connection
-from src.embedding_providers.oci_embedding_provider import OCIEmbeddingProvider
-from src.utils.text.normalizer import TextNormalizer
+from obelix.connections.db_connection.postgres_connection import PostgresConnection, get_postgres_connection
+from obelix.embedding_providers.oci_embedding_provider import OCIEmbeddingProvider
+from obelix.utils.text.normalizer import TextNormalizer
 
 
 # Placeholder per valori speciali durante embedding

@@ -32,7 +32,7 @@ import asyncio
 from contextlib import contextmanager
 from typing import Optional, Dict, Any
 
-from src.infrastructure.logging import get_logger
+from obelix.infrastructure.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -182,7 +182,7 @@ class OraclePoolConfig:
     @classmethod
     def from_k8s_config(cls) -> 'OraclePoolConfig':
         """Carica configurazione da infrastructure.yaml."""
-        from src.infrastructure.k8s import YamlConfig
+        from obelix.infrastructure.k8s import YamlConfig
 
         config = YamlConfig(os.getenv("INFRASTRUCTURE_CONFIG_PATH"))
         oracle_cfg = config.get("databases.oracle")

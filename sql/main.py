@@ -20,14 +20,14 @@ from sql.connections.db_connection.oracle_connection import (
     create_oracle_pool)
 
 from sql.connections.db_connection.postgres_connection import get_postgres_connection
-from src.core.agent import AgentFactory, SharedMemoryGraph
-from src.core.agent.shared_memory import PropagationPolicy
-from src.infrastructure.k8s import YamlConfig
-from src.infrastructure.logging import setup_logging
+from obelix.core.agent import AgentFactory, SharedMemoryGraph
+from obelix.core.agent.shared_memory import PropagationPolicy
+from obelix.infrastructure.k8s import YamlConfig
+from obelix.infrastructure.logging import setup_logging
 
 # Provider imports
-from src.adapters.outbound.oci.connection import OCIConnection
-from src.adapters.outbound.oci.provider import OCILLm
+from obelix.adapters.outbound.oci.connection import OCIConnection
+from obelix.adapters.outbound.oci.provider import OCILLm
 
 load_dotenv()
 setup_logging(console_level="INFO")

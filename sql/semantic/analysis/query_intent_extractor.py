@@ -14,7 +14,7 @@ Pipeline:
     Query conversazionale � NER + POS tagging � Filtered tokens � Lemmatized intent terms
 
 Example:
-    >>> from src.semantic.analysis.query_intent_extractor import QueryIntentExtractor
+    >>> from obelix.semantic.analysis.query_intent_extractor import QueryIntentExtractor
     >>> extractor = QueryIntentExtractor()
     >>> intent_terms = extractor.extract_categorical_intent(
     ...     "quanto abbiamo speso di l'irap per il 2025?"

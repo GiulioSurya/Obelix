@@ -13,7 +13,7 @@ Workflow:
     User Query → [Semantic Search, Fuzzy Search] → Weighted Average → Selected Tables
 
 Example:
-    >>> from src.database.schema.router import SemanticTableRouter
+    >>> from obelix.database.schema.router import SemanticTableRouter
     >>> router = SemanticTableRouter(postgres_conn)
     >>> tables = router.route("mostrami le entrate del 2024")
     >>> print(tables)  # ['VISTA_BILANCIO_ENTRATA_AI']
@@ -23,8 +23,8 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from sql.connections.db_connection.postgres_connection import PostgresConnection
-from src.ports.outbound import AbstractEmbeddingProvider
-from src.adapters.outbound.embedding.oci_embedding import OCIEmbeddingProvider
+from obelix.ports.outbound import AbstractEmbeddingProvider
+from obelix.adapters.outbound.embedding.oci_embedding import OCIEmbeddingProvider
 from sql.text.normalizer import TextNormalizer
 
 try:
@@ -277,7 +277,7 @@ def route_tables(
 ) -> List[str]:
     """Wrapper retrocompatibile."""
     if postgres_conn is None:
-        from src.connections.db_connection.postgres_connection import get_postgres_connection
+        from obelix.connections.db_connection.postgres_connection import get_postgres_connection
         postgres_conn = get_postgres_connection()
 
     router = SemanticTableRouter(postgres_conn=postgres_conn, config=config, **kwargs)

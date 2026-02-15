@@ -13,7 +13,7 @@ import asyncio
 from typing import List
 
 from pydantic import BaseModel, Field
-from src.core.tool import ToolBase,tool
+from obelix.core.tool import ToolBase,tool
 
 from sql.sql_tools.user_question_bridge import get_question_bridge
 from sql.session_context import get_session_or_none

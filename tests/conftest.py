@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.core.model.assistant_message import AssistantMessage
+from obelix.core.model.assistant_message import AssistantMessage
 
 
 class MockProvider:

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from sql.connections.db_connection.postgres_connection import PostgresConnection, get_postgres_connection
-from src.adapters.outbound.embedding.oci_embedding import OCIEmbeddingProvider
+from obelix.adapters.outbound.embedding.oci_embedding import OCIEmbeddingProvider
 from sql.semantic.analysis.query_intent_extractor import QueryIntentExtractor, IntentExtractionConfig
 
 

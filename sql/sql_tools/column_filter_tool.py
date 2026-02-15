@@ -5,7 +5,7 @@ Tool per selezionare colonne rilevanti dalle tabelle dello schema.
 from typing import List, Optional, Dict
 from pydantic import Field
 
-from src.core.tool import ToolBase,tool
+from obelix.core.tool import ToolBase,tool
 from sql.database.schema.generated.schema_literals import (
     VistaBilancioEntrataAiColumns,
     VistaBilancioSpesaAiColumns,

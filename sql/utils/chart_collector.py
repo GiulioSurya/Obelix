@@ -13,8 +13,8 @@ Pattern: Facade over SessionContext for chart management.
 """
 from typing import Optional
 
-from src.session_context import get_session, get_session_or_none
-from src.logging_config import get_logger
+from obelix.session_context import get_session, get_session_or_none
+from obelix.logging_config import get_logger
 
 logger = get_logger(__name__)
 

@@ -601,6 +601,6 @@ if __name__ == "__main__":
     )
 
     # Genera Literal Python dalla cache
-    from src.database.schema.literal_generator import generate_literals_from_cache
+    from obelix.database.schema.literal_generator import generate_literals_from_cache
     output_path = Path(__file__).parent / "generated" / "schema_literals.py"
     generate_literals_from_cache(cache_file, output_path)

@@ -7,13 +7,13 @@ from typing import Optional, Dict, List, Type
 
 from pydantic import BaseModel
 
-from src.core.agent import BaseAgent
+from obelix.core.agent import BaseAgent
 from sql.sql_tools.column_filter_tool import ColumnFilterTool
 from sql.sql_tools.ask_user_question_tool import AskUserQuestionTool
 from sql.utils.schema_utils import generate_sql_schema
-from src.ports.outbound import AbstractLLMProvider
-from src.core.model import ToolRequirement
-from src.infrastructure.k8s import YamlConfig
+from obelix.ports.outbound import AbstractLLMProvider
+from obelix.core.model import ToolRequirement
+from obelix.infrastructure.k8s import YamlConfig
 import os
 
 class ColumnFilterAgent(BaseAgent):

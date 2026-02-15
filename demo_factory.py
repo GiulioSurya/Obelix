@@ -15,24 +15,24 @@ result via shared memory and produces a formatted report.
 from dotenv import load_dotenv
 from pydantic import Field
 
-from src.core.agent import BaseAgent, SharedMemoryGraph
-from src.core.agent.agent_factory import AgentFactory
-from src.core.agent.shared_memory import PropagationPolicy
-from src.core.tool.tool_base import ToolBase
-from src.core.tool.tool_decorator import tool
-from src.infrastructure.config import GlobalConfig
-from src.infrastructure.providers import Providers
-from src.adapters.outbound.openai.connection import OpenAIConnection
-from src.adapters.outbound.anthropic.connection import AnthropicConnection
-from src.adapters.outbound.ollama.provider import OllamaProvider
-from src.adapters.outbound.oci.connection import OCIConnection
-from src.adapters.outbound.openai.provider import OpenAIProvider
-from src.adapters.outbound.anthropic.provider import AnthropicProvider
-from src.adapters.outbound.oci.provider import OCILLm
-from src.infrastructure.k8s import YamlConfig
-from src.core.model.tool_message import ToolRequirement
-from src.infrastructure.logging import setup_logging
-from src.plugins.builtin.ask_user_question_tool import AskUserQuestionTool
+from obelix.core.agent import BaseAgent, SharedMemoryGraph
+from obelix.core.agent.agent_factory import AgentFactory
+from obelix.core.agent.shared_memory import PropagationPolicy
+from obelix.core.tool.tool_base import ToolBase
+from obelix.core.tool.tool_decorator import tool
+from obelix.infrastructure.config import GlobalConfig
+from obelix.infrastructure.providers import Providers
+from obelix.adapters.outbound.openai.connection import OpenAIConnection
+from obelix.adapters.outbound.anthropic.connection import AnthropicConnection
+from obelix.adapters.outbound.ollama.provider import OllamaProvider
+from obelix.adapters.outbound.oci.connection import OCIConnection
+from obelix.adapters.outbound.openai.provider import OpenAIProvider
+from obelix.adapters.outbound.anthropic.provider import AnthropicProvider
+from obelix.adapters.outbound.oci.provider import OCILLm
+from obelix.infrastructure.k8s import YamlConfig
+from obelix.core.model.tool_message import ToolRequirement
+from obelix.infrastructure.logging import setup_logging
+from obelix.plugins.builtin.ask_user_question_tool import AskUserQuestionTool
 import os
 
 load_dotenv()

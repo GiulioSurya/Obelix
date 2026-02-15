@@ -13,7 +13,7 @@ Workflow:
     Oracle Table (schema JSON) + PostgreSQL (vector DB) → Enriched Schema
 
 Example:
-    >>> from src.database.schema.semantic_builder import SemanticSchemaBuilder
+    >>> from obelix.database.schema.semantic_builder import SemanticSchemaBuilder
     >>> builder = SemanticSchemaBuilder()
     >>> sql_schema = builder.enrich_schema(
     ...     semantic_query="finanziamenti per categorie deboli",
@@ -31,9 +31,9 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 
 from sql.connections.db_connection.postgres_connection import PostgresConnection
-from src.ports.outbound.embedding_provider import AbstractEmbeddingProvider
-from src.adapters.outbound.embedding.oci_embedding import OCIEmbeddingProvider
-from src.infrastructure.k8s import YamlConfig
+from obelix.ports.outbound.embedding_provider import AbstractEmbeddingProvider
+from obelix.adapters.outbound.embedding.oci_embedding import OCIEmbeddingProvider
+from obelix.infrastructure.k8s import YamlConfig
 from sql.text.normalizer import TextNormalizer
 
 try:

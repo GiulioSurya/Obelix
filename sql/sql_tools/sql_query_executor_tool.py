@@ -3,7 +3,7 @@
 import oracledb
 from pydantic import Field
 
-from src.core.tool import tool,ToolBase
+from obelix.core.tool import tool,ToolBase
 from sql.connections.db_connection import execute_query
 
 
