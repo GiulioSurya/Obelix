@@ -8,7 +8,47 @@ Provides consistent error formatting for ValidationError across:
 - Structured output validation (future)
 """
 
+import difflib
+import re
+
 from pydantic import ValidationError
+
+
+def _extract_invalid_value(err: dict) -> str | None:
+    """Extract the invalid value from a validation error's input context."""
+    ctx = err.get("ctx", {})
+    input_val = err.get("input") or ctx.get("input")
+    if input_val is not None:
+        return str(input_val)
+    return None
+
+
+def _extract_allowed_values(err: dict) -> list[str]:
+    """Extract allowed values from a literal_error or enum error."""
+    ctx = err.get("ctx", {})
+    expected = ctx.get("expected")
+    if expected and isinstance(expected, str):
+        return re.findall(r"'([^']+)'", expected)
+    return []
+
+
+def _suggest_similar(invalid: str, allowed: list[str], max_suggestions: int = 5) -> list[str]:
+    """Find allowed values most similar to the invalid one."""
+    return difflib.get_close_matches(invalid, allowed, n=max_suggestions, cutoff=0.4)
+
+
+def _resolve_field_name(loc: tuple) -> str:
+    """Resolve a human-readable field name from a Pydantic error location.
+
+    For array paths like ('VISTA_BILANCIO_SPESA_AI', 33), returns the
+    parent field name instead of the numeric index.
+    """
+    if not loc:
+        return "unknown"
+    last = loc[-1]
+    if isinstance(last, int) and len(loc) >= 2:
+        return str(loc[-2])
+    return str(last)
 
 
 def get_validation_action(err: dict, field_name: str) -> str:
@@ -43,11 +83,29 @@ def get_validation_action(err: dict, field_name: str) -> str:
     ):
         return f"Adjust value of '{field_name}'."
     elif err_type in ("enum", "literal_error"):
+        invalid = _extract_invalid_value(err)
+        allowed = _extract_allowed_values(err)
+        if invalid and allowed:
+            suggestions = _suggest_similar(invalid, allowed)
+            if suggestions:
+                return (
+                    f"'{invalid}' is not valid for '{field_name}'. "
+                    f"Did you mean: {', '.join(suggestions)}?"
+                )
+            return f"'{invalid}' is not valid for '{field_name}'. Check exact spelling."
         return f"Use an allowed value for '{field_name}'."
     elif err_type == "json_invalid":
         return f"Provide valid JSON for '{field_name}'."
     else:
         return f"Fix '{field_name}'."
+
+
+def _format_literal_message(err: dict) -> str:
+    """Format a concise message for literal/enum errors without dumping all values."""
+    invalid = _extract_invalid_value(err)
+    if invalid:
+        return f"Invalid value: '{invalid}'"
+    return err["msg"]
 
 
 def format_validation_error(e: ValidationError, context: str) -> str:
@@ -76,9 +134,13 @@ def format_validation_error(e: ValidationError, context: str) -> str:
                     path_parts.append(str(item))
         loc = "".join(path_parts) or "root"
 
-        msg = err["msg"]
-        field_name = err["loc"][-1] if err["loc"] else "unknown"
+        field_name = _resolve_field_name(err["loc"])
         action = get_validation_action(err, field_name)
+
+        if err["type"] in ("enum", "literal_error"):
+            msg = _format_literal_message(err)
+        else:
+            msg = err["msg"]
 
         detail = f"  - '{loc}': {msg}\n    Action: {action}"
         error_details.append(detail)

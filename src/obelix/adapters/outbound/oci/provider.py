@@ -307,7 +307,14 @@ class OCILLm(AbstractLLMProvider):
         # Extract usage
         usage = self._extract_usage(response)
 
-        return AssistantMessage(content=content, tool_calls=tool_calls, usage=usage)
+        reasoning = self._extract_reasoning(response)
+        metadata = {}
+        if reasoning:
+            metadata["reasoning"] = reasoning
+
+        return AssistantMessage(
+            content=content, tool_calls=tool_calls, usage=usage, metadata=metadata
+        )
 
     def _extract_content(self, response) -> str:
         """Extract text content from OCI response."""
@@ -347,6 +354,17 @@ class OCILLm(AbstractLLMProvider):
                 content = str(cohere_text)
 
         return content or ""
+
+    def _extract_reasoning(self, response) -> str | None:
+        """Extract reasoning content from OCI response, if available."""
+        try:
+            message = response.data.data["chatResponse"]["choices"][0]["message"]
+            reasoning = message.get("reasoningContent")
+            if reasoning:
+                return str(reasoning)
+        except (KeyError, IndexError, TypeError):
+            pass
+        return None
 
     def _extract_usage(self, response) -> Usage | None:
         """Extract usage information from OCI response."""

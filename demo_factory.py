@@ -12,6 +12,8 @@ The coordinator calls math_agent first, which publishes its result
 to the SharedMemoryGraph. When report_agent runs, it pulls the math
 result via shared memory and produces a formatted report.
 """
+import os
+
 from dotenv import load_dotenv
 from pydantic import Field
 
@@ -21,50 +23,28 @@ from obelix.core.agent.shared_memory import PropagationPolicy
 from obelix.core.tool.tool_base import Tool
 from obelix.core.tool.tool_decorator import tool
 from obelix.adapters.outbound.openai.connection import OpenAIConnection
-from obelix.adapters.outbound.anthropic.connection import AnthropicConnection
-from obelix.adapters.outbound.oci.connection import OCIConnection
 from obelix.adapters.outbound.openai.provider import OpenAIProvider
-from obelix.adapters.outbound.anthropic.provider import AnthropicProvider
-from obelix.adapters.outbound.oci.provider import OCILLm
-from obelix.infrastructure.k8s import YamlConfig
 from obelix.core.model.tool_message import ToolRequirement
 from obelix.infrastructure.logging import setup_logging
+from obelix.core.tracer import Tracer, HTTPExporter
 from obelix.plugins.builtin.ask_user_question_tool import AskUserQuestionTool
-import os
 
 load_dotenv()
+
+tracer = Tracer(exporter=HTTPExporter(endpoint="http://localhost:8100/api/v1/ingest"))
 
 setup_logging(console_level="TRACE")
 
 
-# ========== CONFIGURAZIONE PROVIDER ==========
-api_key = os.getenv("ANTHROPIC_API_KEY")
+anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
 
-#open ai
 openai_connection = OpenAIConnection(
-    api_key=api_key,
-    base_url="https://api.anthropic.com/v1/"
+    api_key=anthropic_api_key,
+    base_url="https://api.anthropic.com/v1/",
 )
 
-#anthrtopic
-anthropic_connection = AnthropicConnection(api_key=api_key)
-
-#oci
-infra_config = YamlConfig(os.getenv("INFRASTRUCTURE_CONFIG_PATH"))
-oci_provider_config = infra_config.get("llm_providers.oci")
-
-oci_config = {
-    'user': oci_provider_config["user_id"],
-    'fingerprint': oci_provider_config["fingerprint"],
-    'key_content': oci_provider_config["private_key_content"],
-    'tenancy': oci_provider_config["tenancy"],
-    'region': oci_provider_config["region"]
-}
-
-oci_connection = OCIConnection(oci_config)
 
 
-# ========== TOOL ==========
 @tool(name="calculator", description="Performs basic arithmetic operations")
 class CalculatorTool(Tool):
     operation: str = Field(..., description="Operation: add, subtract, multiply, divide")
@@ -86,24 +66,25 @@ class CalculatorTool(Tool):
         return {"result": result}
 
 
-# ========== AGENT CLASSES ==========
+
 class MathAgent(BaseAgent):
     """Math expert agent."""
 
-    context: str = Field(default="", description="usa questo campo per dare istruzioni più specifiche")
+    context: str = Field(default="", description="Use this field to provide more specific instructions")
 
-    def __init__(self):
+    def __init__(self, **kwargs):
         super().__init__(
-            system_message="sei un esperto di matematica dotato di tool per fare calcoli, usalo per risolverli.",
-            provider=OCILLm(connection=oci_connection, model_id="openai.gpt-oss-120b"),
+            system_message="You are a math expert equipped with a calculator tool. Use it to solve equations.",
+            provider=OpenAIProvider(connection=openai_connection, model_id="claude-3-5-haiku-20241022"),
             tool_policy=[
                 ToolRequirement(
                     tool_name="calculator",
                     require_success=True,
                     min_calls=1,
-                    error_message="you have to use the calculator tool to solve the equation"
+                    error_message="You must use the calculator tool to solve the equation"
                 )
             ],
+            **kwargs,
         )
         self.register_tool(CalculatorTool())
 
@@ -115,45 +96,47 @@ class ReportAgent(BaseAgent):
     results as injected context and produces a formatted report.
     """
 
-    def __init__(self):
+    def __init__(self, **kwargs):
         super().__init__(
             system_message=(
-                "Sei un agente specializzato nella creazione di report.\n"
-                "Riceverai i risultati di calcoli matematici come contesto condiviso.\n"
-                "Il tuo compito è:\n"
-                "1. Analizzare i risultati ricevuti\n"
-                "2. Produrre un report formattato con:\n"
-                "   - Le espressioni originali\n"
-                "   - I risultati calcolati\n"
-                "   - Una verifica logica (i numeri hanno senso?)\n"
-                "   - Un breve commento riassuntivo\n"
-                "Rispondi SEMPRE in formato strutturato."
+                "You are an agent specialized in creating reports.\n"
+                "You will receive math calculation results as shared context.\n"
+                "Your task is:\n"
+                "1. Analyze the received results\n"
+                "2. Produce a formatted report with:\n"
+                "   - The original expressions\n"
+                "   - The calculated results\n"
+                "   - A logical verification (do the numbers make sense?)\n"
+                "   - A brief summary comment\n"
+                "ALWAYS respond in a structured format."
             ),
-            provider=OCILLm(connection=oci_connection, model_id="openai.gpt-oss-120b"),
+            provider=OpenAIProvider(connection=openai_connection, model_id="claude-3-5-haiku-20241022"),
+            **kwargs,
         )
 
 
 class CoordinatorAgent(BaseAgent):
     """Coordinator agent."""
 
-    def __init__(self):
+    def __init__(self, **kwargs):
         super().__init__(
             system_message=(
-                "Sei un agente orchestratore con un Math Agent e un Report Agent.\n"
-                "REGOLE OBBLIGATORIE:\n"
-                "- Devi SEMPRE usare ask_user_question per raccogliere o confermare input.\n"
-                "- NON puoi chiamare il Math Agent senza aver prima usato ask_user_question.\n"
-                "- Se mancano o sono ambigue informazioni, fermati e chiedi chiarimenti.\n"
-                "- Solo dopo la risposta dell'utente puoi chiamare il Math Agent.\n"
-                "- Dopo che il Math Agent ha risposto, chiama il Report Agent per formattare i risultati.\n"
-                "utilizza almeno una volta il tool ask user question"
+                "You are an orchestrator agent with a Math Agent and a Report Agent.\n"
+                "MANDATORY RULES:\n"
+                "- You MUST ALWAYS use ask_user_question to collect or confirm input.\n"
+                "- You CANNOT call the Math Agent without first using ask_user_question.\n"
+                "- If information is missing or ambiguous, stop and ask for clarification.\n"
+                "- Only after the user responds can you call the Math Agent.\n"
+                "- After the Math Agent responds, call the Report Agent to format the results.\n"
+                "Use the ask_user_question tool at least once."
             ),
-            provider=OCILLm(connection=oci_connection, model_id="openai.gpt-oss-120b"),
+            provider=OpenAIProvider(connection=openai_connection, model_id="claude-3-5-haiku-20241022"),
             tools=AskUserQuestionTool,
+            **kwargs,
         )
 
 
-# ========== SHARED MEMORY GRAPH ==========
+
 def create_memory_graph() -> SharedMemoryGraph:
     """Create the dependency graph: math_agent -> report_agent."""
     graph = SharedMemoryGraph()
@@ -163,12 +146,12 @@ def create_memory_graph() -> SharedMemoryGraph:
     return graph
 
 
-# ========== FACTORY SETUP ==========
 def create_factory() -> AgentFactory:
     """Create and configure the agent factory with shared memory."""
     memory_graph = create_memory_graph()
 
     factory = AgentFactory()
+
     factory.with_memory_graph(memory_graph)
 
     factory.register(
@@ -196,7 +179,6 @@ def create_factory() -> AgentFactory:
     return factory
 
 
-# ========== TEST ==========
 if __name__ == "__main__":
     factory = create_factory()
 
@@ -210,8 +192,8 @@ if __name__ == "__main__":
 
     # Execute query
     response = coordinator.execute_query(
-        "mi dici quanto fa ((18 + 6) * (14 - 8)) e risolvi anche ((48-5)+25/8*(35+9))? "
-        "Dopo i calcoli, genera un report formattato dei risultati."
+        "What is ((18 + 6) * (14 - 8)) and also solve ((48-5)+25/8*(35+9))? "
+        "After the calculations, generate a formatted report of the results."
     )
 
     # Print conversation history

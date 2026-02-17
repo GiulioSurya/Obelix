@@ -12,6 +12,7 @@ from obelix.infrastructure.logging import get_logger
 if TYPE_CHECKING:
     from obelix.core.agent.base_agent import BaseAgent
     from obelix.core.agent.shared_memory import SharedMemoryGraph
+    from obelix.core.tracer.tracer import Tracer
 
 logger = get_logger(__name__)
 
@@ -66,6 +67,7 @@ class AgentFactory:
         self._global_defaults = global_defaults or {}
         self._registry: dict[str, AgentSpec] = {}
         self._memory_graph: SharedMemoryGraph | None = None
+        self._tracer: Tracer | None = None
 
     def register(
         self,
@@ -108,6 +110,15 @@ class AgentFactory:
         )
 
         logger.info(f"AgentFactory: registered '{name}' ({cls.__name__})")
+        return self
+
+    def with_tracer(self, tracer: "Tracer") -> "AgentFactory":
+        """Configure a tracer for all agents created by this factory.
+
+        Returns:
+            self for method chaining.
+        """
+        self._tracer = tracer
         return self
 
     def with_memory_graph(self, graph: "SharedMemoryGraph") -> "AgentFactory":
@@ -156,6 +167,9 @@ class AgentFactory:
 
         spec = self._registry[name]
         config = {**self._global_defaults, **spec.defaults, **overrides}
+
+        if self._tracer and "tracer" not in config:
+            config["tracer"] = self._tracer
 
         # Validate subagent_config keys
         if subagent_config:
@@ -218,6 +232,8 @@ class AgentFactory:
 
         # Merge config: global < spec.defaults < extra_config
         config = {**self._global_defaults, **sub_spec.defaults, **extra_config}
+        if self._tracer and "tracer" not in config:
+            config["tracer"] = self._tracer
         sub_agent = sub_spec.cls(**config)
 
         # Attach shared memory graph to sub-agent
