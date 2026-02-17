@@ -25,6 +25,7 @@ ibm = ["ibm_watsonx_ai>=1.4.0"]
 ollama = ["ollama>=0.6.0"]
 vllm = ["vllm>=0.13.0"]
 mcp = ["mcp>=1.25.0"]
+tracer = ["httpx>=0.28.0"]
 
 all-llm = [
     "anthropic>=0.71.0",

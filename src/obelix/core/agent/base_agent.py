@@ -10,6 +10,7 @@ from obelix.infrastructure.logging import get_logger
 
 if TYPE_CHECKING:
     from obelix.core.agent.shared_memory import SharedMemoryGraph
+    from obelix.core.tracer.tracer import Tracer
 
 from obelix.core.agent.event_contracts import EventContract, get_event_contracts
 from obelix.core.agent.hooks import AgentEvent, AgentStatus, Hook, HookDecision, Outcome
@@ -41,6 +42,7 @@ class BaseAgent:
         tool_policy: list[ToolRequirement] | None = None,
         exit_on_success: list[str] | None = None,
         response_schema: type[BaseModel] | None = None,
+        tracer: "Tracer | None" = None,
     ):
         self.system_message = SystemMessage(content=system_message)
         self.max_iterations = max_iterations
@@ -81,6 +83,9 @@ class BaseAgent:
                 decision=HookDecision.RETRY,
                 effects=[self._tool_policy_inject_message],
             )
+
+        # Tracer (optional, zero overhead when None)
+        self._tracer: Tracer | None = tracer
 
         # Shared memory (set by factory or manually, None if not used)
         self.memory_graph: SharedMemoryGraph | None = None
@@ -222,8 +227,23 @@ class BaseAgent:
         """
         Asynchronous query execution (core execution engine)
         """
+        if self._tracer:
+            from obelix.core.tracer.models import SpanType
+
+            await self._tracer.start_trace(
+                name=self.__class__.__name__,
+                metadata={"agent_name": self.__class__.__name__},
+            )
+            self._tracer.start_span(
+                SpanType.agent,
+                self.__class__.__name__,
+                input=query if isinstance(query, str) else f"{len(query)} messages",
+            )
+
         collected_tool_results = []
         execution_error = None
+        _trace_error: str | None = None
+        self._invocation_start = len(self.conversation_history)
 
         if isinstance(query, str):
             user_message = HumanMessage(content=query)
@@ -242,55 +262,66 @@ class BaseAgent:
                 f"received {type(query).__name__}"
             )
 
-        for iteration in range(1, self.max_iterations + 1):
-            outcome = await self._run_hooks(
-                AgentEvent.BEFORE_LLM_CALL, iteration=iteration
-            )
-            if outcome.decision == HookDecision.STOP:
-                assistant_msg = outcome.value
-                response = self._build_final_response(
-                    assistant_msg, collected_tool_results, execution_error
-                )
-                await self._run_hooks(
-                    AgentEvent.QUERY_END, current_value=response, iteration=iteration
-                )
-                return response
-            if outcome.decision == HookDecision.FAIL:
-                raise RuntimeError("Hook BEFORE_LLM_CALL requested FAIL")
-
-            assistant_msg = await self.provider.invoke(
-                self.conversation_history, self.registered_tools, self.response_schema
-            )
-
-            outcome = await self._run_hooks(
-                AgentEvent.AFTER_LLM_CALL,
-                current_value=assistant_msg,
-                iteration=iteration,
-                assistant_message=assistant_msg,
-            )
-            if outcome.decision == HookDecision.RETRY:
-                continue
-            if outcome.decision == HookDecision.FAIL:
-                raise RuntimeError("Hook AFTER_LLM_CALL requested FAIL")
-            if outcome.decision == HookDecision.STOP:
-                assistant_msg = outcome.value
-                response = self._build_final_response(
-                    assistant_msg, collected_tool_results, execution_error
-                )
-                await self._run_hooks(
-                    AgentEvent.QUERY_END, current_value=response, iteration=iteration
-                )
-                return response
-            assistant_msg = outcome.value
-
-            if assistant_msg.usage:
-                self.agent_usage.add_usage(assistant_msg.usage)
-
-            if not assistant_msg.tool_calls and not assistant_msg.content:
-                logger.info("Agent completed execution without final text response")
-                self.conversation_history.append(assistant_msg)
+        try:
+            for iteration in range(1, self.max_iterations + 1):
                 outcome = await self._run_hooks(
-                    AgentEvent.BEFORE_FINAL_RESPONSE,
+                    AgentEvent.BEFORE_LLM_CALL, iteration=iteration
+                )
+                if outcome.decision == HookDecision.STOP:
+                    assistant_msg = outcome.value
+                    response = self._build_final_response(
+                        assistant_msg, collected_tool_results, execution_error
+                    )
+                    await self._run_hooks(
+                        AgentEvent.QUERY_END,
+                        current_value=response,
+                        iteration=iteration,
+                    )
+                    return response
+                if outcome.decision == HookDecision.FAIL:
+                    raise RuntimeError("Hook BEFORE_LLM_CALL requested FAIL")
+
+                if self._tracer:
+                    self._tracer.start_span(
+                        SpanType.llm,
+                        f"llm.{self.provider.provider_type}",
+                        input={
+                            "message_count": len(self.conversation_history),
+                            "tool_count": len(self.registered_tools),
+                            "model_id": self.provider.model_id,
+                        },
+                    )
+
+                assistant_msg = await self.provider.invoke(
+                    self.conversation_history,
+                    self.registered_tools,
+                    self.response_schema,
+                )
+
+                if self._tracer:
+                    span_output = {
+                        "content_preview": (
+                            assistant_msg.content[:200]
+                            if assistant_msg.content
+                            else None
+                        ),
+                        "tool_calls": (
+                            len(assistant_msg.tool_calls)
+                            if assistant_msg.tool_calls
+                            else 0
+                        ),
+                        "usage": (
+                            assistant_msg.usage.model_dump()
+                            if assistant_msg.usage
+                            else None
+                        ),
+                    }
+                    if assistant_msg.metadata.get("reasoning"):
+                        span_output["reasoning"] = assistant_msg.metadata["reasoning"]
+                    await self._tracer.end_span(output=span_output)
+
+                outcome = await self._run_hooks(
+                    AgentEvent.AFTER_LLM_CALL,
                     current_value=assistant_msg,
                     iteration=iteration,
                     assistant_message=assistant_msg,
@@ -298,27 +329,26 @@ class BaseAgent:
                 if outcome.decision == HookDecision.RETRY:
                     continue
                 if outcome.decision == HookDecision.FAIL:
-                    raise RuntimeError(
-                        "Required tool call missing before final response"
+                    raise RuntimeError("Hook AFTER_LLM_CALL requested FAIL")
+                if outcome.decision == HookDecision.STOP:
+                    assistant_msg = outcome.value
+                    response = self._build_final_response(
+                        assistant_msg, collected_tool_results, execution_error
                     )
+                    await self._run_hooks(
+                        AgentEvent.QUERY_END,
+                        current_value=response,
+                        iteration=iteration,
+                    )
+                    return response
                 assistant_msg = outcome.value
-                response = self._build_final_response(
-                    assistant_msg, collected_tool_results, execution_error
-                )
-                await self._run_hooks(
-                    AgentEvent.QUERY_END, current_value=response, iteration=iteration
-                )
-                return response
 
-            if assistant_msg.tool_calls:
-                execution_error, iteration_results = await self._process_tool_calls(
-                    assistant_msg, collected_tool_results, execution_error, iteration
-                )
+                if assistant_msg.usage:
+                    self.agent_usage.add_usage(assistant_msg.usage)
 
-                if (
-                    self._should_exit_on_success(iteration_results)
-                    and execution_error is None
-                ):
+                if not assistant_msg.tool_calls and not assistant_msg.content:
+                    logger.info("Agent completed execution without final text response")
+                    self.conversation_history.append(assistant_msg)
                     outcome = await self._run_hooks(
                         AgentEvent.BEFORE_FINAL_RESPONSE,
                         current_value=assistant_msg,
@@ -342,34 +372,79 @@ class BaseAgent:
                     )
                     return response
 
-                continue
+                if assistant_msg.tool_calls:
+                    execution_error, iteration_results = await self._process_tool_calls(
+                        assistant_msg,
+                        collected_tool_results,
+                        execution_error,
+                        iteration,
+                    )
 
-            # Add assistant message to history BEFORE validation hooks
-            # This allows hooks to see (and LLM to correct) the message on RETRY
-            self.conversation_history.append(assistant_msg)
+                    if (
+                        self._should_exit_on_success(iteration_results)
+                        and execution_error is None
+                    ):
+                        outcome = await self._run_hooks(
+                            AgentEvent.BEFORE_FINAL_RESPONSE,
+                            current_value=assistant_msg,
+                            iteration=iteration,
+                            assistant_message=assistant_msg,
+                        )
+                        if outcome.decision == HookDecision.RETRY:
+                            continue
+                        if outcome.decision == HookDecision.FAIL:
+                            raise RuntimeError(
+                                "Required tool call missing before final response"
+                            )
+                        assistant_msg = outcome.value
+                        response = self._build_final_response(
+                            assistant_msg, collected_tool_results, execution_error
+                        )
+                        await self._run_hooks(
+                            AgentEvent.QUERY_END,
+                            current_value=response,
+                            iteration=iteration,
+                        )
+                        return response
 
-            outcome = await self._run_hooks(
-                AgentEvent.BEFORE_FINAL_RESPONSE,
-                current_value=assistant_msg,
-                iteration=iteration,
-                assistant_message=assistant_msg,
-            )
-            if outcome.decision == HookDecision.RETRY:
-                continue
-            if outcome.decision == HookDecision.FAIL:
-                raise RuntimeError("Required tool call missing before final response")
-            assistant_msg = outcome.value
-            response = self._build_final_response(
-                assistant_msg, collected_tool_results, execution_error
-            )
-            await self._run_hooks(
-                AgentEvent.QUERY_END, current_value=response, iteration=iteration
-            )
-            return response
+                    continue
 
-        return self._build_timeout_response(
-            self.max_iterations, collected_tool_results, execution_error
-        )
+                # Add assistant message to history BEFORE validation hooks
+                # This allows hooks to see (and LLM to correct) the message on RETRY
+                self.conversation_history.append(assistant_msg)
+
+                outcome = await self._run_hooks(
+                    AgentEvent.BEFORE_FINAL_RESPONSE,
+                    current_value=assistant_msg,
+                    iteration=iteration,
+                    assistant_message=assistant_msg,
+                )
+                if outcome.decision == HookDecision.RETRY:
+                    continue
+                if outcome.decision == HookDecision.FAIL:
+                    raise RuntimeError(
+                        "Required tool call missing before final response"
+                    )
+                assistant_msg = outcome.value
+                response = self._build_final_response(
+                    assistant_msg, collected_tool_results, execution_error
+                )
+                await self._run_hooks(
+                    AgentEvent.QUERY_END,
+                    current_value=response,
+                    iteration=iteration,
+                )
+                return response
+
+            _trace_error = f"Max iterations ({self.max_iterations}) reached"
+            return self._build_timeout_response(
+                self.max_iterations, collected_tool_results, execution_error
+            )
+        except Exception as e:
+            _trace_error = str(e)
+            raise
+        finally:
+            await self._end_trace(error=_trace_error)
 
     async def _process_tool_calls(
         self,
@@ -427,6 +502,16 @@ class BaseAgent:
         called_tools = {r.tool_name for r in iteration_results}
         return called_tools.issubset(self._exit_on_success)
 
+    async def _end_trace(self, error: str | None = None) -> None:
+        """End the agent span and trace if tracer is active."""
+        if not self._tracer:
+            return
+        from obelix.core.tracer.models import SpanStatus
+
+        status = SpanStatus.error if error else SpanStatus.ok
+        await self._tracer.end_span(status=status, error=error)  # agent span
+        await self._tracer.end_trace(status=status, error=error)
+
     def _build_final_response(
         self,
         assistant_msg: AssistantMessage,
@@ -481,6 +566,25 @@ class BaseAgent:
                 f"TOOL START: {call.name} (ID: {call.id[-12:]}) @ t={relative_start:.3f}s"
             )
 
+        # Determine span type for tracer
+        if self._tracer:
+            from obelix.core.agent.subagent_wrapper import SubAgentWrapper
+            from obelix.core.tracer.models import SpanStatus, SpanType
+
+            _is_subagent = any(
+                isinstance(t, SubAgentWrapper) and t.tool_name == call.name
+                for t in self.registered_tools
+            )
+            _tool_span_type = SpanType.sub_agent if _is_subagent else SpanType.tool
+            self._tracer.start_span(
+                _tool_span_type,
+                call.name,
+                input={
+                    "tool_call_id": call.id,
+                    "arguments": call.arguments,
+                },
+            )
+
         outcome = await self._run_hooks(
             AgentEvent.BEFORE_TOOL_EXECUTION,
             current_value=call,
@@ -523,6 +627,19 @@ class BaseAgent:
             if outcome.decision == HookDecision.FAIL:
                 raise RuntimeError("Hook ON_TOOL_ERROR requested FAIL")
             result = outcome.value
+
+        if self._tracer:
+            _span_status = (
+                SpanStatus.error if result.status == ToolStatus.ERROR else SpanStatus.ok
+            )
+            await self._tracer.end_span(
+                output={
+                    "result": str(result.result)[:500] if result.result else None,
+                    "status": str(result.status),
+                },
+                status=_span_status,
+                error=result.error,
+            )
 
         if batch_start_time:
             tool_duration = time.perf_counter() - tool_start_time
@@ -583,7 +700,10 @@ class BaseAgent:
             return cached
 
         # Use status.agent to support stateless subagent copies
-        results = self._collect_tool_results(status.agent.conversation_history)
+        # Only check tool results from the current invocation (not stale history)
+        invocation_start = getattr(status.agent, "_invocation_start", 0)
+        current_history = status.agent.conversation_history[invocation_start:]
+        results = self._collect_tool_results(current_history)
         logger.debug(
             f"Tool policy check: required={[r.tool_name for r in self._tool_policy]}, "
             f"results={[r.tool_name for r in results]}"

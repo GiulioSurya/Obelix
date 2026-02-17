@@ -65,6 +65,11 @@ class SubAgentWrapper:
         self._fields = self._extract_fields(agent.__class__)
         self._input_schema = self._build_input_schema(name)
 
+    @property
+    def _tracer(self):
+        """Propagate tracer from the wrapped agent."""
+        return getattr(self._agent, "_tracer", None)
+
     # ─── Execution ────────────────────────────────────────────────────────────
 
     async def execute(self, tool_call: ToolCall) -> ToolResult:
@@ -79,6 +84,8 @@ class SubAgentWrapper:
         try:
             agent_copy = copy.copy(self._agent)
             agent_copy.conversation_history = self._agent.conversation_history.copy()
+            if self._tracer:
+                agent_copy._tracer = self._tracer
 
             full_query = self._build_query(tool_call)
             response = await agent_copy.execute_query_async(query=full_query)
