@@ -102,21 +102,20 @@ class BaseAgent:
             if isinstance(tool, MCPTool):
                 if not tool.manager.is_connected():
                     logger.error(
-                        f"Agent {self.__class__.__name__}: MCP Tool registration attempt for {tool.tool_name} "
-                        "failed - manager not connected"
+                        f"[{self.__class__.__name__}] Tool registration failed — MCP manager not connected | tool={tool.tool_name}"
                     )
                     raise RuntimeError(
                         f"MCP Tool {tool.tool_name} is not connected. "
                         "The manager must be connected before registration."
                     )
         except ImportError:
-            logger.debug("MCP tools not available (mcp library import failed)")
+            logger.debug("[BaseAgent] MCP plugin unavailable — skipping MCP connectivity check")
 
         if tool not in self.registered_tools:
             self.registered_tools.append(tool)
             tool_name = getattr(tool, "tool_name", None) or tool.__class__.__name__
             logger.info(
-                f"Agent {self.__class__.__name__}: tool '{tool_name}' registered"
+                f"[{self.__class__.__name__}] Tool registered | tool={tool_name}"
             )
 
     def on(self, event: AgentEvent) -> Hook:
@@ -347,7 +346,7 @@ class BaseAgent:
                     self.agent_usage.add_usage(assistant_msg.usage)
 
                 if not assistant_msg.tool_calls and not assistant_msg.content:
-                    logger.info("Agent completed execution without final text response")
+                    logger.info(f"[{self.__class__.__name__}] LLM returned empty response — no content, no tool calls | iteration={iteration}")
                     self.conversation_history.append(assistant_msg)
                     outcome = await self._run_hooks(
                         AgentEvent.BEFORE_FINAL_RESPONSE,
@@ -453,13 +452,12 @@ class BaseAgent:
         execution_error: str | None,
         iteration: int,
     ) -> tuple[str | None, list[ToolResult]]:
-        logger.debug(f"Processing {len(assistant_msg.tool_calls)} tool call(s)")
-        logger.debug(f"Tool names: {[tc.name for tc in assistant_msg.tool_calls]}")
+        tool_names = [tc.name for tc in assistant_msg.tool_calls]
+        logger.debug(
+            f"[{self.__class__.__name__}] Dispatching tool batch | iteration={iteration} count={len(tool_names)} tools={tool_names}"
+        )
 
         batch_start_time = time.perf_counter()
-        logger.debug(
-            f"START ELABORATING TOOLS: n {len(assistant_msg.tool_calls)} tools @ t=0.000s"
-        )
 
         tasks = [
             self._execute_single_tool_with_hooks(call, iteration, batch_start_time)
@@ -468,9 +466,6 @@ class BaseAgent:
         tool_results = await asyncio.gather(*tasks)
 
         batch_duration = time.perf_counter() - batch_start_time
-        logger.debug(
-            f"PARALLEL END: {len(tool_results)} tools completed in {batch_duration:.3f}s"
-        )
 
         collected_tool_results.extend(tool_results)
 
@@ -482,17 +477,17 @@ class BaseAgent:
 
         if current_iteration_errors:
             execution_error = "; ".join(current_iteration_errors)
-            logger.warning(f"Tool execution errors: {execution_error}")
+            logger.warning(
+                f"[{self.__class__.__name__}] Tool batch completed with errors | iteration={iteration} duration_s={batch_duration:.3f} errors={current_iteration_errors}"
+            )
         else:
             execution_error = None
-            logger.debug("All tools executed successfully")
+            logger.debug(
+                f"[{self.__class__.__name__}] Tool batch completed successfully | iteration={iteration} count={len(tool_results)} duration_s={batch_duration:.3f}"
+            )
 
         tool_message = ToolMessage(tool_results=tool_results)
         self.conversation_history.extend([assistant_msg, tool_message])
-
-        logger.debug(
-            f"Added {len(tool_results)} tool result(s) to conversation history"
-        )
 
         return execution_error, tool_results
 
@@ -522,9 +517,8 @@ class BaseAgent:
             assistant_msg.content if assistant_msg.content else "Execution completed."
         )
 
-        logger.info(f"Assistant response generated for agent {self.__class__.__name__}")
-        logger.debug(
-            f"Final response: tool_results count={len(collected_tool_results) if collected_tool_results else 0}"
+        logger.info(
+            f"[{self.__class__.__name__}] Final response built | tool_results={len(collected_tool_results) if collected_tool_results else 0} has_error={execution_error is not None}"
         )
 
         # Avoid duplicates - message may already be in history from BEFORE_FINAL_RESPONSE
@@ -545,9 +539,9 @@ class BaseAgent:
         collected_tool_results: list[ToolResult],
         execution_error: str | None,
     ) -> AssistantResponse:
-        warning_msg = f"Reached iteration limit of {max_iterations}. Execution stopped."
-        print(warning_msg)
-        logger.warning(warning_msg)
+        logger.warning(
+            f"[{self.__class__.__name__}] Max iterations reached — execution stopped | max_iterations={max_iterations} tool_results={len(collected_tool_results) if collected_tool_results else 0}"
+        )
 
         return AssistantResponse(
             agent_name=self.__class__.__name__,
@@ -560,11 +554,6 @@ class BaseAgent:
         self, call: ToolCall, iteration: int, batch_start_time: float = None
     ) -> ToolResult:
         tool_start_time = time.perf_counter()
-        if batch_start_time:
-            relative_start = tool_start_time - batch_start_time
-            logger.debug(
-                f"TOOL START: {call.name} (ID: {call.id[-12:]}) @ t={relative_start:.3f}s"
-            )
 
         # Determine span type for tracer
         if self._tracer:
@@ -641,18 +630,11 @@ class BaseAgent:
                 error=result.error,
             )
 
-        if batch_start_time:
-            tool_duration = time.perf_counter() - tool_start_time
-            relative_end = time.perf_counter() - batch_start_time
-            logger.debug(
-                f"TOOL END: {result.tool_name} (ID: {result.tool_call_id[-12:]}) "
-                f"@ t={relative_end:.3f}s (duration: {tool_duration:.3f}s) status={result.status}"
-            )
-        else:
-            logger.debug(
-                f"Tool executed: {result.tool_name} "
-                f"(ID: {result.tool_call_id}), status={result.status}"
-            )
+        tool_duration = time.perf_counter() - tool_start_time
+        log_level = "warning" if result.status == ToolStatus.ERROR else "debug"
+        getattr(logger, log_level)(
+            f"[{self.__class__.__name__}] Tool execution completed | tool={result.tool_name} status={result.status} duration_s={tool_duration:.3f} call_id={result.tool_call_id[-12:]}"
+        )
 
         return result
 
@@ -672,9 +654,9 @@ class BaseAgent:
                         error=f"Tool execution error: {e}",
                     )
 
-        logger.error(f"Tool {tool_call.name} not found among registered tools")
+        registered_names = [getattr(t, "tool_name", t.__class__.__name__) for t in self.registered_tools]
         logger.error(
-            f"Registered tools: {[getattr(t, 'tool_name', t.__class__.__name__) for t in self.registered_tools]}"
+            f"[{self.__class__.__name__}] Tool not found — LLM requested an unregistered tool | requested_tool={tool_call.name} registered={registered_names}"
         )
         return None
 
@@ -705,15 +687,13 @@ class BaseAgent:
         current_history = status.agent.conversation_history[invocation_start:]
         results = self._collect_tool_results(current_history)
         logger.debug(
-            f"Tool policy check: required={[r.tool_name for r in self._tool_policy]}, "
-            f"results={[r.tool_name for r in results]}"
+            f"[{self.__class__.__name__}] Evaluating tool policy | required={[r.tool_name for r in self._tool_policy]} results={[r.tool_name for r in results]}"
         )
 
         for req in self._tool_policy:
             matching = [r for r in results if r.tool_name == req.tool_name]
             logger.debug(
-                f"Tool policy match: tool={req.tool_name}, "
-                f"count={len(matching)}, min_calls={req.min_calls}, require_success={req.require_success}"
+                f"[{self.__class__.__name__}] Tool policy check | tool={req.tool_name} calls_found={len(matching)} min_required={req.min_calls} require_success={req.require_success}"
             )
             if len(matching) < req.min_calls:
                 msg = req.error_message or (
@@ -726,12 +706,7 @@ class BaseAgent:
                     else HookDecision.RETRY
                 )
                 logger.warning(
-                    "Tool policy violation: tool={}, count={}, min_calls={}, require_success={}, decision={}",
-                    req.tool_name,
-                    len(matching),
-                    req.min_calls,
-                    req.require_success,
-                    decision.value,
+                    f"[{self.__class__.__name__}] Tool policy violated — minimum calls not met | tool={req.tool_name} calls_made={len(matching)} min_required={req.min_calls} require_success={req.require_success} decision={decision.value}"
                 )
                 status._tool_policy_cache = (decision, msg)
                 return decision, msg
@@ -751,12 +726,7 @@ class BaseAgent:
                         else HookDecision.RETRY
                     )
                     logger.warning(
-                        "Tool policy violation: tool={}, success_count={}, min_calls={}, require_success={}, decision={}",
-                        req.tool_name,
-                        success_count,
-                        req.min_calls,
-                        req.require_success,
-                        decision.value,
+                        f"[{self.__class__.__name__}] Tool policy violated — insufficient successful calls | tool={req.tool_name} success_count={success_count} min_required={req.min_calls} require_success={req.require_success} decision={decision.value}"
                     )
                     status._tool_policy_cache = (decision, msg)
                     return decision, msg
@@ -829,8 +799,7 @@ class BaseAgent:
                 # Rimuovi il vecchio e re-inserisci in fondo per mantenere rilevanza
                 history.pop(existing_idx)
                 logger.debug(
-                    f"SharedMemory: updated context from '{mem.source_id}' "
-                    f"in '{self.agent_id}' ({len(mem.content)} chars)"
+                    f"[SharedMemory] Replacing stale context | agent={self.agent_id} source={mem.source_id} chars={len(mem.content)}"
                 )
 
             msg = SystemMessage(
@@ -843,8 +812,7 @@ class BaseAgent:
             )
             history.append(msg)
             logger.debug(
-                f"SharedMemory: injected context from '{mem.source_id}' "
-                f"into '{self.agent_id}' ({len(mem.content)} chars)"
+                f"[SharedMemory] Injected context | target_agent={self.agent_id} source={mem.source_id} chars={len(mem.content)}"
             )
 
     async def _publish_to_memory(self, status: AgentStatus) -> None:
@@ -858,8 +826,7 @@ class BaseAgent:
                 self.agent_id, status.assistant_message.content
             )
             logger.debug(
-                f"SharedMemory: '{self.agent_id}' published final "
-                f"({len(status.assistant_message.content)} chars)"
+                f"[SharedMemory] Published final response | agent={self.agent_id} chars={len(status.assistant_message.content)}"
             )
 
         # Publish last successful tool result (serialized as JSON)
@@ -869,8 +836,7 @@ class BaseAgent:
                 self.agent_id, last_tool_content, kind="tool_result"
             )
             logger.debug(
-                f"SharedMemory: '{self.agent_id}' published tool_result "
-                f"({len(last_tool_content)} chars)"
+                f"[SharedMemory] Published tool result | agent={self.agent_id} chars={len(last_tool_content)}"
             )
 
     def _extract_last_tool_result(self) -> str | None:
@@ -918,7 +884,7 @@ class BaseAgent:
             stateless=stateless,
         )
         self.registered_tools.append(wrapper)
-        logger.info(f"Agent {self.__class__.__name__}: sub-agent '{name}' registered")
+        logger.info(f"[{self.__class__.__name__}] Sub-agent registered as tool | sub_agent={name} stateless={stateless}")
 
     def clear_conversation_history(self, keep_system_message: bool = True):
         """

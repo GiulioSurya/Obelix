@@ -108,7 +108,6 @@ class Hook:
         self._decision: HookDecision = HookDecision.CONTINUE
         self._value: Callable[..., Any] | Any | None = None
         self._effects: list[Callable[[AgentStatus], Any]] = []
-        logger.debug(f"Hook created for event: {event.value}")
 
     def when(self, condition: Callable[[AgentStatus], bool]) -> "Hook":
         """
@@ -122,8 +121,6 @@ class Hook:
             self for method chaining
         """
         self._condition = condition
-        condition_name = getattr(condition, "__name__", str(condition))
-        logger.debug(f"Hook [{self.event.value}] - condition set: {condition_name}")
         return self
 
     def handle(
@@ -146,9 +143,8 @@ class Hook:
         self._decision = decision
         self._value = value
         self._effects = effects or []
-        logger.debug(
-            f"Hook [{self.event.value}] - handle registered: "
-            f"decision={decision.value}, effects={len(self._effects)}"
+        logger.trace(
+            f"[Hook] Handler registered | event={self.event.value} decision={decision.value} effects={len(self._effects)}"
         )
         return self
 
@@ -161,35 +157,18 @@ class Hook:
         Returns:
             Outcome with decision and value
         """
-        logger.debug(
-            f"Hook [{self.event.value}] - execute invoked, iteration={agent_status.iteration}"
-        )
-
         if self._condition is not None:
             condition_name = getattr(self._condition, "__name__", "anonymous")
-            logger.debug(
-                f"Hook [{self.event.value}] - evaluating condition: {condition_name}"
-            )
             cond_result = self._condition(agent_status)
             if asyncio.iscoroutine(cond_result):
                 cond_result = await cond_result
             if not cond_result:
-                logger.debug(
-                    f"Hook [{self.event.value}] - condition NOT satisfied, skip"
-                )
                 return Outcome(HookDecision.CONTINUE, current_value)
             logger.debug(
-                f"Hook [{self.event.value}] - condition SATISFIED, effects={len(self._effects)}"
-            )
-        else:
-            logger.debug(
-                f"Hook [{self.event.value}] - no condition, effects={len(self._effects)}"
+                f"[Hook] Condition matched — activating hook | event={self.event.value} condition={condition_name} decision={self._decision.value} iteration={agent_status.iteration}"
             )
 
-        for i, effect in enumerate(self._effects):
-            logger.debug(
-                f"Hook [{self.event.value}] - executing effect {i + 1}/{len(self._effects)}"
-            )
+        for effect in self._effects:
             effect_result = effect(agent_status)
             if asyncio.iscoroutine(effect_result):
                 await effect_result
@@ -204,7 +183,4 @@ class Hook:
             else:
                 new_value = self._value
 
-        logger.debug(
-            f"Hook [{self.event.value}] - execute completed, decision={self._decision.value}"
-        )
         return Outcome(self._decision, new_value)

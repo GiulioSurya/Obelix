@@ -101,7 +101,7 @@ class AnthropicProvider(AbstractLLMProvider):
                 "type": "enabled",
                 "budget_tokens": 2000,
             }
-            logger.debug(f"Thinking mode enabled: {self.thinking_params}")
+            logger.debug(f"[AnthropicProvider] Thinking mode enabled | model={model_id} budget_tokens={self.thinking_params.get('budget_tokens')}")
         else:
             self.thinking_params = {"type": "disabled"}
 
@@ -139,7 +139,7 @@ class AnthropicProvider(AbstractLLMProvider):
 
         for attempt in range(1, self.MAX_EXTRACTION_RETRIES + 1):
             logger.debug(
-                f"Anthropic invoke: model={self.model_id}, messages={len(working_messages)}, tools={len(converted_tools)}, attempt={attempt}, thinking_mode={self.thinking_mode}"
+                f"[AnthropicProvider] Invoking model | model={self.model_id} messages={len(working_messages)} tools={len(converted_tools)} attempt={attempt}/{self.MAX_EXTRACTION_RETRIES} thinking={self.thinking_mode}"
             )
 
             system_content, conversation_messages = self._convert_messages(
@@ -165,23 +165,25 @@ class AnthropicProvider(AbstractLLMProvider):
 
             response = await client.messages.create(**api_params)
 
-            logger.info(f"Anthropic chat completed: {self.model_id}")
-
-            if hasattr(response, "usage"):
-                logger.debug(
-                    f"Anthropic tokens: input={response.usage.input_tokens}, output={response.usage.output_tokens}, total={response.usage.input_tokens + response.usage.output_tokens}"
-                )
+            _input_tokens = getattr(getattr(response, "usage", None), "input_tokens", None)
+            _output_tokens = getattr(getattr(response, "usage", None), "output_tokens", None)
+            logger.info(
+                f"[AnthropicProvider] LLM call completed | model={self.model_id} input_tokens={_input_tokens} output_tokens={_output_tokens} total_tokens={(_input_tokens or 0) + (_output_tokens or 0)}"
+            )
 
             try:
                 return self._convert_response_to_assistant_message(response)
             except ToolCallExtractionError as e:
                 if attempt >= self.MAX_EXTRACTION_RETRIES:
                     logger.error(
-                        f"Tool call extraction failed after {attempt} attempts: {e}"
+                        f"[AnthropicProvider] Tool call extraction failed — max retries exhausted | model={self.model_id} attempt={attempt} error={e}",
+                        exc_info=True,
                     )
                     raise
 
-                logger.warning(f"Tool call extraction failed (attempt {attempt}): {e}")
+                logger.warning(
+                    f"[AnthropicProvider] Tool call extraction failed — retrying | model={self.model_id} attempt={attempt}/{self.MAX_EXTRACTION_RETRIES} error={e}"
+                )
 
                 error_feedback = HumanMessage(
                     content=f"ERROR: Your tool call was malformed.\n{e}\nPlease retry with valid JSON arguments."
@@ -249,7 +251,7 @@ class AnthropicProvider(AbstractLLMProvider):
                 )
 
         logger.debug(
-            f"Converted {len(messages)} messages: system={'present' if system_content else 'absent'}, conversation={len(conversation_messages)}"
+            f"[AnthropicProvider] Messages converted | total={len(messages)} system={'present' if system_content else 'absent'} conversation={len(conversation_messages)}"
         )
 
         return system_content, conversation_messages
@@ -278,7 +280,7 @@ class AnthropicProvider(AbstractLLMProvider):
                 }
             )
 
-        logger.debug(f"Converted {len(tools)} tools to Anthropic format")
+        logger.debug(f"[AnthropicProvider] Tools converted | count={len(tools)} names={[t.create_schema().name for t in tools]}")
 
         return anthropic_tools
 
@@ -323,7 +325,7 @@ class AnthropicProvider(AbstractLLMProvider):
                         f"Failed to parse tool call block: {e}"
                     ) from e
 
-        logger.debug(f"Extracted {len(tool_calls)} tool calls from response")
+        logger.debug(f"[AnthropicProvider] Tool calls extracted | count={len(tool_calls)} names={[tc.name for tc in tool_calls]}")
 
         return tool_calls
 
@@ -383,9 +385,7 @@ class AnthropicProvider(AbstractLLMProvider):
         usage = self._extract_usage(response)
 
         logger.debug(
-            f"Anthropic response: content_length={len(text_content)}, "
-            f"tool_calls={len(tool_calls)}, "
-            f"content_blocks={len(response.content) if hasattr(response, 'content') else 0}"
+            f"[AnthropicProvider] Response parsed | content_chars={len(text_content)} tool_calls={len(tool_calls)} content_blocks={len(response.content) if hasattr(response, 'content') else 0}"
         )
 
         return AssistantMessage(
