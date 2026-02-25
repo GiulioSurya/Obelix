@@ -32,7 +32,7 @@ load_dotenv()
 
 tracer = Tracer(exporter=HTTPExporter(endpoint="http://localhost:8100/api/v1/ingest"))
 
-setup_logging(console_level="TRACE")
+setup_logging(console_level="INFO")
 
 
 anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")

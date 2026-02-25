@@ -491,9 +491,46 @@ The factory raises clear errors for invalid configurations:
 
 ---
 
+## Exposing Agents via A2A
+
+To expose an agent as an HTTP service, use the `serve()` method:
+
+```python
+factory = AgentFactory()
+factory.register("analyzer", AnalyzerAgent, subagent_description="Analyzes data")
+factory.register("coordinator", CoordinatorAgent)
+
+# Serve the coordinator with subagents as a JSON-RPC 2.0 service
+factory.serve(
+    "coordinator",
+    host="0.0.0.0",
+    port=8000,
+    subagents=["analyzer"],
+    description="Data analysis coordinator",
+)
+```
+
+The `serve()` method creates a FastAPI application that:
+- Exposes an agent card at `GET /.well-known/agent-card.json`
+- Provides a health check at `GET /health`
+- Handles JSON-RPC 2.0 calls at `POST /` for SendMessage, GetTask, ListTasks, CancelTask
+
+For full details, see [A2A Server Guide](a2a_server.md).
+
+**Requirements**:
+
+Install the serve extra:
+
+```bash
+uv sync --extra serve
+```
+
+---
+
 ## See Also
 
 - [BaseAgent Guide](base_agent.md) - Creating and using agents
+- [A2A Server Guide](a2a_server.md) - Exposing agents as HTTP services
 - [Hooks API](hooks.md) - Hook system for agent customization
 - [SharedMemoryGraph](../README.md#shared-memory-support) - Sharing context between agents
 - [README](../README.md) - Installation and quick start
