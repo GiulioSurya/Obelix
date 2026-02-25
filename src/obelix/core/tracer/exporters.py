@@ -81,7 +81,9 @@ class ConsoleExporter(TracerExporter):
         print(f"  [{status_marker}] {span.span_type}:{span.name}{duration}")
 
     async def start_trace(self, trace: TraceSession, service_name: str) -> None:
-        print(f"\n--- Trace started: {trace.name} [{trace.trace_id[:8]}] service={service_name} ---")
+        print(
+            f"\n--- Trace started: {trace.name} [{trace.trace_id[:8]}] service={service_name} ---"
+        )
 
     async def end_trace(
         self, trace_id: str, status: SpanStatus, end_time: datetime | None
@@ -112,7 +114,11 @@ class ConsoleExporter(TracerExporter):
 class HTTPExporter(TracerExporter):
     def __init__(self, endpoint: str, timeout: float = 10.0):
         self._endpoint = endpoint
-        self._base_url = endpoint.rsplit("/ingest", 1)[0] if "/ingest" in endpoint else endpoint.rstrip("/")
+        self._base_url = (
+            endpoint.rsplit("/ingest", 1)[0]
+            if "/ingest" in endpoint
+            else endpoint.rstrip("/")
+        )
         self._timeout = timeout
         self._client: Any = None
 
@@ -197,7 +203,9 @@ class HTTPExporter(TracerExporter):
             payload = self._span_to_payload(span)
             response = await client.post(f"{self._base_url}/ingest/span", json=payload)
             response.raise_for_status()
-            logger.debug(f"Span {span.span_id[:8]} exported ({span.span_type}:{span.name})")
+            logger.debug(
+                f"Span {span.span_id[:8]} exported ({span.span_type}:{span.name})"
+            )
         except Exception as e:
             logger.error(f"Failed to export span {span.span_id[:8]}: {e}")
 

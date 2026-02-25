@@ -12,7 +12,6 @@ from obelix.core.agent.agent_factory import AgentFactory, AgentSpec
 from obelix.core.agent.base_agent import BaseAgent
 from obelix.core.agent.subagent_wrapper import SubAgentWrapper
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -65,9 +64,8 @@ class TestFactoryRegister:
     def test_register_chaining(self):
         """Multiple register() calls can be chained."""
         factory = AgentFactory()
-        result = (
-            factory.register("a", _WorkerAgent, subagent_description="A")
-            .register("b", _CoordinatorAgent, subagent_description="B")
+        result = factory.register("a", _WorkerAgent, subagent_description="A").register(
+            "b", _CoordinatorAgent, subagent_description="B"
         )
         assert result is factory
         assert factory.is_registered("a")
@@ -211,9 +209,7 @@ class TestFactoryCreateWithSubagents:
             provider=provider,
         )
         assert len(agent.registered_tools) >= 1
-        wrappers = [
-            t for t in agent.registered_tools if isinstance(t, SubAgentWrapper)
-        ]
+        wrappers = [t for t in agent.registered_tools if isinstance(t, SubAgentWrapper)]
         assert len(wrappers) == 1
         assert wrappers[0].tool_name == "worker"
 
@@ -250,7 +246,9 @@ class TestFactoryCreateWithSubagents:
         factory = AgentFactory()
         factory.register("coordinator", _CoordinatorAgent)
         child = _WorkerAgent(system_message="x", provider=provider)
-        with pytest.raises(ValueError, match="Instance-based subagents are not supported"):
+        with pytest.raises(
+            ValueError, match="Instance-based subagents are not supported"
+        ):
             factory.create(
                 "coordinator",
                 subagents=[child],
@@ -262,9 +260,7 @@ class TestFactoryCreateWithSubagents:
         """subagent_config with a key not in subagents raises ValueError."""
         provider = _make_provider()
         factory = AgentFactory()
-        factory.register(
-            "worker", _WorkerAgent, subagent_description="w"
-        )
+        factory.register("worker", _WorkerAgent, subagent_description="w")
         factory.register("coordinator", _CoordinatorAgent)
         with pytest.raises(ValueError, match="subagent_config contains keys"):
             factory.create(
@@ -294,9 +290,7 @@ class TestFactoryCreateWithSubagents:
             subagent_config={"worker": {"max_iterations": 2}},
         )
         # The subagent wrapper should have been created; we verify it exists
-        wrappers = [
-            t for t in agent.registered_tools if isinstance(t, SubAgentWrapper)
-        ]
+        wrappers = [t for t in agent.registered_tools if isinstance(t, SubAgentWrapper)]
         assert len(wrappers) == 1
         # The wrapped agent should have max_iterations=2 (from subagent_config)
         assert wrappers[0]._agent.max_iterations == 2
@@ -470,9 +464,7 @@ class TestFactoryWithMemoryGraph:
         factory.register("worker", _WorkerAgent, subagent_description="w")
         factory.register("coord", _CoordinatorAgent)
         agent = factory.create("coord", subagents=["worker"])
-        wrappers = [
-            t for t in agent.registered_tools if isinstance(t, SubAgentWrapper)
-        ]
+        wrappers = [t for t in agent.registered_tools if isinstance(t, SubAgentWrapper)]
         assert len(wrappers) == 1
         assert wrappers[0]._agent.memory_graph is mock_graph
         assert wrappers[0]._agent.agent_id == "worker"

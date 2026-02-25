@@ -6,7 +6,7 @@ exit_on_success, max_iterations, _build_final_response, _collect_tool_results,
 clear_conversation_history, register_agent, shared memory no-ops, and tool_policy.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -22,7 +22,6 @@ from obelix.core.model.tool_message import (
     ToolResult,
     ToolStatus,
 )
-
 
 # ---------------------------------------------------------------------------
 # Constructor and initialization
@@ -51,9 +50,7 @@ class TestBaseAgentConstructor:
 
     def test_max_iterations_custom(self, mock_provider):
         """Custom max_iterations is respected."""
-        agent = BaseAgent(
-            system_message="x", provider=mock_provider, max_iterations=3
-        )
+        agent = BaseAgent(system_message="x", provider=mock_provider, max_iterations=3)
         assert agent.max_iterations == 3
 
     def test_tools_none_gives_empty_list(self, mock_provider):
@@ -272,9 +269,7 @@ class TestExecuteQueryAsync:
         """BEFORE_LLM_CALL hook returning STOP bypasses provider.invoke."""
         agent = BaseAgent(system_message="x", provider=mock_provider)
         stop_msg = AssistantMessage(content="Stopped by hook")
-        agent.on(AgentEvent.BEFORE_LLM_CALL).handle(
-            HookDecision.STOP, value=stop_msg
-        )
+        agent.on(AgentEvent.BEFORE_LLM_CALL).handle(HookDecision.STOP, value=stop_msg)
         response = await agent.execute_query_async("hello")
         assert response.content == "Stopped by hook"
         mock_provider.invoke.assert_not_awaited()
@@ -299,13 +294,11 @@ class TestExecuteQueryAsync:
 
         mock_provider.invoke = AsyncMock(side_effect=invoke_side_effect)
 
-        agent = BaseAgent(
-            system_message="x", provider=mock_provider, max_iterations=3
-        )
+        agent = BaseAgent(system_message="x", provider=mock_provider, max_iterations=3)
         # RETRY only on the first call
-        agent.on(AgentEvent.AFTER_LLM_CALL).when(
-            lambda s: s.iteration == 1
-        ).handle(HookDecision.RETRY)
+        agent.on(AgentEvent.AFTER_LLM_CALL).when(lambda s: s.iteration == 1).handle(
+            HookDecision.RETRY
+        )
 
         response = await agent.execute_query_async("hello")
         assert call_count == 2
@@ -316,9 +309,7 @@ class TestExecuteQueryAsync:
         """AFTER_LLM_CALL hook returning STOP returns the hook's value as response."""
         stop_msg = AssistantMessage(content="Stopped after LLM")
         agent = BaseAgent(system_message="x", provider=mock_provider)
-        agent.on(AgentEvent.AFTER_LLM_CALL).handle(
-            HookDecision.STOP, value=stop_msg
-        )
+        agent.on(AgentEvent.AFTER_LLM_CALL).handle(HookDecision.STOP, value=stop_msg)
         response = await agent.execute_query_async("hello")
         assert response.content == "Stopped after LLM"
 
@@ -344,9 +335,7 @@ class TestExecuteQueryAsync:
 
         mock_provider.invoke = AsyncMock(side_effect=invoke_side_effect)
 
-        agent = BaseAgent(
-            system_message="x", provider=mock_provider, max_iterations=3
-        )
+        agent = BaseAgent(system_message="x", provider=mock_provider, max_iterations=3)
         agent.on(AgentEvent.BEFORE_FINAL_RESPONSE).when(
             lambda s: s.iteration == 1
         ).handle(HookDecision.RETRY)
@@ -366,9 +355,7 @@ class TestExecuteQueryAsync:
     async def test_query_as_message_list(self, mock_provider):
         """execute_query_async accepts a list with one HumanMessage."""
         agent = BaseAgent(system_message="x", provider=mock_provider)
-        response = await agent.execute_query_async(
-            [HumanMessage(content="from list")]
-        )
+        response = await agent.execute_query_async([HumanMessage(content="from list")])
         assert isinstance(response, AssistantResponse)
 
 
@@ -388,9 +375,7 @@ class TestToolExecution:
         tc = ToolCall(id="tc_1", name="calculator", arguments={"a": 1, "b": 2})
         tool_response = AssistantMessage(content="", tool_calls=[tc])
         final_response = AssistantMessage(content="Result is 3")
-        mock_provider.invoke = AsyncMock(
-            side_effect=[tool_response, final_response]
-        )
+        mock_provider.invoke = AsyncMock(side_effect=[tool_response, final_response])
 
         agent = BaseAgent(
             system_message="x",
@@ -401,7 +386,9 @@ class TestToolExecution:
         response = await agent.execute_query_async("add 1+2")
         assert response.content == "Result is 3"
         # History should contain ToolMessage
-        tool_msgs = [m for m in agent.conversation_history if isinstance(m, ToolMessage)]
+        tool_msgs = [
+            m for m in agent.conversation_history if isinstance(m, ToolMessage)
+        ]
         assert len(tool_msgs) >= 1
 
     @pytest.mark.asyncio
@@ -410,16 +397,14 @@ class TestToolExecution:
         tc = ToolCall(id="tc_1", name="nonexistent", arguments={})
         tool_response = AssistantMessage(content="", tool_calls=[tc])
         final_response = AssistantMessage(content="Done")
-        mock_provider.invoke = AsyncMock(
-            side_effect=[tool_response, final_response]
-        )
+        mock_provider.invoke = AsyncMock(side_effect=[tool_response, final_response])
 
-        agent = BaseAgent(
-            system_message="x", provider=mock_provider, max_iterations=5
-        )
+        agent = BaseAgent(system_message="x", provider=mock_provider, max_iterations=5)
         response = await agent.execute_query_async("do something")
         # Should still complete -- the error is captured in ToolResult
-        tool_msgs = [m for m in agent.conversation_history if isinstance(m, ToolMessage)]
+        tool_msgs = [
+            m for m in agent.conversation_history if isinstance(m, ToolMessage)
+        ]
         assert len(tool_msgs) >= 1
         error_results = [
             r
@@ -435,14 +420,10 @@ class TestToolExecution:
     ):
         """When a tool's execute() raises, ToolResult captures the error."""
         failing_tool = failing_tool_class()
-        tc = ToolCall(
-            id="tc_1", name="failing_tool", arguments={"input_value": "test"}
-        )
+        tc = ToolCall(id="tc_1", name="failing_tool", arguments={"input_value": "test"})
         tool_response = AssistantMessage(content="", tool_calls=[tc])
         final_response = AssistantMessage(content="Error handled")
-        mock_provider.invoke = AsyncMock(
-            side_effect=[tool_response, final_response]
-        )
+        mock_provider.invoke = AsyncMock(side_effect=[tool_response, final_response])
 
         agent = BaseAgent(
             system_message="x",
@@ -451,7 +432,9 @@ class TestToolExecution:
             max_iterations=5,
         )
         response = await agent.execute_query_async("fail please")
-        tool_msgs = [m for m in agent.conversation_history if isinstance(m, ToolMessage)]
+        tool_msgs = [
+            m for m in agent.conversation_history if isinstance(m, ToolMessage)
+        ]
         error_results = [
             r
             for tm in tool_msgs
@@ -469,9 +452,7 @@ class TestToolExecution:
         tc2 = ToolCall(id="tc_2", name="calculator", arguments={"a": 3, "b": 4})
         tool_response = AssistantMessage(content="", tool_calls=[tc1, tc2])
         final_response = AssistantMessage(content="Both done")
-        mock_provider.invoke = AsyncMock(
-            side_effect=[tool_response, final_response]
-        )
+        mock_provider.invoke = AsyncMock(side_effect=[tool_response, final_response])
 
         agent = BaseAgent(
             system_message="x",
@@ -480,7 +461,9 @@ class TestToolExecution:
             max_iterations=5,
         )
         response = await agent.execute_query_async("compute")
-        tool_msgs = [m for m in agent.conversation_history if isinstance(m, ToolMessage)]
+        tool_msgs = [
+            m for m in agent.conversation_history if isinstance(m, ToolMessage)
+        ]
         assert len(tool_msgs) >= 1
         # The tool message should have results for both calls
         all_results = [r for tm in tool_msgs for r in tm.tool_results]
@@ -728,9 +711,7 @@ class TestAsyncExecuteTool:
             provider=mock_provider,
             tools=failing_tool_class(),
         )
-        tc = ToolCall(
-            id="tc_1", name="failing_tool", arguments={"input_value": "test"}
-        )
+        tc = ToolCall(id="tc_1", name="failing_tool", arguments={"input_value": "test"})
         result = await agent._async_execute_tool(tc)
         assert result is not None
         assert result.status == ToolStatus.ERROR
@@ -806,9 +787,7 @@ class TestRegisterAgent:
         """stateless parameter is propagated to SubAgentWrapper."""
         parent = BaseAgent(system_message="parent", provider=mock_provider)
         child = BaseAgent(system_message="child", provider=mock_provider)
-        parent.register_agent(
-            child, name="worker", description="Works", stateless=True
-        )
+        parent.register_agent(child, name="worker", description="Works", stateless=True)
         assert parent.registered_tools[0]._stateless is True
 
 
@@ -937,7 +916,9 @@ class TestMaxIterations:
     """Tests for max_iterations exhaustion behavior."""
 
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="known bug: warning_msg NameError in _build_timeout_response")
+    @pytest.mark.skip(
+        reason="known bug: warning_msg NameError in _build_timeout_response"
+    )
     async def test_max_iterations_reached_returns_timeout_response(self, mock_provider):
         """When max_iterations exhausted, _build_timeout_response is called."""
         # This test documents the known bug where _build_timeout_response
@@ -946,9 +927,7 @@ class TestMaxIterations:
         mock_provider.invoke = AsyncMock(
             return_value=AssistantMessage(content="", tool_calls=[tc])
         )
-        agent = BaseAgent(
-            system_message="x", provider=mock_provider, max_iterations=1
-        )
+        agent = BaseAgent(system_message="x", provider=mock_provider, max_iterations=1)
         await agent.execute_query_async("loop forever")
 
     @pytest.mark.asyncio

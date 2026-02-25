@@ -4,13 +4,11 @@ Covers Hook fluent API, condition evaluation (sync/async), handle() chaining,
 effects execution, value transformation, and Outcome construction.
 """
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
 from obelix.core.agent.hooks import AgentEvent, AgentStatus, Hook, HookDecision, Outcome
-
 
 # ---------------------------------------------------------------------------
 # Helpers

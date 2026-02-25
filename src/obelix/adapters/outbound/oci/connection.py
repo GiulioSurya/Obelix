@@ -252,7 +252,11 @@ def _extract_text_from_chat_details(chat_details: Any) -> str:
 
     Serializes the SDK object and walks messages → content → text fields.
     """
-    serialized = _serialize_oci_model(chat_details) if hasattr(chat_details, "swagger_types") else chat_details
+    serialized = (
+        _serialize_oci_model(chat_details)
+        if hasattr(chat_details, "swagger_types")
+        else chat_details
+    )
     parts: list[str] = []
 
     chat_request = serialized.get("chatRequest", {})
@@ -288,7 +292,7 @@ class OCIGuardrailsChecker:
         self._compartment_id = compartment_id
         self._enabled = enabled
         self._threshold = threshold
-        self._client: "OCIAsyncHttpClient | None" = None
+        self._client: OCIAsyncHttpClient | None = None
 
     def attach(self, client: "OCIAsyncHttpClient") -> None:
         self._client = client
@@ -314,7 +318,9 @@ class OCIGuardrailsChecker:
         try:
             result = await self._client.apply_guardrails(body)
         except Exception as exc:
-            _logger.warning(f"[OCIGuardrailsChecker] apply_guardrails failed | error={exc}")
+            _logger.warning(
+                f"[OCIGuardrailsChecker] apply_guardrails failed | error={exc}"
+            )
             return
 
         self._evaluate(result, text, label)
@@ -343,7 +349,9 @@ class OCIGuardrailsChecker:
                 f"[OCIGuardrailsChecker] GUARDRAILS_PRE_CHECK triggered | label={label or 'unknown'} categories={flagged} text_preview={preview!r}"
             )
         else:
-            cm_scores = {c.get("name"): c.get("score") for c in cm.get("categories", [])}
+            cm_scores = {
+                c.get("name"): c.get("score") for c in cm.get("categories", [])
+            }
             _logger.debug(
                 f"[OCIGuardrailsChecker] GUARDRAILS_PRE_CHECK ok | label={label or 'unknown'} cm={cm_scores} pi={pi_score:.2f}"
             )
@@ -619,14 +627,22 @@ class OCIConnection(AbstractLLMConnection):
     _client_lock = threading.Lock()
     _initialized = False
 
-    def __new__(cls, oci_config: dict | str | None = None, guardrails_checker: OCIGuardrailsChecker | None = None):
+    def __new__(
+        cls,
+        oci_config: dict | str | None = None,
+        guardrails_checker: OCIGuardrailsChecker | None = None,
+    ):
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
                     cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, oci_config: dict | str | None = None, guardrails_checker: OCIGuardrailsChecker | None = None):
+    def __init__(
+        self,
+        oci_config: dict | str | None = None,
+        guardrails_checker: OCIGuardrailsChecker | None = None,
+    ):
         if self._initialized:
             return
         self._oci_config = self._resolve_config(oci_config)
@@ -696,4 +712,6 @@ class OCIConnection(AbstractLLMConnection):
         Raises:
             ImportError: If oci or httpx libraries are not installed
         """
-        return OCIAsyncHttpClient(self._oci_config, guardrails_checker=self._guardrails_checker)
+        return OCIAsyncHttpClient(
+            self._oci_config, guardrails_checker=self._guardrails_checker
+        )

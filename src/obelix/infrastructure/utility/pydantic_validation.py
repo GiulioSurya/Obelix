@@ -32,7 +32,9 @@ def _extract_allowed_values(err: dict) -> list[str]:
     return []
 
 
-def _suggest_similar(invalid: str, allowed: list[str], max_suggestions: int = 5) -> list[str]:
+def _suggest_similar(
+    invalid: str, allowed: list[str], max_suggestions: int = 5
+) -> list[str]:
     """Find allowed values most similar to the invalid one."""
     return difflib.get_close_matches(invalid, allowed, n=max_suggestions, cutoff=0.4)
 

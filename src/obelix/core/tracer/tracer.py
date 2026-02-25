@@ -16,7 +16,6 @@ from obelix.core.tracer.exporters import TracerExporter
 from obelix.core.tracer.models import Span, SpanStatus, SpanType, TraceSession
 from obelix.infrastructure.logging import get_logger
 
-
 logger = get_logger(__name__)
 
 

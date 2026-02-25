@@ -101,7 +101,9 @@ class AnthropicProvider(AbstractLLMProvider):
                 "type": "enabled",
                 "budget_tokens": 2000,
             }
-            logger.debug(f"[AnthropicProvider] Thinking mode enabled | model={model_id} budget_tokens={self.thinking_params.get('budget_tokens')}")
+            logger.debug(
+                f"[AnthropicProvider] Thinking mode enabled | model={model_id} budget_tokens={self.thinking_params.get('budget_tokens')}"
+            )
         else:
             self.thinking_params = {"type": "disabled"}
 
@@ -165,8 +167,12 @@ class AnthropicProvider(AbstractLLMProvider):
 
             response = await client.messages.create(**api_params)
 
-            _input_tokens = getattr(getattr(response, "usage", None), "input_tokens", None)
-            _output_tokens = getattr(getattr(response, "usage", None), "output_tokens", None)
+            _input_tokens = getattr(
+                getattr(response, "usage", None), "input_tokens", None
+            )
+            _output_tokens = getattr(
+                getattr(response, "usage", None), "output_tokens", None
+            )
             logger.info(
                 f"[AnthropicProvider] LLM call completed | model={self.model_id} input_tokens={_input_tokens} output_tokens={_output_tokens} total_tokens={(_input_tokens or 0) + (_output_tokens or 0)}"
             )
@@ -280,7 +286,9 @@ class AnthropicProvider(AbstractLLMProvider):
                 }
             )
 
-        logger.debug(f"[AnthropicProvider] Tools converted | count={len(tools)} names={[t.create_schema().name for t in tools]}")
+        logger.debug(
+            f"[AnthropicProvider] Tools converted | count={len(tools)} names={[t.create_schema().name for t in tools]}"
+        )
 
         return anthropic_tools
 
@@ -325,7 +333,9 @@ class AnthropicProvider(AbstractLLMProvider):
                         f"Failed to parse tool call block: {e}"
                     ) from e
 
-        logger.debug(f"[AnthropicProvider] Tool calls extracted | count={len(tool_calls)} names={[tc.name for tc in tool_calls]}")
+        logger.debug(
+            f"[AnthropicProvider] Tool calls extracted | count={len(tool_calls)} names={[tc.name for tc in tool_calls]}"
+        )
 
         return tool_calls
 

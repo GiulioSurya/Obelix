@@ -13,7 +13,6 @@ from obelix.core.agent.hooks import AgentEvent
 from obelix.core.model.assistant_message import AssistantMessage, AssistantResponse
 from obelix.core.model.tool_message import ToolCall, ToolResult
 
-
 # ---------------------------------------------------------------------------
 # EventContract dataclass
 # ---------------------------------------------------------------------------
@@ -107,9 +106,7 @@ class TestRetryableContracts:
     def test_only_after_llm_call_and_before_final_response_are_retryable(self):
         """Only AFTER_LLM_CALL and BEFORE_FINAL_RESPONSE have retryable=True."""
         contracts = get_event_contracts()
-        retryable_events = {
-            event for event, c in contracts.items() if c.retryable
-        }
+        retryable_events = {event for event, c in contracts.items() if c.retryable}
         assert retryable_events == {
             AgentEvent.AFTER_LLM_CALL,
             AgentEvent.BEFORE_FINAL_RESPONSE,
@@ -152,7 +149,9 @@ class TestStopOutputContracts:
     def test_before_final_response_stop_output_is_assistant_message(self):
         """BEFORE_FINAL_RESPONSE stop_output is AssistantMessage."""
         contracts = get_event_contracts()
-        assert contracts[AgentEvent.BEFORE_FINAL_RESPONSE].stop_output is AssistantMessage
+        assert (
+            contracts[AgentEvent.BEFORE_FINAL_RESPONSE].stop_output is AssistantMessage
+        )
 
     @pytest.mark.parametrize(
         "event",

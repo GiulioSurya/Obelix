@@ -201,7 +201,9 @@ class OpenAIProvider(AbstractLLMProvider):
 
             _usage = getattr(response, "usage", None)
             _input_tokens = getattr(_usage, "prompt_tokens", None) if _usage else None
-            _output_tokens = getattr(_usage, "completion_tokens", None) if _usage else None
+            _output_tokens = (
+                getattr(_usage, "completion_tokens", None) if _usage else None
+            )
             _total_tokens = getattr(_usage, "total_tokens", None) if _usage else None
             logger.info(
                 f"[OpenAIProvider] LLM call completed | model={self.model_id} input_tokens={_input_tokens} output_tokens={_output_tokens} total_tokens={_total_tokens}"
@@ -309,7 +311,9 @@ class OpenAIProvider(AbstractLLMProvider):
                 }
             )
 
-        logger.debug(f"[OpenAIProvider] Tools converted | count={len(tools)} names={[t.create_schema().name for t in tools]}")
+        logger.debug(
+            f"[OpenAIProvider] Tools converted | count={len(tools)} names={[t.create_schema().name for t in tools]}"
+        )
         return converted
 
     # ========== TOOL CALL EXTRACTION ==========

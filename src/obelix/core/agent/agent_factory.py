@@ -330,3 +330,191 @@ class AgentFactory:
         """Remove all registered agents."""
         self._registry.clear()
         logger.info("AgentFactory: registry cleared")
+
+    # ─── A2A Serve ────────────────────────────────────────────────────────────
+
+    def serve(
+        self,
+        agent: str,
+        *,
+        host: str = "0.0.0.0",
+        port: int = 8000,
+        agent_id: str | None = None,
+        version: str = "0.1.0",
+        description: str | None = None,
+        provider_name: str = "Obelix",
+        provider_url: str | None = None,
+        log_level: str = "info",
+        subagents: list[str] | None = None,
+        subagent_config: dict[str, dict[str, Any]] | None = None,
+        **create_overrides: Any,
+    ) -> None:
+        """Start an A2A server for the specified agent.
+
+        All heavy dependencies (fastapi, uvicorn) are imported lazily so the
+        core stays lightweight when serve() is not called.
+
+        Args:
+            agent: Name of the registered agent to serve.
+            host: Bind address.
+            port: Bind port.
+            agent_id: ID for the Agent Card (defaults to agent name).
+            version: Version string for the Agent Card.
+            description: Description for the Agent Card. If not provided,
+                falls back to the agent's system message (truncated).
+            provider_name: Organization name in the Agent Card.
+            provider_url: Organization URL in the Agent Card.
+            log_level: Uvicorn log level.
+            subagents: Optional list of sub-agent names to attach.
+            subagent_config: Per-subagent constructor overrides.
+            **create_overrides: Extra kwargs forwarded to create().
+        """
+        try:
+            import uvicorn  # noqa: F811
+        except ImportError as e:
+            raise ImportError(
+                "A2A serve requires extra dependencies. "
+                "Install them with: uv sync --extra serve"
+            ) from e
+
+        agent_instance = self.create(
+            agent,
+            subagents=subagents,
+            subagent_config=subagent_config,
+            **create_overrides,
+        )
+
+        app = self._create_a2a_app(
+            agent_instance=agent_instance,
+            agent_name=agent,
+            host=host,
+            port=port,
+            agent_id=agent_id,
+            version=version,
+            description=description,
+            provider_name=provider_name,
+            provider_url=provider_url,
+        )
+
+        logger.info(
+            f"AgentFactory: starting A2A server | agent={agent} host={host} port={port}"
+        )
+        uvicorn.run(app, host=host, port=port, log_level=log_level)
+
+    def _create_a2a_app(
+        self,
+        agent_instance: "BaseAgent",
+        agent_name: str,
+        host: str,
+        port: int,
+        agent_id: str | None,
+        version: str,
+        description: str | None,
+        provider_name: str,
+        provider_url: str | None,
+    ) -> Any:
+        """Build a FastAPI application with A2A routes and Agent Card."""
+        from fastapi import FastAPI
+
+        from obelix.adapters.inbound.a2a.controller import ObelixA2AController
+        from obelix.adapters.inbound.a2a.task_store import TaskStore
+
+        agent_card = self._build_agent_card(
+            agent_instance=agent_instance,
+            agent_name=agent_name,
+            host=host,
+            port=port,
+            agent_id=agent_id,
+            version=version,
+            description=description,
+            provider_name=provider_name,
+            provider_url=provider_url,
+        )
+
+        task_store = TaskStore()
+        controller = ObelixA2AController(
+            agent=agent_instance,
+            agent_card=agent_card,
+            task_store=task_store,
+        )
+
+        app = FastAPI(title=f"Obelix A2A — {agent_name}")
+        app.include_router(controller.build_router())
+        return app
+
+    def _build_agent_card(
+        self,
+        agent_instance: "BaseAgent",
+        agent_name: str,
+        host: str,
+        port: int,
+        agent_id: str | None,
+        version: str,
+        description: str | None,
+        provider_name: str,
+        provider_url: str | None,
+    ) -> dict[str, Any]:
+        """Generate an A2A-compliant Agent Card from agent metadata."""
+        from obelix.core.agent.subagent_wrapper import SubAgentWrapper
+
+        # Derive skills from registered tools and sub-agents
+        skills: list[dict[str, str]] = []
+        for tool in agent_instance.registered_tools:
+            if isinstance(tool, SubAgentWrapper):
+                skills.append(
+                    {
+                        "id": tool.tool_name,
+                        "name": tool.tool_name,
+                        "description": tool.tool_description,
+                    }
+                )
+            else:
+                tool_name = getattr(tool, "tool_name", tool.__class__.__name__)
+                tool_desc = getattr(tool, "tool_description", "")
+                skills.append(
+                    {
+                        "id": tool_name,
+                        "name": tool_name,
+                        "description": tool_desc,
+                    }
+                )
+
+        # Build URL — use localhost for display if binding to 0.0.0.0
+        display_host = "localhost" if host == "0.0.0.0" else host
+        url = f"http://{display_host}:{port}"
+
+        provider: dict[str, str] = {"organization": provider_name}
+        if provider_url:
+            provider["url"] = provider_url
+
+        # Description: explicit override > system message fallback
+        if description:
+            card_description = description
+        elif agent_instance.system_message.content:
+            card_description = agent_instance.system_message.content[:200]
+        else:
+            card_description = f"Obelix agent: {agent_name}"
+
+        card: dict[str, Any] = {
+            "id": agent_id or agent_name,
+            "name": agent_name,
+            "version": version,
+            "description": card_description,
+            "provider": provider,
+            "url": url,
+            "defaultInputModes": ["text/plain"],
+            "defaultOutputModes": ["text/plain"],
+            "capabilities": {
+                "streaming": False,
+                "pushNotifications": False,
+                "extendedAgentCard": False,
+            },
+            "skills": skills,
+            "securitySchemes": {},
+            "security": [],
+        }
+
+        logger.info(
+            f"AgentFactory: Agent Card built | id={card['id']} skills={len(skills)}"
+        )
+        return card

@@ -109,7 +109,9 @@ class BaseAgent:
                         "The manager must be connected before registration."
                     )
         except ImportError:
-            logger.debug("[BaseAgent] MCP plugin unavailable — skipping MCP connectivity check")
+            logger.debug(
+                "[BaseAgent] MCP plugin unavailable — skipping MCP connectivity check"
+            )
 
         if tool not in self.registered_tools:
             self.registered_tools.append(tool)
@@ -346,7 +348,9 @@ class BaseAgent:
                     self.agent_usage.add_usage(assistant_msg.usage)
 
                 if not assistant_msg.tool_calls and not assistant_msg.content:
-                    logger.info(f"[{self.__class__.__name__}] LLM returned empty response — no content, no tool calls | iteration={iteration}")
+                    logger.info(
+                        f"[{self.__class__.__name__}] LLM returned empty response — no content, no tool calls | iteration={iteration}"
+                    )
                     self.conversation_history.append(assistant_msg)
                     outcome = await self._run_hooks(
                         AgentEvent.BEFORE_FINAL_RESPONSE,
@@ -654,7 +658,9 @@ class BaseAgent:
                         error=f"Tool execution error: {e}",
                     )
 
-        registered_names = [getattr(t, "tool_name", t.__class__.__name__) for t in self.registered_tools]
+        registered_names = [
+            getattr(t, "tool_name", t.__class__.__name__) for t in self.registered_tools
+        ]
         logger.error(
             f"[{self.__class__.__name__}] Tool not found — LLM requested an unregistered tool | requested_tool={tool_call.name} registered={registered_names}"
         )
@@ -884,7 +890,9 @@ class BaseAgent:
             stateless=stateless,
         )
         self.registered_tools.append(wrapper)
-        logger.info(f"[{self.__class__.__name__}] Sub-agent registered as tool | sub_agent={name} stateless={stateless}")
+        logger.info(
+            f"[{self.__class__.__name__}] Sub-agent registered as tool | sub_agent={name} stateless={stateless}"
+        )
 
     def clear_conversation_history(self, keep_system_message: bool = True):
         """

@@ -27,7 +27,6 @@ from obelix.adapters.outbound.openai.provider import OpenAIProvider
 from obelix.core.model.tool_message import ToolRequirement
 from obelix.infrastructure.logging import setup_logging
 from obelix.core.tracer import Tracer, HTTPExporter
-from obelix.plugins.builtin.ask_user_question_tool import AskUserQuestionTool
 
 load_dotenv()
 
@@ -75,7 +74,7 @@ class MathAgent(BaseAgent):
     def __init__(self, **kwargs):
         super().__init__(
             system_message="You are a math expert equipped with a calculator tool. Use it to solve equations.",
-            provider=OpenAIProvider(connection=openai_connection, model_id="claude-3-5-haiku-20241022"),
+            provider=OpenAIProvider(connection=openai_connection, model_id="claude-haiku-4-5-20251001"),
             tool_policy=[
                 ToolRequirement(
                     tool_name="calculator",
@@ -110,7 +109,7 @@ class ReportAgent(BaseAgent):
                 "   - A brief summary comment\n"
                 "ALWAYS respond in a structured format."
             ),
-            provider=OpenAIProvider(connection=openai_connection, model_id="claude-3-5-haiku-20241022"),
+            provider=OpenAIProvider(connection=openai_connection, model_id="claude-haiku-4-5-20251001"),
             **kwargs,
         )
 
@@ -122,16 +121,12 @@ class CoordinatorAgent(BaseAgent):
         super().__init__(
             system_message=(
                 "You are an orchestrator agent with a Math Agent and a Report Agent.\n"
-                "MANDATORY RULES:\n"
-                "- You MUST ALWAYS use ask_user_question to collect or confirm input.\n"
-                "- You CANNOT call the Math Agent without first using ask_user_question.\n"
-                "- If information is missing or ambiguous, stop and ask for clarification.\n"
-                "- Only after the user responds can you call the Math Agent.\n"
+                "RULES:\n"
+                "- Use the Math Agent to perform any calculations.\n"
                 "- After the Math Agent responds, call the Report Agent to format the results.\n"
-                "Use the ask_user_question tool at least once."
+                "- Always delegate math work to the Math Agent, never compute yourself."
             ),
-            provider=OpenAIProvider(connection=openai_connection, model_id="claude-3-5-haiku-20241022"),
-            tools=AskUserQuestionTool,
+            provider=OpenAIProvider(connection=openai_connection, model_id="claude-haiku-4-5-20251001"),
             **kwargs,
         )
 
@@ -180,25 +175,35 @@ def create_factory() -> AgentFactory:
 
 
 if __name__ == "__main__":
+    # # ─── Direct execution (query + print) ────────────────────────────────
+    # factory = create_factory()
+    #
+    # # Create orchestrator with both subagents.
+    # # The factory injects the dependency awareness message so the coordinator
+    # # knows to call math_agent before report_agent.
+    # coordinator = factory.create(
+    #     "coordinator",
+    #     subagents=["math_agent", "report_agent"]
+    # )
+    #
+    # # Execute query
+    # response = coordinator.execute_query(
+    #     "What is ((18 + 6) * (14 - 8)) and also solve ((48-5)+25/8*(35+9))? "
+    #     "After the calculations, generate a formatted report of the results."
+    # )
+    #
+    # # Print conversation history
+    # print("\n" + "=" * 50)
+    # print("CONVERSATION HISTORY")
+    # print("=" * 50)
+    # for element in coordinator.conversation_history:
+    #     print(element.model_dump_json(indent=4))
+
+    # ─── A2A serve (requires: uv sync --extra serve) ─────────────────────
     factory = create_factory()
-
-    # Create orchestrator with both subagents.
-    # The factory injects the dependency awareness message so the coordinator
-    # knows to call math_agent before report_agent.
-    coordinator = factory.create(
+    factory.serve(
         "coordinator",
-        subagents=["math_agent", "report_agent"]
+        subagents=["math_agent", "report_agent"],
+        port=8000,
+        description="Math coordinator with calculator and report sub-agents",
     )
-
-    # Execute query
-    response = coordinator.execute_query(
-        "What is ((18 + 6) * (14 - 8)) and also solve ((48-5)+25/8*(35+9))? "
-        "After the calculations, generate a formatted report of the results."
-    )
-
-    # Print conversation history
-    print("\n" + "=" * 50)
-    print("CONVERSATION HISTORY")
-    print("=" * 50)
-    for element in coordinator.conversation_history:
-        print(element.model_dump_json(indent=4))

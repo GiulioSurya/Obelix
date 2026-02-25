@@ -26,6 +26,11 @@ ollama = ["ollama>=0.6.0"]
 vllm = ["vllm>=0.13.0"]
 mcp = ["mcp>=1.25.0"]
 tracer = ["httpx>=0.28.0"]
+serve = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "a2a-sdk>=0.3.10",
+]
 
 all-llm = [
     "anthropic>=0.71.0",

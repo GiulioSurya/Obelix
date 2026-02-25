@@ -5,16 +5,20 @@ stateless execution, stateful execution, and MCP schema generation.
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import Field
 
 from obelix.core.agent.base_agent import BaseAgent
 from obelix.core.agent.subagent_wrapper import SubAgentWrapper
-from obelix.core.model.assistant_message import AssistantMessage, AssistantResponse
-from obelix.core.model.tool_message import MCPToolSchema, ToolCall, ToolResult, ToolStatus
-
+from obelix.core.model.assistant_message import AssistantMessage
+from obelix.core.model.tool_message import (
+    MCPToolSchema,
+    ToolCall,
+    ToolResult,
+    ToolStatus,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
