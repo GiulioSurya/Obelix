@@ -242,6 +242,7 @@ class BaseAgent:
                 SpanType.agent,
                 self.__class__.__name__,
                 input=query if isinstance(query, str) else f"{len(query)} messages",
+                metadata={"system_prompt": self.system_message.content},
             )
 
         collected_tool_results = []
