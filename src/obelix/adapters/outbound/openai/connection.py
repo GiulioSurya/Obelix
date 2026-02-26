@@ -70,7 +70,7 @@ class OpenAIConnection(AbstractLLMConnection):
         except ImportError:
             raise ImportError(
                 "openai is not installed. Install with: pip install openai"
-            )
+            ) from None
 
         if self._base_url:
             return AsyncOpenAI(api_key=self._api_key, base_url=self._base_url)

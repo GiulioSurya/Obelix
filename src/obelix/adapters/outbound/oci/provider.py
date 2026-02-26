@@ -27,7 +27,7 @@ try:
         ResponseJsonSchema,
     )
 except ImportError:
-    raise ImportError("oci is not installed. Install with: pip install oci")
+    raise ImportError("oci is not installed. Install with: pip install oci") from None
 
 from obelix.adapters.outbound.oci.connection import (
     OCIConnection,

@@ -12,7 +12,10 @@ AsyncClient is natively async - no asyncio.to_thread() needed.
 
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pydantic import BaseModel
 
 from pydantic import ValidationError
 from tenacity import (
@@ -24,9 +27,11 @@ from tenacity import (
 )
 
 try:
-    from ollama import AsyncClient, RequestError, ResponseError
+    from ollama import AsyncClient, ResponseError
 except ImportError:
-    raise ImportError("ollama is not installed. Install with: pip install ollama")
+    raise ImportError(
+        "ollama is not installed. Install with: pip install ollama"
+    ) from None
 
 from obelix.core.model import (
     AssistantMessage,

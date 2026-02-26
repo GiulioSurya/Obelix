@@ -11,7 +11,10 @@ Supports OpenAI GPT models and any OpenAI-compatible API
 
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pydantic import BaseModel
 
 from openai import (
     APIConnectionError,

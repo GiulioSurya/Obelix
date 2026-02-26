@@ -13,7 +13,10 @@ Tool calls are text-based: parsed from JSON in generated output text.
 import asyncio
 import json
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pydantic import BaseModel
 
 from pydantic import ValidationError
 
@@ -34,7 +37,7 @@ try:
     from vllm import LLM
     from vllm.sampling_params import SamplingParams
 except ImportError:
-    raise ImportError("vLLM is not installed. Install with: pip install vllm")
+    raise ImportError("vLLM is not installed. Install with: pip install vllm") from None
 
 logger = get_logger(__name__)
 
@@ -374,7 +377,7 @@ class VLLMProvider(AbstractLLMProvider):
         except (ValidationError, KeyError) as e:
             raise ToolCallExtractionError(
                 f"Failed to extract tool call '{obj.get('name', 'unknown')}': {e}"
-            )
+            ) from e
 
     def _extract_tool_calls_from_text(self, content: str) -> list[ToolCall]:
         """Fallback: find and parse JSON object from text content."""

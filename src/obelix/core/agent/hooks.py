@@ -12,7 +12,7 @@ The API uses when(...) and handle(...) to define:
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Optional
 
 from obelix.infrastructure.logging import get_logger
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from obelix.core.model.tool_message import ToolCall, ToolResult
 
 
-class AgentEvent(str, Enum):
+class AgentEvent(StrEnum):
     """Agent lifecycle events"""
 
     # === LLM ===
@@ -55,7 +55,7 @@ class AgentEvent(str, Enum):
     """End of execution (success or error)"""
 
 
-class HookDecision(str, Enum):
+class HookDecision(StrEnum):
     """Hook decision for flow control"""
 
     CONTINUE = "continue"

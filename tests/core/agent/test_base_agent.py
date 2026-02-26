@@ -340,7 +340,7 @@ class TestExecuteQueryAsync:
             lambda s: s.iteration == 1
         ).handle(HookDecision.RETRY)
 
-        response = await agent.execute_query_async("hello")
+        await agent.execute_query_async("hello")
         assert call_count == 2
 
     @pytest.mark.asyncio
@@ -400,7 +400,7 @@ class TestToolExecution:
         mock_provider.invoke = AsyncMock(side_effect=[tool_response, final_response])
 
         agent = BaseAgent(system_message="x", provider=mock_provider, max_iterations=5)
-        response = await agent.execute_query_async("do something")
+        await agent.execute_query_async("do something")
         # Should still complete -- the error is captured in ToolResult
         tool_msgs = [
             m for m in agent.conversation_history if isinstance(m, ToolMessage)
@@ -431,7 +431,7 @@ class TestToolExecution:
             tools=failing_tool,
             max_iterations=5,
         )
-        response = await agent.execute_query_async("fail please")
+        await agent.execute_query_async("fail please")
         tool_msgs = [
             m for m in agent.conversation_history if isinstance(m, ToolMessage)
         ]
@@ -460,7 +460,7 @@ class TestToolExecution:
             tools=calculator_tool,
             max_iterations=5,
         )
-        response = await agent.execute_query_async("compute")
+        await agent.execute_query_async("compute")
         tool_msgs = [
             m for m in agent.conversation_history if isinstance(m, ToolMessage)
         ]
@@ -916,30 +916,24 @@ class TestMaxIterations:
     """Tests for max_iterations exhaustion behavior."""
 
     @pytest.mark.asyncio
-    @pytest.mark.skip(
-        reason="known bug: warning_msg NameError in _build_timeout_response"
-    )
     async def test_max_iterations_reached_returns_timeout_response(self, mock_provider):
         """When max_iterations exhausted, _build_timeout_response is called."""
-        # This test documents the known bug where _build_timeout_response
-        # references an undefined `warning_msg` variable.
         tc = ToolCall(id="tc_1", name="calc", arguments={})
         mock_provider.invoke = AsyncMock(
             return_value=AssistantMessage(content="", tool_calls=[tc])
         )
         agent = BaseAgent(system_message="x", provider=mock_provider, max_iterations=1)
-        await agent.execute_query_async("loop forever")
+        result = await agent.execute_query_async("loop forever")
+        assert "stopped after 1 iterations" in result.content.lower()
+        assert result.error is not None
 
     @pytest.mark.asyncio
-    async def test_max_iterations_reached_raises_name_error(
+    async def test_max_iterations_reached_returns_timeout_with_tools(
         self, mock_provider, calculator_tool_class
     ):
-        """Max iterations triggers _build_timeout_response which has NameError bug.
+        """When max_iterations exhausted with successful tools, returns timeout response.
 
-        The bug only fires when execution_error is None (all tools succeed).
-        Using a non-existent tool would set execution_error, short-circuiting
-        the `execution_error or warning_msg` expression and hiding the bug.
-        We use a real registered tool that succeeds so execution_error stays None.
+        Previously this triggered a NameError (warning_msg undefined), now fixed.
         """
         tc = ToolCall(id="tc_1", name="calculator", arguments={"a": 1, "b": 2})
         mock_provider.invoke = AsyncMock(
@@ -951,10 +945,9 @@ class TestMaxIterations:
             max_iterations=1,
             tools=calculator_tool_class(),
         )
-        # The bug: _build_timeout_response uses `warning_msg` which is undefined.
-        # It only triggers when execution_error is None (tools all succeeded).
-        with pytest.raises(NameError):
-            await agent.execute_query_async("loop")
+        result = await agent.execute_query_async("loop")
+        assert "stopped after 1 iterations" in result.content.lower()
+        assert result.error is not None
 
 
 # ---------------------------------------------------------------------------

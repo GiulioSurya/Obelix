@@ -8,7 +8,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from obelix.core.agent.base_agent import BaseAgent
 from obelix.core.agent.subagent_wrapper import SubAgentWrapper
@@ -221,7 +221,7 @@ class TestBuildQuery:
         agent = _SimpleAgent(system_message="x", provider=mock_provider)
         wrapper = SubAgentWrapper(agent, name="w", description="d")
         tc = ToolCall(id="tc_1", name="w", arguments={})
-        with pytest.raises(Exception):  # Pydantic ValidationError
+        with pytest.raises(ValidationError):
             wrapper._build_query(tc)
 
 

@@ -64,6 +64,6 @@ class AnthropicConnection(AbstractLLMConnection):
         except ImportError:
             raise ImportError(
                 "anthropic is not installed. Install with: pip install anthropic"
-            )
+            ) from None
 
         return AsyncAnthropic(api_key=self._api_key)

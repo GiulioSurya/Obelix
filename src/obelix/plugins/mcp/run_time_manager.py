@@ -173,7 +173,7 @@ class MCPRuntimeManager:
                 raise result
             return result
         except queue.Empty:
-            raise TimeoutError("Command timeout")
+            raise TimeoutError("Command timeout") from None
 
     # Public interface - all synchronous methods
     def get_tools(self) -> list:
@@ -212,7 +212,7 @@ class MCPRuntimeManager:
         """Check if connected"""
         try:
             return self._send_command("is_connected")
-        except:
+        except Exception:
             return False
 
     def shutdown(self):
@@ -229,7 +229,7 @@ class MCPRuntimeManager:
                     asyncio.run_coroutine_threadsafe(
                         self._mcp_manager.disconnect(), self._loop
                     ).result(timeout=5)
-            except:
+            except Exception:
                 pass
 
 

@@ -274,7 +274,9 @@ class BaseAgent:
                     if isinstance(query, str)
                     else str([m.content for m in query if isinstance(m, HumanMessage)])
                 )
-                await self._tracer.start_span(SpanType.human, "human.input", input=query_text)
+                await self._tracer.start_span(
+                    SpanType.human, "human.input", input=query_text
+                )
                 await self._tracer.end_span(output=query_text)
 
             for iteration in range(1, self.max_iterations + 1):

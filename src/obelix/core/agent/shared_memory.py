@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 import networkx as nx
 
@@ -14,7 +14,7 @@ from obelix.infrastructure.logging import get_logger
 logger = get_logger(__name__)
 
 
-class PropagationPolicy(str, Enum):
+class PropagationPolicy(StrEnum):
     FINAL_RESPONSE_ONLY = "final_response_only"
     LAST_TOOL_RESULT = "last_tool_result"
 

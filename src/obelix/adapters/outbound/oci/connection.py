@@ -132,8 +132,7 @@ class DotDict:
             for item in raw_data:
                 yield self._wrap(item)
         elif isinstance(raw_data, dict):
-            for key in raw_data:
-                yield key
+            yield from raw_data
 
     def __bool__(self) -> bool:
         return bool(object.__getattribute__(self, "data"))
@@ -379,7 +378,9 @@ class OCIAsyncHttpClient:
         try:
             from oci.signer import Signer
         except ImportError:
-            raise ImportError("oci is not installed. Install with: pip install oci")
+            raise ImportError(
+                "oci is not installed. Install with: pip install oci"
+            ) from None
 
         self._region = config.get("region", "us-chicago-1")
         self._endpoint = _build_service_endpoint(self._region)
@@ -681,7 +682,9 @@ class OCIConnection(AbstractLLMConnection):
         try:
             from oci.config import from_file
         except ImportError:
-            raise ImportError("oci is not installed. Install with: pip install oci")
+            raise ImportError(
+                "oci is not installed. Install with: pip install oci"
+            ) from None
 
         return from_file(config_path, "DEFAULT")
 

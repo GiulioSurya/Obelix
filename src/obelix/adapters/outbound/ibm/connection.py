@@ -75,7 +75,7 @@ class IBMConnection(AbstractLLMConnection):
         except ImportError:
             raise ImportError(
                 "ibm-watsonx-ai is not installed. Install with: pip install ibm-watsonx-ai"
-            )
+            ) from None
 
         return Credentials(
             url=self._url,

@@ -131,10 +131,10 @@ class MCPValidator:
 
         except ValidationError as e:
             # Convert Pydantic errors to more user-friendly format
-            raise MCPValidationError(tool_name, e.errors())
+            raise MCPValidationError(tool_name, e.errors()) from e
         except Exception as e:
             # Handle other errors
-            raise MCPValidationError(tool_name, [{"error": str(e)}])
+            raise MCPValidationError(tool_name, [{"error": str(e)}]) from e
 
     def _preprocess_json_strings(self, json_schema: dict, raw_args: dict) -> dict:
         """

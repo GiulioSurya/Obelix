@@ -12,21 +12,24 @@ The coordinator calls math_agent first, which publishes its result
 to the SharedMemoryGraph. When report_agent runs, it pulls the math
 result via shared memory and produces a formatted report.
 """
+
 import os
 
 from dotenv import load_dotenv
 from pydantic import Field
 
+from obelix.adapters.outbound.anthropic.connection import AnthropicConnection
+from obelix.adapters.outbound.anthropic.provider import AnthropicProvider
+from obelix.adapters.outbound.openai.connection import OpenAIConnection
+from obelix.adapters.outbound.openai.provider import OpenAIProvider
 from obelix.core.agent import BaseAgent, SharedMemoryGraph
 from obelix.core.agent.agent_factory import AgentFactory
 from obelix.core.agent.shared_memory import PropagationPolicy
+from obelix.core.model.tool_message import ToolRequirement
 from obelix.core.tool.tool_base import Tool
 from obelix.core.tool.tool_decorator import tool
-from obelix.adapters.outbound.openai.connection import OpenAIConnection
-from obelix.adapters.outbound.openai.provider import OpenAIProvider
-from obelix.core.model.tool_message import ToolRequirement
+from obelix.core.tracer import HTTPExporter, Tracer
 from obelix.infrastructure.logging import setup_logging
-from obelix.core.tracer import Tracer, HTTPExporter
 
 load_dotenv()
 
@@ -42,11 +45,28 @@ openai_connection = OpenAIConnection(
     base_url="https://api.anthropic.com/v1/",
 )
 
+open_ai_client = OpenAIProvider(
+    connection=openai_connection, model_id="claude-haiku-4-5-20251001"
+)
+
+anthropic_connection = AnthropicConnection(api_key=anthropic_api_key)
+
+anthropic_client = AnthropicProvider(
+    connection=anthropic_connection,
+    model_id="claude-haiku-4-5-20251001",
+    thinking_mode=True,
+    thinking_params={
+        "type": "enabled",
+        "budget_tokens": 2000,
+    },
+)
 
 
 @tool(name="calculator", description="Performs basic arithmetic operations")
 class CalculatorTool(Tool):
-    operation: str = Field(..., description="Operation: add, subtract, multiply, divide")
+    operation: str = Field(
+        ..., description="Operation: add, subtract, multiply, divide"
+    )
     a: float = Field(..., description="First number")
     b: float = Field(..., description="Second number")
 
@@ -65,22 +85,23 @@ class CalculatorTool(Tool):
         return {"result": result}
 
 
-
 class MathAgent(BaseAgent):
     """Math expert agent."""
 
-    context: str = Field(default="", description="Use this field to provide more specific instructions")
+    context: str = Field(
+        default="", description="Use this field to provide more specific instructions"
+    )
 
     def __init__(self, **kwargs):
         super().__init__(
             system_message="You are a math expert equipped with a calculator tool. Use it to solve equations.",
-            provider=OpenAIProvider(connection=openai_connection, model_id="claude-haiku-4-5-20251001"),
+            provider=anthropic_client,
             tool_policy=[
                 ToolRequirement(
                     tool_name="calculator",
                     require_success=True,
                     min_calls=1,
-                    error_message="You must use the calculator tool to solve the equation"
+                    error_message="You must use the calculator tool to solve the equation",
                 )
             ],
             **kwargs,
@@ -109,7 +130,7 @@ class ReportAgent(BaseAgent):
                 "   - A brief summary comment\n"
                 "ALWAYS respond in a structured format."
             ),
-            provider=OpenAIProvider(connection=openai_connection, model_id="claude-haiku-4-5-20251001"),
+            provider=anthropic_client,
             **kwargs,
         )
 
@@ -126,10 +147,9 @@ class CoordinatorAgent(BaseAgent):
                 "- After the Math Agent responds, call the Report Agent to format the results.\n"
                 "- Always delegate math work to the Math Agent, never compute yourself."
             ),
-            provider=OpenAIProvider(connection=openai_connection, model_id="claude-haiku-4-5-20251001"),
+            provider=open_ai_client,
             **kwargs,
         )
-
 
 
 def create_memory_graph() -> SharedMemoryGraph:
@@ -137,7 +157,9 @@ def create_memory_graph() -> SharedMemoryGraph:
     graph = SharedMemoryGraph()
     graph.add_agent("math_agent")
     graph.add_agent("report_agent")
-    graph.add_edge("math_agent", "report_agent", policy=PropagationPolicy.FINAL_RESPONSE_ONLY)
+    graph.add_edge(
+        "math_agent", "report_agent", policy=PropagationPolicy.FINAL_RESPONSE_ONLY
+    )
     return graph
 
 
@@ -175,35 +197,34 @@ def create_factory() -> AgentFactory:
 
 
 if __name__ == "__main__":
-    # # ─── Direct execution (query + print) ────────────────────────────────
-    # factory = create_factory()
-    #
-    # # Create orchestrator with both subagents.
-    # # The factory injects the dependency awareness message so the coordinator
-    # # knows to call math_agent before report_agent.
-    # coordinator = factory.create(
-    #     "coordinator",
-    #     subagents=["math_agent", "report_agent"]
-    # )
-    #
-    # # Execute query
-    # response = coordinator.execute_query(
-    #     "What is ((18 + 6) * (14 - 8)) and also solve ((48-5)+25/8*(35+9))? "
-    #     "After the calculations, generate a formatted report of the results."
-    # )
-    #
-    # # Print conversation history
-    # print("\n" + "=" * 50)
-    # print("CONVERSATION HISTORY")
-    # print("=" * 50)
-    # for element in coordinator.conversation_history:
-    #     print(element.model_dump_json(indent=4))
-
-    # ─── A2A serve (requires: uv sync --extra serve) ─────────────────────
+    # ─── Direct execution (query + print) ────────────────────────────────
     factory = create_factory()
-    factory.serve(
-        "coordinator",
-        subagents=["math_agent", "report_agent"],
-        port=8000,
-        description="Math coordinator with calculator and report sub-agents",
+
+    # Create orchestrator with both subagents.
+    # The factory injects the dependency awareness message so the coordinator
+    # knows to call math_agent before report_agent.
+    coordinator = factory.create(
+        "coordinator", subagents=["math_agent", "report_agent"]
     )
+
+    # Execute query
+    response = coordinator.execute_query(
+        "What is ((18 + 6) * (14 - 8)) and also solve ((48-5)+25/8*(35+9))? "
+        "After the calculations, generate a formatted report of the results."
+    )
+
+    # Print conversation history
+    print("\n" + "=" * 50)
+    print("CONVERSATION HISTORY")
+    print("=" * 50)
+    for element in coordinator.conversation_history:
+        print(element.model_dump_json(indent=4))
+
+    # # ─── A2A serve (requires: uv sync --extra serve) ─────────────────────
+    # factory = create_factory()
+    # factory.serve(
+    #     "coordinator",
+    #     subagents=["math_agent", "report_agent"],
+    #     port=8000,
+    #     description="Math coordinator with calculator and report sub-agents",
+    # )
