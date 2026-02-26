@@ -229,13 +229,16 @@ class BaseAgent:
         Asynchronous query execution (core execution engine)
         """
         if self._tracer:
+            from obelix.core.tracer.context import get_current_trace
             from obelix.core.tracer.models import SpanType
 
-            await self._tracer.start_trace(
-                name=self.__class__.__name__,
-                metadata={"agent_name": self.__class__.__name__},
-            )
-            self._tracer.start_span(
+            self._is_root_trace = get_current_trace() is None
+            if self._is_root_trace:
+                await self._tracer.start_trace(
+                    name=self.__class__.__name__,
+                    metadata={"agent_name": self.__class__.__name__},
+                )
+            await self._tracer.start_span(
                 SpanType.agent,
                 self.__class__.__name__,
                 input=query if isinstance(query, str) else f"{len(query)} messages",
@@ -264,12 +267,22 @@ class BaseAgent:
             )
 
         try:
+            if self._tracer:
+                query_text = (
+                    query
+                    if isinstance(query, str)
+                    else str([m.content for m in query if isinstance(m, HumanMessage)])
+                )
+                await self._tracer.start_span(SpanType.human, "human.input", input=query_text)
+                await self._tracer.end_span(output=query_text)
+
             for iteration in range(1, self.max_iterations + 1):
                 outcome = await self._run_hooks(
                     AgentEvent.BEFORE_LLM_CALL, iteration=iteration
                 )
                 if outcome.decision == HookDecision.STOP:
                     assistant_msg = outcome.value
+                    await self._emit_assistant_span(assistant_msg)
                     response = self._build_final_response(
                         assistant_msg, collected_tool_results, execution_error
                     )
@@ -283,7 +296,7 @@ class BaseAgent:
                     raise RuntimeError("Hook BEFORE_LLM_CALL requested FAIL")
 
                 if self._tracer:
-                    self._tracer.start_span(
+                    await self._tracer.start_span(
                         SpanType.llm,
                         f"llm.{self.provider.provider_type}",
                         input={
@@ -333,6 +346,7 @@ class BaseAgent:
                     raise RuntimeError("Hook AFTER_LLM_CALL requested FAIL")
                 if outcome.decision == HookDecision.STOP:
                     assistant_msg = outcome.value
+                    await self._emit_assistant_span(assistant_msg)
                     response = self._build_final_response(
                         assistant_msg, collected_tool_results, execution_error
                     )
@@ -365,6 +379,7 @@ class BaseAgent:
                             "Required tool call missing before final response"
                         )
                     assistant_msg = outcome.value
+                    await self._emit_assistant_span(assistant_msg)
                     response = self._build_final_response(
                         assistant_msg, collected_tool_results, execution_error
                     )
@@ -400,6 +415,7 @@ class BaseAgent:
                                 "Required tool call missing before final response"
                             )
                         assistant_msg = outcome.value
+                        await self._emit_assistant_span(assistant_msg)
                         response = self._build_final_response(
                             assistant_msg, collected_tool_results, execution_error
                         )
@@ -429,6 +445,7 @@ class BaseAgent:
                         "Required tool call missing before final response"
                     )
                 assistant_msg = outcome.value
+                await self._emit_assistant_span(assistant_msg)
                 response = self._build_final_response(
                     assistant_msg, collected_tool_results, execution_error
                 )
@@ -501,6 +518,22 @@ class BaseAgent:
         called_tools = {r.tool_name for r in iteration_results}
         return called_tools.issubset(self._exit_on_success)
 
+    async def _emit_assistant_span(self, assistant_msg: AssistantMessage) -> None:
+        if not self._tracer:
+            return
+        from obelix.core.tracer.models import SpanType
+
+        await self._tracer.start_span(
+            SpanType.assistant,
+            "assistant.response",
+            input={"has_tool_calls": bool(assistant_msg.tool_calls)},
+        )
+        await self._tracer.end_span(
+            output={
+                "content": assistant_msg.content or None,
+            }
+        )
+
     async def _end_trace(self, error: str | None = None) -> None:
         """End the agent span and trace if tracer is active."""
         if not self._tracer:
@@ -509,7 +542,8 @@ class BaseAgent:
 
         status = SpanStatus.error if error else SpanStatus.ok
         await self._tracer.end_span(status=status, error=error)  # agent span
-        await self._tracer.end_trace(status=status, error=error)
+        if getattr(self, "_is_root_trace", False):
+            await self._tracer.end_trace(status=status, error=error)
 
     def _build_final_response(
         self,
@@ -551,7 +585,7 @@ class BaseAgent:
             agent_name=self.__class__.__name__,
             content=f"Execution stopped after {max_iterations} iterations.",
             tool_results=collected_tool_results if collected_tool_results else None,
-            error=execution_error or warning_msg,
+            error=execution_error or f"Max iterations ({max_iterations}) reached",
         )
 
     async def _execute_single_tool_with_hooks(
@@ -569,7 +603,7 @@ class BaseAgent:
                 for t in self.registered_tools
             )
             _tool_span_type = SpanType.sub_agent if _is_subagent else SpanType.tool
-            self._tracer.start_span(
+            await self._tracer.start_span(
                 _tool_span_type,
                 call.name,
                 input={

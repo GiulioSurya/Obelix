@@ -1,0 +1,917 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OBELIX Tracer</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=Syne:wght@400;600;700;800&display=swap');
+
+  :root {
+    --bg: #0d0f14;
+    --surface: #13161e;
+    --surface2: #1a1e28;
+    --border: #252a38;
+    --border2: #2e3447;
+    --text: #e2e8f0;
+    --muted: #6b7894;
+    --accent: #4f8ef7;
+    --accent-dim: rgba(79,142,247,0.12);
+    --green: #34d399;
+    --green-dim: rgba(52,211,153,0.12);
+    --orange: #fb923c;
+    --orange-dim: rgba(251,146,60,0.1);
+    --purple: #a78bfa;
+    --purple-dim: rgba(167,139,250,0.12);
+    --red: #f87171;
+    --red-dim: rgba(248,113,113,0.1);
+    --yellow: #fbbf24;
+    --human: #60a5fa;
+    --human-dim: rgba(96,165,250,0.1);
+    --assistant: #34d399;
+    --assistant-dim: rgba(52,211,153,0.1);
+  }
+
+  * { box-sizing:border-box; margin:0; padding:0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    min-height: 100vh;
+    overflow: hidden;
+  }
+
+  .app {
+    display: grid;
+    grid-template-rows: 48px 1fr;
+    grid-template-columns: 330px 1fr;
+    height: 100vh;
+  }
+
+  /* ── TOPBAR ── */
+  .topbar {
+    grid-column: 1 / -1;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    gap: 16px;
+  }
+  .logo { font-family:'Syne',sans-serif; font-weight:800; font-size:15px; letter-spacing:0.08em; color:var(--accent); text-transform:uppercase; }
+  .logo span { color:var(--muted); font-weight:400; }
+  .topbar-sep { width:1px; height:20px; background:var(--border); }
+  .run-id { color:var(--muted); font-size:11px; }
+  .run-id b { color:var(--text); }
+  .badge { display:inline-flex; align-items:center; gap:5px; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; }
+  .badge-success { background:var(--green-dim); color:var(--green); border:1px solid rgba(52,211,153,0.2); }
+  .topbar-right { margin-left:auto; display:flex; align-items:center; gap:12px; color:var(--muted); font-size:11px; }
+  .metric { display:flex; flex-direction:column; align-items:flex-end; }
+  .metric-val { color:var(--text); font-size:13px; }
+  .metric-lbl { font-size:9px; letter-spacing:0.08em; text-transform:uppercase; }
+
+  /* ── TREE PANEL ── */
+  .tree-panel {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 8px 0;
+  }
+  .tree-panel::-webkit-scrollbar { width:4px; }
+  .tree-panel::-webkit-scrollbar-track { background:transparent; }
+  .tree-panel::-webkit-scrollbar-thumb { background:var(--border2); border-radius:2px; }
+
+  .tree-header {
+    padding: 8px 16px 10px;
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 4px;
+  }
+
+  /* Node row */
+  .node {
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  .node:hover > .node-row { background: rgba(255,255,255,0.025); }
+  .node.active > .node-row { background: var(--accent-dim); border-right: 2px solid var(--accent); }
+
+  .node-row {
+    display: flex;
+    align-items: center;
+    padding: 5px 14px;
+    gap: 7px;
+    min-height: 30px;
+  }
+
+  .node-indent {
+    flex-shrink: 0;
+    display: flex;
+  }
+  .indent-unit { width: 18px; flex-shrink:0; }
+
+  /* Tree lines */
+  .tree-vline {
+    position: relative;
+  }
+  .tree-vline::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--border2);
+  }
+
+  .tree-connector {
+    width: 18px;
+    height: 100%;
+    position: relative;
+    flex-shrink: 0;
+  }
+  .tree-connector::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 50%;
+    width: 1px;
+    background: var(--border2);
+  }
+  .tree-connector::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 50%;
+    width: 10px;
+    height: 1px;
+    background: var(--border2);
+  }
+
+  .node-icon {
+    width: 20px; height: 20px;
+    border-radius: 5px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    flex-shrink: 0;
+    font-weight: 700;
+  }
+  .icon-human { background: var(--human-dim); color: var(--human); border: 1px solid rgba(96,165,250,0.25); }
+  .icon-assistant { background: var(--assistant-dim); color: var(--assistant); border: 1px solid rgba(52,211,153,0.25); }
+  .icon-agent { background: var(--purple-dim); color: var(--purple); border: 1px solid rgba(167,139,250,0.25); }
+  .icon-tool { background: var(--orange-dim); color: var(--orange); border: 1px solid rgba(251,146,60,0.25); }
+  .icon-llm { background: var(--accent-dim); color: var(--accent); border: 1px solid rgba(79,142,247,0.25); }
+  .icon-subagent { background: rgba(167,139,250,0.08); color: var(--purple); border: 1px solid rgba(167,139,250,0.15); }
+
+  .node-name {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 11.5px;
+  }
+  .node-name-muted { color: var(--muted); }
+
+  .node-status {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .st-ok { background: var(--green); }
+  .st-err { background: var(--red); }
+
+  .node-dur {
+    color: var(--muted);
+    font-size: 10px;
+    flex-shrink: 0;
+  }
+
+  /* Collapse toggle */
+  .collapse-btn {
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 11px;
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    border-radius: 3px;
+    transition: all 0.15s;
+  }
+  .collapse-btn:hover { background: var(--surface2); color: var(--text); }
+  .collapse-btn.collapsed { transform: rotate(-90deg); }
+
+  .node-children {
+    overflow: hidden;
+    transition: max-height 0.25s ease;
+  }
+  .node-children.collapsed {
+    max-height: 0 !important;
+  }
+
+  /* ── DETAIL PANEL ── */
+  .detail-panel {
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+  }
+  .detail-panel::-webkit-scrollbar { width:4px; }
+  .detail-panel::-webkit-scrollbar-track { background:transparent; }
+  .detail-panel::-webkit-scrollbar-thumb { background:var(--border2); border-radius:2px; }
+
+  .detail-header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    flex-shrink: 0;
+  }
+  .detail-title { font-family:'Syne',sans-serif; font-size:15px; font-weight:700; }
+
+  .chip-model { display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border-radius:3px; font-size:10px; color:var(--accent); border:1px solid rgba(79,142,247,0.2); background:var(--accent-dim); }
+
+  .detail-body {
+    padding: 20px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  /* Sections */
+  .section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .section-head {
+    padding: 9px 14px;
+    font-size: 9px;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--muted);
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .section-head .dot { width:5px; height:5px; border-radius:50%; background:currentColor; }
+  .section-content {
+    padding: 14px;
+    font-size: 12px;
+    line-height: 1.7;
+  }
+
+  .text-block {
+    background: var(--surface2);
+    border: 1px solid var(--border2);
+    border-radius: 6px;
+    padding: 12px 14px;
+    font-size: 12px;
+    line-height: 1.7;
+  }
+  .text-block pre {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  .reasoning-label {
+    display: inline-block;
+    background: var(--surface2);
+    padding: 1px 6px;
+    font-size: 8px;
+    letter-spacing: 0.12em;
+    color: var(--yellow);
+    border: 1px solid rgba(251,191,36,0.2);
+    border-radius: 3px;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+  }
+
+  .reasoning-text { color: var(--muted); }
+  .reasoning-text em { color: var(--text); font-style: normal; }
+
+  /* Meta grid */
+  .meta-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .meta-chip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 6px 12px;
+  }
+  .meta-chip b { font-weight:500; }
+  .meta-chip .v-accent { color:var(--accent); }
+  .meta-chip .v-green { color:var(--green); }
+  .meta-chip .v-red { color:var(--red); }
+  .meta-chip .v-orange { color:var(--orange); }
+
+  /* Human message special */
+  .human-message {
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--text);
+    padding: 4px 0;
+  }
+
+  /* Empty state */
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--muted);
+    gap: 8px;
+    font-size: 12px;
+  }
+  .empty-state-icon { font-size: 28px; opacity: 0.3; margin-bottom: 4px; }
+
+  ::-webkit-scrollbar { width:5px; height:5px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:var(--border2); border-radius:3px; }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- TOPBAR -->
+  <div class="topbar">
+    <div class="logo">OBELIX <span>/ Tracer</span></div>
+    <div class="topbar-sep"></div>
+    <div class="run-id">Session <b>7f3a91c0</b></div>
+    <div class="badge badge-success">● Complete</div>
+    <div class="topbar-sep"></div>
+    <div style="color:var(--muted);font-size:11px;">text-to-sql · budget_municipale</div>
+    <div class="topbar-right">
+      <div class="metric"><span class="metric-val">22.6s</span><span class="metric-lbl">Total</span></div>
+      <div class="topbar-sep"></div>
+      <div class="metric"><span class="metric-val">2</span><span class="metric-lbl">Turns</span></div>
+      <div class="topbar-sep"></div>
+      <div class="metric"><span class="metric-val">8,210</span><span class="metric-lbl">Tokens</span></div>
+    </div>
+  </div>
+
+  <!-- TREE -->
+  <div class="tree-panel" id="tree-panel">
+    <div class="tree-header">Execution Log</div>
+
+    <!-- ═══ TURN 1 ═══ -->
+
+    <!-- Human 1 -->
+    <div class="node" data-id="human1" onclick="select('human1',event)">
+      <div class="node-row">
+        <div class="node-icon icon-human">H</div>
+        <div class="node-name">Qual è la spesa totale per il pers...</div>
+      </div>
+    </div>
+
+    <!-- Agent 1 -->
+    <div class="node" data-id="agent1" onclick="select('agent1',event)">
+      <div class="node-row">
+        <button class="collapse-btn" onclick="toggleCollapse('agent1-children',this,event)">▼</button>
+        <div class="node-icon icon-agent">AG</div>
+        <div class="node-name">OrchestratorAgent</div>
+        <div class="node-status st-ok"></div>
+        <div class="node-dur">14.2s</div>
+      </div>
+    </div>
+
+    <!-- Agent 1 children -->
+    <div class="node-children" id="agent1-children" style="max-height:2000px;">
+
+      <div class="node" data-id="t1_search" onclick="select('t1_search',event)">
+        <div class="node-row" style="padding-left:36px;">
+          <div class="tree-connector"></div>
+          <div class="node-icon icon-tool">TL</div>
+          <div class="node-name">search_tables</div>
+          <div class="node-status st-ok"></div>
+          <div class="node-dur">0.3s</div>
+        </div>
+      </div>
+
+      <div class="node" data-id="t1_columns" onclick="select('t1_columns',event)">
+        <div class="node-row" style="padding-left:36px;">
+          <div class="tree-connector"></div>
+          <div class="node-icon icon-tool">TL</div>
+          <div class="node-name">get_column_samples</div>
+          <div class="node-status st-ok"></div>
+          <div class="node-dur">0.5s</div>
+        </div>
+      </div>
+
+      <div class="node" data-id="t1_sqlgen" onclick="select('t1_sqlgen',event)">
+        <div class="node-row" style="padding-left:36px;">
+          <div class="tree-connector"></div>
+          <div class="node-icon icon-llm">LLM</div>
+          <div class="node-name">SQLGeneratorLLM</div>
+          <div class="node-status st-ok"></div>
+          <div class="node-dur">1.6s</div>
+        </div>
+      </div>
+
+      <div class="node" data-id="t1_validate" onclick="select('t1_validate',event)">
+        <div class="node-row" style="padding-left:36px;">
+          <div class="tree-connector"></div>
+          <div class="node-icon icon-tool">TL</div>
+          <div class="node-name">validate_sql</div>
+          <div class="node-status st-ok"></div>
+          <div class="node-dur">0.2s</div>
+        </div>
+      </div>
+
+      <div class="node" data-id="t1_exec" onclick="select('t1_exec',event)">
+        <div class="node-row" style="padding-left:36px;">
+          <div class="tree-connector"></div>
+          <div class="node-icon icon-tool">TL</div>
+          <div class="node-name" style="color:var(--red);">execute_query → 0 rows</div>
+          <div class="node-status st-err"></div>
+          <div class="node-dur">0.3s</div>
+        </div>
+      </div>
+
+      <!-- Retry cycle -->
+      <div class="node" data-id="t1_search2" onclick="select('t1_search2',event)">
+        <div class="node-row" style="padding-left:36px;">
+          <div class="tree-connector"></div>
+          <div class="node-icon icon-tool">TL</div>
+          <div class="node-name node-name-muted">search_tables (retry)</div>
+          <div class="node-status st-ok"></div>
+          <div class="node-dur">0.2s</div>
+        </div>
+      </div>
+
+      <div class="node" data-id="t1_columns2" onclick="select('t1_columns2',event)">
+        <div class="node-row" style="padding-left:36px;">
+          <div class="tree-connector"></div>
+          <div class="node-icon icon-tool">TL</div>
+          <div class="node-name node-name-muted">get_column_samples (expanded)</div>
+          <div class="node-status st-ok"></div>
+          <div class="node-dur">0.4s</div>
+        </div>
+      </div>
+
+      <div class="node" data-id="t1_sqlgen2" onclick="select('t1_sqlgen2',event)">
+        <div class="node-row" style="padding-left:36px;">
+          <div class="tree-connector"></div>
+          <div class="node-icon icon-llm">LLM</div>
+          <div class="node-name">SQLGeneratorLLM (retry)</div>
+          <div class="node-status st-ok"></div>
+          <div class="node-dur">2.8s</div>
+        </div>
+      </div>
+
+      <div class="node" data-id="t1_validate2" onclick="select('t1_validate2',event)">
+        <div class="node-row" style="padding-left:36px;">
+          <div class="tree-connector"></div>
+          <div class="node-icon icon-tool">TL</div>
+          <div class="node-name">validate_sql</div>
+          <div class="node-status st-ok"></div>
+          <div class="node-dur">0.2s</div>
+        </div>
+      </div>
+
+      <div class="node" data-id="t1_exec2" onclick="select('t1_exec2',event)">
+        <div class="node-row" style="padding-left:36px;">
+          <div class="tree-connector"></div>
+          <div class="node-icon icon-tool">TL</div>
+          <div class="node-name" style="color:var(--green);">execute_query → 8 rows</div>
+          <div class="node-status st-ok"></div>
+          <div class="node-dur">0.4s</div>
+        </div>
+      </div>
+
+      <div class="node" data-id="t1_formatter" onclick="select('t1_formatter',event)">
+        <div class="node-row" style="padding-left:36px;">
+          <div class="tree-connector"></div>
+          <div class="node-icon icon-llm">LLM</div>
+          <div class="node-name">ResponseFormatter</div>
+          <div class="node-status st-ok"></div>
+          <div class="node-dur">1.2s</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Assistant 1 -->
+    <div class="node" data-id="assistant1" onclick="select('assistant1',event)">
+      <div class="node-row">
+        <div class="node-icon icon-assistant">A</div>
+        <div class="node-name">La spesa totale per il personale...</div>
+      </div>
+    </div>
+
+    <!-- ═══ TURN 2 ═══ -->
+
+    <!-- Human 2 -->
+    <div class="node" data-id="human2" onclick="select('human2',event)">
+      <div class="node-row">
+        <div class="node-icon icon-human">H</div>
+        <div class="node-name">Puoi confrontare con il 2023?</div>
+      </div>
+    </div>
+
+    <!-- Agent 2 -->
+    <div class="node" data-id="agent2" onclick="select('agent2',event)">
+      <div class="node-row">
+        <button class="collapse-btn" onclick="toggleCollapse('agent2-children',this,event)">▼</button>
+        <div class="node-icon icon-agent">AG</div>
+        <div class="node-name">OrchestratorAgent</div>
+        <div class="node-status st-ok"></div>
+        <div class="node-dur">8.4s</div>
+      </div>
+    </div>
+
+    <!-- Agent 2 children -->
+    <div class="node-children" id="agent2-children" style="max-height:2000px;">
+
+      <div class="node" data-id="t2_sqlgen" onclick="select('t2_sqlgen',event)">
+        <div class="node-row" style="padding-left:36px;">
+          <div class="tree-connector"></div>
+          <div class="node-icon icon-llm">LLM</div>
+          <div class="node-name">SQLGeneratorLLM</div>
+          <div class="node-status st-ok"></div>
+          <div class="node-dur">2.4s</div>
+        </div>
+      </div>
+
+      <div class="node" data-id="t2_validate" onclick="select('t2_validate',event)">
+        <div class="node-row" style="padding-left:36px;">
+          <div class="tree-connector"></div>
+          <div class="node-icon icon-tool">TL</div>
+          <div class="node-name">validate_sql</div>
+          <div class="node-status st-ok"></div>
+          <div class="node-dur">0.2s</div>
+        </div>
+      </div>
+
+      <div class="node" data-id="t2_exec" onclick="select('t2_exec',event)">
+        <div class="node-row" style="padding-left:36px;">
+          <div class="tree-connector"></div>
+          <div class="node-icon icon-tool">TL</div>
+          <div class="node-name" style="color:var(--green);">execute_query → 16 rows</div>
+          <div class="node-status st-ok"></div>
+          <div class="node-dur">0.6s</div>
+        </div>
+      </div>
+
+      <!-- Sub-agent example -->
+      <div class="node" data-id="t2_analyst" onclick="select('t2_analyst',event)">
+        <div class="node-row" style="padding-left:36px;">
+          <div class="tree-connector"></div>
+          <button class="collapse-btn" onclick="toggleCollapse('analyst-children',this,event)">▼</button>
+          <div class="node-icon icon-subagent">SA</div>
+          <div class="node-name">AnalystSubAgent</div>
+          <div class="node-status st-ok"></div>
+          <div class="node-dur">3.8s</div>
+        </div>
+      </div>
+
+      <!-- Sub-agent children (deeper nesting) -->
+      <div class="node-children" id="analyst-children" style="max-height:2000px;">
+        <div class="node" data-id="t2_compare" onclick="select('t2_compare',event)">
+          <div class="node-row" style="padding-left:66px;">
+            <div class="tree-connector"></div>
+            <div class="node-icon icon-tool">TL</div>
+            <div class="node-name">compute_yoy_delta</div>
+            <div class="node-status st-ok"></div>
+            <div class="node-dur">0.1s</div>
+          </div>
+        </div>
+
+        <div class="node" data-id="t2_analystllm" onclick="select('t2_analystllm',event)">
+          <div class="node-row" style="padding-left:66px;">
+            <div class="tree-connector"></div>
+            <div class="node-icon icon-llm">LLM</div>
+            <div class="node-name">AnalystLLM</div>
+            <div class="node-status st-ok"></div>
+            <div class="node-dur">2.1s</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="node" data-id="t2_formatter" onclick="select('t2_formatter',event)">
+        <div class="node-row" style="padding-left:36px;">
+          <div class="tree-connector"></div>
+          <div class="node-icon icon-llm">LLM</div>
+          <div class="node-name">ResponseFormatter</div>
+          <div class="node-status st-ok"></div>
+          <div class="node-dur">1.3s</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Assistant 2 -->
+    <div class="node" data-id="assistant2" onclick="select('assistant2',event)">
+      <div class="node-row">
+        <div class="node-icon icon-assistant">A</div>
+        <div class="node-name">Confrontando 2024 vs 2023, la spe...</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- DETAIL PANEL -->
+  <div class="detail-panel" id="detail-panel">
+    <div class="empty-state">
+      <div class="empty-state-icon">◉</div>
+      Seleziona un nodo per vederne i dettagli
+    </div>
+  </div>
+</div>
+
+<script>
+const data = {
+  human1: {
+    type:'human',
+    text: "Qual è la spesa totale per il personale del comune di Bologna nel 2024, suddivisa per capitolo di bilancio?"
+  },
+  agent1: {
+    type:'agent', name:'OrchestratorAgent',
+    meta: [{l:'Latency',v:'14.2s',c:'v-accent'},{l:'Tool calls',v:'7'},{l:'LLM calls',v:'4'},{l:'Tokens',v:'5,480'},{l:'Retries',v:'1',c:'v-orange'}],
+    input: "Qual è la spesa totale per il personale del comune di Bologna nel 2024, suddivisa per capitolo di bilancio?",
+    output: "La spesa totale per il personale del Comune di Bologna nel 2024 è di € 142.873.450,00, suddivisa su 8 capitoli di bilancio. Il capitolo più rilevante è il CAP 1010 – Stipendi e competenze fisse con € 98.2M (68.7%).",
+    reasoning: "Query classificata come SQL_ANALYTICS (aggregazione + filtro).<br>Pipeline: SchemaLinker → SQLGenerator → Formatter.<br><br>Primo tentativo fallito: <em>0 righe</em> con filtro su MACROCATEGORIA.<br>Retry: espansione schema, corretto filtro su <em>SOTTOCATEGORIA</em> → 8 righe restituite."
+  },
+  t1_search: {
+    type:'tool', name:'search_tables',
+    meta: [{l:'Latency',v:'0.3s',c:'v-accent'},{l:'Results',v:'3'},{l:'Method',v:'Vector ANN'}],
+    input: '{ "query": "spesa personale comune Bologna capitolo bilancio", "top_k": 5 }',
+    output: "1. BILANCIO_SPESE       score: 0.9127\n2. PIANO_DEI_CONTI      score: 0.8743\n3. ENTRATE_ACCERTATE    score: 0.3401  ← below threshold"
+  },
+  t1_columns: {
+    type:'tool', name:'get_column_samples',
+    meta: [{l:'Latency',v:'0.5s',c:'v-accent'},{l:'Columns',v:'9'},{l:'Samples/col',v:'5'}],
+    input: '{ "tables": ["BILANCIO_SPESE", "PIANO_DEI_CONTI"], "sample_size": 5 }',
+    output: "MACROCATEGORIA samples:\n  'PERSONALE', 'BENI E SERVIZI', 'INVESTIMENTI',\n  'TRASFERIMENTI', 'ONERI FINANZIARI'\n\nANNO samples: 2024, 2023, 2022, 2021, 2020\n\nDESC_CAPITOLO: HIGH CARDINALITY (847) — no samples"
+  },
+  t1_sqlgen: {
+    type:'llm', name:'SQLGeneratorLLM',
+    meta: [{l:'Latency',v:'1.6s',c:'v-accent'},{l:'In tokens',v:'1,240'},{l:'Out tokens',v:'196'},{l:'Temp',v:'0.0'}],
+    input: "[Schema ridotto + query utente]\nTabelle: BILANCIO_SPESE, PIANO_DEI_CONTI\nColonne rilevanti: COD_CAPITOLO, DESC_CAPITOLO, IMPORTO_IMPEGNATO, ANNO, COD_VOCE, MACROCATEGORIA...",
+    output: "SELECT\n    bs.COD_CAPITOLO,\n    bs.DESC_CAPITOLO,\n    SUM(bs.IMPORTO_IMPEGNATO) AS SPESA_TOTALE\nFROM BILANCIO_SPESE bs\n    JOIN PIANO_DEI_CONTI pc ON bs.COD_VOCE = pc.COD_VOCE\nWHERE bs.ANNO = 2024\n    AND UPPER(pc.MACROCATEGORIA) LIKE '%PERSONALE%'\nGROUP BY bs.COD_CAPITOLO, bs.DESC_CAPITOLO\nORDER BY SPESA_TOTALE DESC",
+    reasoning: "L'utente chiede <em>spesa totale per il personale</em> suddivisa per capitolo.<br>Filtri: ANNO = <em>2024</em>, MACROCATEGORIA LIKE <em>'%PERSONALE%'</em>.<br>Aggregazione: GROUP BY COD_CAPITOLO, DESC_CAPITOLO."
+  },
+  t1_validate: {
+    type:'tool', name:'validate_sql',
+    meta: [{l:'Latency',v:'0.2s',c:'v-accent'},{l:'Syntax',v:'✓ Valid',c:'v-green'}],
+    input: "SELECT bs.COD_CAPITOLO, bs.DESC_CAPITOLO, SUM(bs.IMPORTO_IMPEGNATO) AS SPESA_TOTALE FROM BILANCIO_SPESE bs JOIN PIANO_DEI_CONTI pc ON bs.COD_VOCE = pc.COD_VOCE WHERE bs.ANNO = 2024 AND UPPER(pc.MACROCATEGORIA) LIKE '%PERSONALE%' GROUP BY bs.COD_CAPITOLO, bs.DESC_CAPITOLO ORDER BY SPESA_TOTALE DESC",
+    output: "✓ Syntax valid (Oracle 19c)\n✓ Tables exist\n✓ Columns verified\n⚠ LIKE on UPPER() — no function-based index"
+  },
+  t1_exec: {
+    type:'tool', name:'execute_query', isError: true,
+    meta: [{l:'Latency',v:'0.3s',c:'v-accent'},{l:'Rows',v:'0',c:'v-red'},{l:'DB',v:'Oracle 19c'}],
+    input: "[SQL query from SQLGeneratorLLM]",
+    output: "⚠ Query executed successfully but returned 0 rows.\n\nFilter MACROCATEGORIA LIKE '%PERSONALE%' matched nothing.\nDistinct values in MACROCATEGORIA:\n  'SPESE CORRENTI', 'SPESE IN CONTO CAPITALE',\n  'RIMBORSO PRESTITI', 'SERVIZI'"
+  },
+  t1_search2: {
+    type:'tool', name:'search_tables (retry)',
+    meta: [{l:'Latency',v:'0.2s',c:'v-accent'},{l:'Results',v:'2'},{l:'Trigger',v:'0 rows retry',c:'v-orange'}],
+    input: '{ "query": "spesa personale stipendi", "top_k": 3, "expand_schema": true }',
+    output: "1. BILANCIO_SPESE       score: 0.9341  (expanded)\n2. PIANO_DEI_CONTI      score: 0.9012  (expanded)"
+  },
+  t1_columns2: {
+    type:'tool', name:'get_column_samples (expanded)',
+    meta: [{l:'Latency',v:'0.4s',c:'v-accent'},{l:'Columns',v:'11'},{l:'Extra cols',v:'+2',c:'v-orange'}],
+    input: '{ "tables": ["BILANCIO_SPESE", "PIANO_DEI_CONTI"], "sample_size": 10, "include_all": true }',
+    output: "SOTTOCATEGORIA samples:\n  'SPESE PER IL PERSONALE', 'SPESE CORRENTI',\n  'TRASFERIMENTI CORRENTI', 'ACQUISTO BENI',\n  'PRESTAZIONI DI SERVIZI'\n\nCOD_FUNZIONE samples:\n  'F01', 'F02', 'F03', 'F10'"
+  },
+  t1_sqlgen2: {
+    type:'llm', name:'SQLGeneratorLLM (retry)',
+    meta: [{l:'Latency',v:'2.8s',c:'v-accent'},{l:'In tokens',v:'1,847'},{l:'Out tokens',v:'284'},{l:'Temp',v:'0.0'}],
+    input: "[Schema espanso con SOTTOCATEGORIA + feedback: 0 rows con MACROCATEGORIA]",
+    output: "SELECT\n    bs.COD_CAPITOLO,\n    bs.DESC_CAPITOLO,\n    SUM(bs.IMPORTO_IMPEGNATO) AS SPESA_TOTALE\nFROM BILANCIO_SPESE bs\n    JOIN PIANO_DEI_CONTI pc ON bs.COD_VOCE = pc.COD_VOCE\nWHERE bs.ANNO = 2024\n    AND UPPER(pc.SOTTOCATEGORIA) LIKE '%PERSONALE%'\nGROUP BY bs.COD_CAPITOLO, bs.DESC_CAPITOLO\nORDER BY SPESA_TOTALE DESC",
+    reasoning: "Primo tentativo: 0 righe con filtro su MACROCATEGORIA.<br>Schema espanso include <em>SOTTOCATEGORIA</em> con campione 'SPESE PER IL PERSONALE'.<br><br>Correggo: uso <em>SOTTOCATEGORIA LIKE '%PERSONALE%'</em>."
+  },
+  t1_validate2: {
+    type:'tool', name:'validate_sql',
+    meta: [{l:'Latency',v:'0.2s',c:'v-accent'},{l:'Syntax',v:'✓ Valid',c:'v-green'}],
+    input: "[Retry SQL query]",
+    output: "✓ Syntax valid (Oracle 19c)\n✓ Tables exist\n✓ Columns verified: all 10 columns\n✓ SOTTOCATEGORIA column index found"
+  },
+  t1_exec2: {
+    type:'tool', name:'execute_query',
+    meta: [{l:'Latency',v:'0.4s',c:'v-accent'},{l:'Rows',v:'8',c:'v-green'},{l:'DB',v:'Oracle 19c'}],
+    input: "[Retry SQL query]",
+    output: "COD_CAPITOLO  DESC_CAPITOLO                          SPESA_TOTALE\n──────────────────────────────────────────────────────────────────\n1010          Stipendi e competenze fisse            98.287.340,00\n1020          Oneri riflessi a carico ente           24.150.000,00\n1030          Irap                                    8.920.000,00\n1040          Altri oneri del personale              5.340.000,00\n1050          Missioni                                  890.000,00\n1060          Formazione                                620.000,00\n1070          Indennità di risultato                  2.876.110,00\n1080          Buoni pasto e welfare                   1.790.000,00\n──────────────────────────────────────────────────────────────────\nTOTALE                                             142.873.450,00"
+  },
+  t1_formatter: {
+    type:'llm', name:'ResponseFormatter',
+    meta: [{l:'Latency',v:'1.2s',c:'v-accent'},{l:'In tokens',v:'612'},{l:'Out tokens',v:'142'}],
+    input: "[8 righe SQL result + query originale utente]",
+    output: "La spesa totale per il personale del Comune di Bologna nel 2024 è di € 142.873.450,00, suddivisa su 8 capitoli di bilancio. Il capitolo più rilevante è il CAP 1010 – Stipendi e competenze fisse con € 98.2M (68.7%).",
+    reasoning: "Risultati SQL: <em>8 righe, totale € 142.8M</em>.<br>Formato: linguaggio naturale italiano.<br>Evidenzio capitolo principale (CAP 1010, 68.7%)."
+  },
+  assistant1: {
+    type:'assistant',
+    text: "La spesa totale per il personale del Comune di Bologna nel 2024 è di <b>€ 142.873.450,00</b>, suddivisa su 8 capitoli di bilancio.\n\nIl capitolo più rilevante è il <b>CAP 1010 – Stipendi e competenze fisse</b> con € 98.2M (68.7% del totale).\n\nAltri capitoli significativi:\n• CAP 1020 – Oneri riflessi: € 24.1M\n• CAP 1030 – Irap: € 8.9M\n• CAP 1070 – Indennità di risultato: € 2.9M"
+  },
+  human2: {
+    type:'human',
+    text: "Puoi confrontare con il 2023? Voglio capire come è cambiata la spesa."
+  },
+  agent2: {
+    type:'agent', name:'OrchestratorAgent',
+    meta: [{l:'Latency',v:'8.4s',c:'v-accent'},{l:'Tool calls',v:'3'},{l:'LLM calls',v:'3'},{l:'Tokens',v:'2,730'}],
+    input: "Puoi confrontare con il 2023? Voglio capire come è cambiata la spesa.",
+    output: "Confrontando 2024 vs 2023, la spesa per il personale è aumentata del 3.2% (+€ 4.4M). L'incremento maggiore è su Stipendi (+4.1%), mentre Formazione è calata del 12%.",
+    reasoning: "Query di follow-up: confronto YoY.<br>Riutilizzo schema dal Turn 1 (cache hit).<br>Delego analisi comparativa a <em>AnalystSubAgent</em>."
+  },
+  t2_sqlgen: {
+    type:'llm', name:'SQLGeneratorLLM',
+    meta: [{l:'Latency',v:'2.4s',c:'v-accent'},{l:'In tokens',v:'1,520'},{l:'Out tokens',v:'310'}],
+    input: "[Schema cached + query utente + contesto Turn 1]",
+    output: "SELECT\n    bs.COD_CAPITOLO,\n    bs.DESC_CAPITOLO,\n    bs.ANNO,\n    SUM(bs.IMPORTO_IMPEGNATO) AS SPESA_TOTALE\nFROM BILANCIO_SPESE bs\n    JOIN PIANO_DEI_CONTI pc ON bs.COD_VOCE = pc.COD_VOCE\nWHERE bs.ANNO IN (2023, 2024)\n    AND UPPER(pc.SOTTOCATEGORIA) LIKE '%PERSONALE%'\nGROUP BY bs.COD_CAPITOLO, bs.DESC_CAPITOLO, bs.ANNO\nORDER BY bs.COD_CAPITOLO, bs.ANNO",
+    reasoning: "Follow-up: confronto 2024 vs 2023.<br>Riutilizzo filtro corretto su SOTTOCATEGORIA (dal retry).<br>Aggiungo <em>ANNO IN (2023, 2024)</em> e GROUP BY ANNO."
+  },
+  t2_validate: {
+    type:'tool', name:'validate_sql',
+    meta: [{l:'Latency',v:'0.2s',c:'v-accent'},{l:'Syntax',v:'✓ Valid',c:'v-green'}],
+    input: "[SQL query Turn 2]",
+    output: "✓ Syntax valid (Oracle 19c)\n✓ All checks passed"
+  },
+  t2_exec: {
+    type:'tool', name:'execute_query',
+    meta: [{l:'Latency',v:'0.6s',c:'v-accent'},{l:'Rows',v:'16',c:'v-green'},{l:'DB',v:'Oracle 19c'}],
+    input: "[SQL query Turn 2]",
+    output: "COD  DESC_CAPITOLO                    ANNO  SPESA_TOTALE\n────────────────────────────────────────────────────────\n1010 Stipendi e competenze fisse     2023  94.380.200,00\n1010 Stipendi e competenze fisse     2024  98.287.340,00\n1020 Oneri riflessi                  2023  23.500.000,00\n1020 Oneri riflessi                  2024  24.150.000,00\n...  (16 rows total)\n────────────────────────────────────────────────────────\nTOT 2023: 138.430.100,00\nTOT 2024: 142.873.450,00"
+  },
+  t2_analyst: {
+    type:'agent', name:'AnalystSubAgent',
+    meta: [{l:'Latency',v:'3.8s',c:'v-accent'},{l:'Tool calls',v:'1'},{l:'LLM calls',v:'1'}],
+    input: "[16 righe SQL con dati 2023 e 2024]",
+    output: "Variazione YoY: +3.2% (+€ 4.443.350)\nMaggior incremento: Stipendi +4.1%\nMaggior calo: Formazione -12.3%",
+    reasoning: "Ricevuti dati 2023/2024.<br>Calcolo delta YoY per capitolo con tool <em>compute_yoy_delta</em>.<br>Genero insight narrativi con AnalystLLM."
+  },
+  t2_compare: {
+    type:'tool', name:'compute_yoy_delta',
+    meta: [{l:'Latency',v:'0.1s',c:'v-accent'},{l:'Rows',v:'8'}],
+    input: "[16 rows: 2023 + 2024 per capitolo]",
+    output: "CAP   DELTA_ABS       DELTA_PCT\n───────────────────────────────\n1010  +3.907.140,00   +4.14%\n1020    +650.000,00   +2.77%\n1030    +320.000,00   +3.72%\n1040    +140.000,00   +2.69%\n1050     -30.000,00   -3.26%\n1060     -86.650,00  -12.27%\n1070    +376.110,00  +15.04%\n1080    -190.000,00   -9.60%\n───────────────────────────────\nTOT   +4.443.350,00   +3.21%"
+  },
+  t2_analystllm: {
+    type:'llm', name:'AnalystLLM',
+    meta: [{l:'Latency',v:'2.1s',c:'v-accent'},{l:'In tokens',v:'480'},{l:'Out tokens',v:'186'}],
+    input: "[YoY delta table + query utente]",
+    output: "La spesa per il personale è cresciuta del 3.2% nel 2024 rispetto al 2023 (+€ 4.4M). L'incremento è trainato principalmente dagli stipendi (+4.1%, +€ 3.9M). Le indennità di risultato mostrano la crescita percentuale più alta (+15%). Formazione e buoni pasto sono in calo.",
+    reasoning: "Delta calcolato: <em>+3.21% YoY</em>.<br>Stipendi trainano l'incremento (88% del delta totale).<br>Indennità risultato: crescita % alta ma impatto assoluto contenuto.<br>Evidenzio i cali: Formazione -12%, Buoni pasto -10%."
+  },
+  t2_formatter: {
+    type:'llm', name:'ResponseFormatter',
+    meta: [{l:'Latency',v:'1.3s',c:'v-accent'},{l:'In tokens',v:'580'},{l:'Out tokens',v:'164'}],
+    input: "[Analyst output + query utente]",
+    output: "Confrontando 2024 vs 2023, la spesa per il personale è aumentata del 3.2% (+€ 4.4M), da € 138.4M a € 142.9M.\n\nL'incremento maggiore è su Stipendi e competenze fisse (+4.1%, +€ 3.9M). Le indennità di risultato crescono del 15%.\n\nIn calo: Formazione (-12.3%) e Buoni pasto (-9.6%).",
+    reasoning: "Formatto in linguaggio naturale.<br>Metto in evidenza la variazione complessiva e i 2 estremi (max crescita, max calo)."
+  },
+  assistant2: {
+    type:'assistant',
+    text: "Confrontando 2024 vs 2023, la spesa per il personale è aumentata del <b>3.2%</b> (+€ 4.4M), passando da € 138.4M a € 142.9M.\n\n<b>Maggiori incrementi:</b>\n• Stipendi e competenze fisse: +4.1% (+€ 3.9M)\n• Indennità di risultato: +15.0% (+€ 376K)\n\n<b>In calo:</b>\n• Formazione: -12.3% (-€ 87K)\n• Buoni pasto e welfare: -9.6% (-€ 190K)"
+  }
+};
+
+function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function select(id, e) {
+  if (e && e.target.closest('.collapse-btn')) return;
+  document.querySelectorAll('.node').forEach(n => n.classList.remove('active'));
+  const el = document.querySelector(`.node[data-id="${id}"]`);
+  if (el) el.classList.add('active');
+  renderDetail(id);
+}
+
+function toggleCollapse(childrenId, btn, e) {
+  e.stopPropagation();
+  const ch = document.getElementById(childrenId);
+  if (!ch) return;
+  ch.classList.toggle('collapsed');
+  btn.classList.toggle('collapsed');
+}
+
+function renderDetail(id) {
+  const d = data[id];
+  if (!d) return;
+  const panel = document.getElementById('detail-panel');
+
+  if (d.type === 'human') {
+    panel.innerHTML = `
+      <div class="detail-header">
+        <div class="node-icon icon-human" style="width:24px;height:24px;font-size:10px;">H</div>
+        <div class="detail-title">Human Message</div>
+      </div>
+      <div class="detail-body">
+        <div class="human-message">${esc(d.text)}</div>
+      </div>`;
+    return;
+  }
+
+  if (d.type === 'assistant') {
+    panel.innerHTML = `
+      <div class="detail-header">
+        <div class="node-icon icon-assistant" style="width:24px;height:24px;font-size:10px;">A</div>
+        <div class="detail-title">Assistant Message</div>
+      </div>
+      <div class="detail-body">
+        <div class="human-message">${d.text}</div>
+      </div>`;
+    return;
+  }
+
+  // agent / tool / llm
+  const iconClass = d.type === 'agent' ? 'icon-agent' : d.type === 'tool' ? 'icon-tool' : 'icon-llm';
+  const iconLetter = d.type === 'agent' ? 'AG' : d.type === 'tool' ? 'TL' : 'LLM';
+  const badgeClass = d.isError ? 'badge-err' : 'badge-ok';
+  const badgeStyle = d.isError
+    ? 'background:var(--red-dim);color:var(--red);border:1px solid rgba(248,113,113,0.2)'
+    : 'background:var(--green-dim);color:var(--green);border:1px solid rgba(52,211,153,0.2)';
+  const badgeText = d.isError ? '● Error' : '● Success';
+
+  let metaHtml = (d.meta||[]).map(m =>
+    `<div class="meta-chip">${m.l} <b class="${m.c||''}">${m.v}</b></div>`
+  ).join('');
+
+  let inputHtml = '';
+  if (d.input) {
+    const inputColor = d.type === 'tool' ? 'color:var(--muted)' : 'color:var(--muted)';
+    inputHtml = `
+      <div class="section">
+        <div class="section-head"><div class="dot" style="color:var(--accent)"></div>Input</div>
+        <div class="section-content">
+          <div class="text-block"><pre style="font-family:'JetBrains Mono',monospace;font-size:11px;white-space:pre-wrap;word-break:break-all;${inputColor}">${esc(d.input)}</pre></div>
+        </div>
+      </div>`;
+  }
+
+  let outputHtml = '';
+  if (d.output) {
+    const outColor = d.isError ? 'color:var(--red)' : 'color:var(--green)';
+    const dotColor = d.isError ? 'var(--red)' : 'var(--green)';
+    outputHtml = `
+      <div class="section">
+        <div class="section-head"><div class="dot" style="color:${dotColor}"></div>Output</div>
+        <div class="section-content">
+          <div class="text-block"><pre style="font-family:'JetBrains Mono',monospace;font-size:11px;white-space:pre-wrap;word-break:break-all;${outColor}">${esc(d.output)}</pre></div>
+        </div>
+      </div>`;
+  }
+
+  let reasoningHtml = '';
+  if (d.reasoning) {
+    reasoningHtml = `
+      <div class="section">
+        <div class="section-head"><div class="dot" style="color:var(--yellow)"></div>Metadata / Reasoning</div>
+        <div class="section-content">
+          <div class="reasoning-label">Thinking</div>
+          <div class="reasoning-text">${d.reasoning}</div>
+        </div>
+      </div>`;
+  }
+
+  panel.innerHTML = `
+    <div class="detail-header">
+      <div class="node-icon ${iconClass}" style="width:24px;height:24px;font-size:10px;">${iconLetter}</div>
+      <div class="detail-title">${d.name}</div>
+      <div class="badge" style="${badgeStyle};font-size:10px;padding:2px 8px;border-radius:4px;">${badgeText}</div>
+    </div>
+    <div class="detail-body">
+      <div class="meta-grid">${metaHtml}</div>
+      ${inputHtml}
+      ${outputHtml}
+      ${reasoningHtml}
+    </div>`;
+}
+
+// Select first node by default
+select('human1', null);
+</script>
+</body>
+</html>
