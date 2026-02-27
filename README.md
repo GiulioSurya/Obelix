@@ -411,9 +411,21 @@ For detailed API reference and examples, see [docs/index.md](docs/index.md).
    ```
 
 2. **Set up the development environment**:
+
+   With `make` (recommended):
+   ```bash
+   make setup
+   ```
+
+   Without `make`:
    ```bash
    uv sync --all-extras --group dev
+   uv run pre-commit install --hook-type pre-commit --hook-type pre-push
    ```
+
+   This installs all dependencies and configures the Git hooks:
+   - **pre-commit**: runs `ruff check` and `ruff format` on staged files
+   - **pre-push**: runs `pytest` before pushing
 
 3. **Make your changes**:
    - Follow the hexagonal architecture patterns in `src/obelix/`
@@ -421,21 +433,10 @@ For detailed API reference and examples, see [docs/index.md](docs/index.md).
    - Write type hints using Python 3.13+ builtins (`dict`, `list`, `X | None`)
    - Add/update tests in `tests/`
 
-4. **Run linting and formatting**:
-   ```bash
-   uv run ruff check . --fix
-   uv run ruff format .
-   ```
-
-5. **Run tests**:
-   ```bash
-   uv run pytest
-   ```
-
-6. **Commit and create a pull request**:
-   - Use clear commit messages
-   - Reference any related issues
-   - Ensure all tests pass and linting passes
+4. **Commit and push**:
+   - The pre-commit hooks will automatically lint and format your code
+   - Tests run automatically before each push
+   - You can also run them manually: `make lint`, `make format`, `make test`
 
 ### Architecture Principles
 
