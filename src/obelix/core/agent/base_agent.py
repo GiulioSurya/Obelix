@@ -544,6 +544,35 @@ class BaseAgent:
         from obelix.core.tracer.models import SpanStatus
 
         status = SpanStatus.error if error else SpanStatus.ok
+
+        # Attach conversation history for this invocation to span metadata
+        from obelix.core.tracer.context import get_current_span
+
+        span = get_current_span()
+        if span:
+            invocation_messages = self.conversation_history
+            conversation = []
+            for msg in invocation_messages:
+                entry: dict = {"role": msg.role.value}
+                if hasattr(msg, "content"):
+                    entry["content"] = msg.content
+                if hasattr(msg, "tool_calls") and msg.tool_calls:
+                    entry["tool_calls"] = [
+                        {"name": tc.name, "arguments": tc.arguments}
+                        for tc in msg.tool_calls
+                    ]
+                if hasattr(msg, "tool_results") and msg.tool_results:
+                    entry["tool_results"] = [
+                        {
+                            "tool_name": tr.tool_name,
+                            "result": str(tr.result)[:500],
+                            "status": tr.status.value,
+                        }
+                        for tr in msg.tool_results
+                    ]
+                conversation.append(entry)
+            span.metadata["conversation_history"] = conversation
+
         await self._tracer.end_span(status=status, error=error)  # agent span
         if getattr(self, "_is_root_trace", False):
             await self._tracer.end_trace(status=status, error=error)
@@ -623,6 +652,22 @@ class BaseAgent:
         )
         if outcome.decision == HookDecision.FAIL:
             raise RuntimeError("Hook BEFORE_TOOL_EXECUTION requested FAIL")
+        if outcome.decision == HookDecision.RETRY:
+            error_msg = (
+                str(outcome.value)
+                if outcome.value
+                else "Tool execution blocked by hook"
+            )
+            logger.warning(
+                f"[{self.__class__.__name__}] Hook RETRY — tool skipped | tool={call.name} call_id={call.id[-12:]}"
+            )
+            return ToolResult(
+                tool_name=call.name,
+                tool_call_id=call.id,
+                result=None,
+                status=ToolStatus.ERROR,
+                error=error_msg,
+            )
         call = outcome.value
 
         result = await self._async_execute_tool(call)

@@ -31,7 +31,7 @@ def get_event_contracts() -> dict[AgentEvent, EventContract]:
         AgentEvent.BEFORE_TOOL_EXECUTION: EventContract(
             input_type=ToolCall,
             output_type=ToolCall,
-            retryable=False,
+            retryable=True,
             stop_output=None,
         ),
         AgentEvent.AFTER_TOOL_EXECUTION: EventContract(
