@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git mv:*)"
+      "Bash(git mv:*)",
+      "Bash(uv run:*)",
+      "mcp__obelix-tracer__list_services",
+      "mcp__obelix-tracer__list_traces",
+      "Bash(python:*)"
     ]
   }
 }
