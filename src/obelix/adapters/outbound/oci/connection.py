@@ -132,8 +132,7 @@ class DotDict:
             for item in raw_data:
                 yield self._wrap(item)
         elif isinstance(raw_data, dict):
-            for key in raw_data:
-                yield key
+            yield from raw_data
 
     def __bool__(self) -> bool:
         return bool(object.__getattribute__(self, "data"))
@@ -246,6 +245,117 @@ class OCIContentModerationError(OCIServiceError):
         super().__init__(status, code, self.USER_MESSAGE, **kwargs)
 
 
+def _extract_text_from_chat_details(chat_details: Any) -> str:
+    """
+    Extract all text content from a ChatDetails SDK object for guardrails pre-check.
+
+    Serializes the SDK object and walks messages → content → text fields.
+    """
+    serialized = (
+        _serialize_oci_model(chat_details)
+        if hasattr(chat_details, "swagger_types")
+        else chat_details
+    )
+    parts: list[str] = []
+
+    chat_request = serialized.get("chatRequest", {})
+    for message in chat_request.get("messages", []):
+        for block in message.get("content", []):
+            text = block.get("text")
+            if text:
+                parts.append(text)
+
+    return "\n".join(parts)
+
+
+class OCIGuardrailsChecker:
+    """
+    Optional pre-flight guardrails checker for OCI chat requests.
+
+    Attach to OCIAsyncHttpClient to enable pre-check before each chat call.
+    When triggered (score >= threshold), logs an ERROR with scores and text preview.
+    Safe by design: errors in the check never block the chat call.
+
+    Args:
+        compartment_id: OCI compartment OCID.
+        enabled: Whether the checker is active. Default False (opt-in).
+        threshold: Score above which a category is considered triggered. Default 0.5.
+    """
+
+    def __init__(
+        self,
+        compartment_id: str,
+        enabled: bool = False,
+        threshold: float = 0.5,
+    ) -> None:
+        self._compartment_id = compartment_id
+        self._enabled = enabled
+        self._threshold = threshold
+        self._client: OCIAsyncHttpClient | None = None
+
+    def attach(self, client: "OCIAsyncHttpClient") -> None:
+        self._client = client
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    async def check(self, text: str, label: str = "") -> None:
+        """Run guardrails pre-check and log ERROR if any category exceeds threshold."""
+        if not self._enabled or not self._client or not text.strip():
+            return
+
+        body = {
+            "compartmentId": self._compartment_id,
+            "guardrailConfigs": {
+                "contentModerationConfig": {"categories": ["OVERALL", "BLOCKLIST"]},
+                "promptInjectionConfig": {},
+            },
+            "input": {"type": "TEXT", "content": text},
+        }
+
+        try:
+            result = await self._client.apply_guardrails(body)
+        except Exception as exc:
+            _logger.warning(
+                f"[OCIGuardrailsChecker] apply_guardrails failed | error={exc}"
+            )
+            return
+
+        self._evaluate(result, text, label)
+
+    def _evaluate(self, result: dict[str, Any], text: str, label: str) -> None:
+        results = result.get("results", result)
+
+        flagged: list[str] = []
+
+        cm = results.get("contentModeration", {})
+        for cat in cm.get("categories", []):
+            score = float(cat.get("score", 0.0))
+            name = cat.get("name", "?")
+            if score >= self._threshold:
+                flagged.append(f"contentModeration.{name}={score:.2f}")
+
+        pi = results.get("promptInjection", {})
+        pi_score = float(pi.get("score", 0.0))
+        if pi_score >= self._threshold:
+            flagged.append(f"promptInjection={pi_score:.2f}")
+
+        preview = text[:400].replace("\n", " ")
+
+        if flagged:
+            _logger.error(
+                f"[OCIGuardrailsChecker] GUARDRAILS_PRE_CHECK triggered | label={label or 'unknown'} categories={flagged} text_preview={preview!r}"
+            )
+        else:
+            cm_scores = {
+                c.get("name"): c.get("score") for c in cm.get("categories", [])
+            }
+            _logger.debug(
+                f"[OCIGuardrailsChecker] GUARDRAILS_PRE_CHECK ok | label={label or 'unknown'} cm={cm_scores} pi={pi_score:.2f}"
+            )
+
+
 class OCIAsyncHttpClient:
     """
     Async HTTP client for OCI Generative AI API.
@@ -259,11 +369,18 @@ class OCIAsyncHttpClient:
 
     BASE_PATH = "/20231130"
 
-    def __init__(self, config: dict[str, Any], timeout: float = 120.0) -> None:
+    def __init__(
+        self,
+        config: dict[str, Any],
+        timeout: float = 120.0,
+        guardrails_checker: OCIGuardrailsChecker | None = None,
+    ) -> None:
         try:
             from oci.signer import Signer
         except ImportError:
-            raise ImportError("oci is not installed. Install with: pip install oci")
+            raise ImportError(
+                "oci is not installed. Install with: pip install oci"
+            ) from None
 
         self._region = config.get("region", "us-chicago-1")
         self._endpoint = _build_service_endpoint(self._region)
@@ -285,6 +402,9 @@ class OCIAsyncHttpClient:
         self._client_loop: asyncio.AbstractEventLoop | None = (
             None  # Track which event loop owns the client
         )
+        self._guardrails_checker = guardrails_checker
+        if guardrails_checker is not None:
+            guardrails_checker.attach(self)
 
     async def _get_client(self) -> httpx.AsyncClient:
         """
@@ -401,12 +521,14 @@ class OCIAsyncHttpClient:
         )
 
         if response.status_code >= 400:
-            self._raise_for_status(response)
+            self._raise_for_status(response, body_bytes)
 
         return response.json()
 
     @staticmethod
-    def _raise_for_status(response: httpx.Response) -> None:
+    def _raise_for_status(
+        response: httpx.Response, request_body: bytes | None = None
+    ) -> None:
         """
         Parse error response and raise the appropriate OCIServiceError subclass.
 
@@ -440,11 +562,7 @@ class OCIAsyncHttpClient:
         )
 
         _logger.error(
-            "OCI API error: status=%s code=%s opc-request-id=%s message=%s",
-            status,
-            error_kwargs["code"],
-            opc_request_id,
-            message,
+            f"[OCIAsyncHttpClient] API error | status={status} code={error_kwargs['code']} opc-request-id={opc_request_id} message={message}"
         )
 
         if status == 429:
@@ -459,12 +577,28 @@ class OCIAsyncHttpClient:
         if status == 400 and (
             "Unsafe Text detected" in message or "moderation system flagged" in message
         ):
+            body_preview = "<empty>"
+            if request_body:
+                body_preview = request_body.decode("utf-8", errors="replace")
+                if len(body_preview) > 1200:
+                    body_preview = f"{body_preview[:1200]}... [truncated]"
+
+            _logger.warning(
+                f"[OCIAsyncHttpClient] Content moderation triggered | status={status} code={error_kwargs['code']} opc-request-id={opc_request_id} request_body_preview={body_preview}"
+            )
             raise OCIContentModerationError(**error_kwargs)
 
         raise OCIServiceError(**error_kwargs)
 
+    async def apply_guardrails(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Call the applyGuardrails endpoint. Returns raw JSON result."""
+        return await self._request("POST", "/actions/applyGuardrails", body)
+
     async def chat(self, chat_details: Any) -> OCIResponse:
         """Call the chat endpoint. Returns OCIResponse compatible with SDK access."""
+        if self._guardrails_checker is not None:
+            text = _extract_text_from_chat_details(chat_details)
+            await self._guardrails_checker.check(text, label="chat")
         json_response = await self._request("POST", "/actions/chat", chat_details)
         return OCIResponse(json_response)
 
@@ -494,17 +628,26 @@ class OCIConnection(AbstractLLMConnection):
     _client_lock = threading.Lock()
     _initialized = False
 
-    def __new__(cls, oci_config: dict | str | None = None):
+    def __new__(
+        cls,
+        oci_config: dict | str | None = None,
+        guardrails_checker: OCIGuardrailsChecker | None = None,
+    ):
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
                     cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, oci_config: dict | str | None = None):
+    def __init__(
+        self,
+        oci_config: dict | str | None = None,
+        guardrails_checker: OCIGuardrailsChecker | None = None,
+    ):
         if self._initialized:
             return
         self._oci_config = self._resolve_config(oci_config)
+        self._guardrails_checker = guardrails_checker
         self._initialized = True
 
     def _resolve_config(self, oci_config: dict | str | None) -> dict:
@@ -539,7 +682,9 @@ class OCIConnection(AbstractLLMConnection):
         try:
             from oci.config import from_file
         except ImportError:
-            raise ImportError("oci is not installed. Install with: pip install oci")
+            raise ImportError(
+                "oci is not installed. Install with: pip install oci"
+            ) from None
 
         return from_file(config_path, "DEFAULT")
 
@@ -570,4 +715,6 @@ class OCIConnection(AbstractLLMConnection):
         Raises:
             ImportError: If oci or httpx libraries are not installed
         """
-        return OCIAsyncHttpClient(self._oci_config)
+        return OCIAsyncHttpClient(
+            self._oci_config, guardrails_checker=self._guardrails_checker
+        )

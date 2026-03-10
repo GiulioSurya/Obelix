@@ -213,3 +213,12 @@ if __name__ == "__main__":
     print("=" * 50)
     for element in coordinator.conversation_history:
         print(element.model_dump_json(indent=4))
+
+    # # ─── A2A serve (requires: uv sync --extra serve) ─────────────────────
+    # factory = create_factory()
+    # factory.serve(
+    #     "coordinator",
+    #     subagents=["math_agent", "report_agent"],
+    #     port=8000,
+    #     description="Math coordinator with calculator and report sub-agents",
+    # )

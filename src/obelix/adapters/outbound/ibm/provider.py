@@ -12,7 +12,10 @@ so tenacity is NOT needed here - only ToolCallExtractionError retry loop.
 
 import asyncio
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pydantic import BaseModel
 
 from pydantic import ValidationError
 
@@ -37,7 +40,7 @@ try:
 except ImportError:
     raise ImportError(
         "ibm-watsonx-ai is not installed. Install with: pip install ibm-watsonx-ai"
-    )
+    ) from None
 
 logger = get_logger(__name__)
 

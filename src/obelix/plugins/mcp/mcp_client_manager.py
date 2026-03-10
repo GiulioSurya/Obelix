@@ -441,7 +441,7 @@ class MCPClientManager:
             error_msg = (
                 f"Validation error for tool '{tool_name}': {e.validation_errors}"
             )
-            raise Exception(error_msg)
+            raise Exception(error_msg) from e
 
         except Exception as e:
             # Other errors - unchanged behavior with additional details
@@ -459,7 +459,7 @@ class MCPClientManager:
             if "400" in str(e) or "Bad Request" in str(e):
                 error_msg += f" | Params sent: {arguments}"
 
-            raise Exception(error_msg)
+            raise Exception(error_msg) from e
 
     def _validate_tool_arguments(
         self, tool_name: str, arguments: dict[str, Any]

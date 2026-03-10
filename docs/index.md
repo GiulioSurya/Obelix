@@ -11,6 +11,7 @@ This documentation covers how to build, compose, and deploy agents using Obelix.
 - **[README](../README.md)** - Installation, quick start, and project overview
 - **[BaseAgent Guide](base_agent.md)** - Creating and using individual agents
 - **[Agent Factory Guide](agent_factory.md)** - Composing agents and managing sub-agents
+- **[A2A Server Guide](a2a_server.md)** - Exposing agents as HTTP services
 - **[Hooks API](hooks.md)** - Intercepting and modifying agent behavior
 
 ---
@@ -23,6 +24,7 @@ This documentation covers how to build, compose, and deploy agents using Obelix.
 |----------|-------------|
 | [BaseAgent Guide](base_agent.md) | Complete guide to `BaseAgent`: constructors, execution, tools, sub-agents, and hooks |
 | [Agent Factory Guide](agent_factory.md) | How to register agents and compose them into orchestrators with optional shared memory |
+| [A2A Server Guide](a2a_server.md) | Exposing agents as A2A-compliant HTTP services with JSON-RPC 2.0 |
 | [Hooks API](hooks.md) | Understanding and implementing hooks for agent customization (validation, error recovery, context injection) |
 
 ### Key Features
@@ -34,6 +36,8 @@ This documentation covers how to build, compose, and deploy agents using Obelix.
 **Hooks**: Intercept agent lifecycle events for cross-cutting concerns. See [Hooks API](hooks.md).
 
 **Shared Memory**: Propagate context between dependent agents. See [Agent Factory Guide - Shared Memory Support](agent_factory.md#shared-memory-support).
+
+**A2A Server**: Expose agents as HTTP services discoverable and orchestrated by other systems. See [A2A Server Guide](a2a_server.md).
 
 **Providers**: Use any of 6 LLM providers (OpenAI, Anthropic, OCI, IBM Watson, Ollama, vLLM). See [README - Using Providers](../README.md#using-providers).
 

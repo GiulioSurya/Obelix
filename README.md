@@ -10,6 +10,7 @@ A multi-provider LLM agent framework with tool support, hooks system, and seamle
 - **Multi-Provider Support**: OpenAI, Anthropic, Oracle Cloud (OCI), IBM Watson, Ollama, vLLM
 - **Tool System**: Declarative tool creation with automatic validation using Pydantic
 - **Sub-Agent Orchestration**: Compose hierarchical agent workflows with the Agent Factory
+- **A2A Protocol Support**: Expose agents as HTTP services using the A2A (Agent-to-Agent) standard
 - **Parallel Tool Calls**: Execute multiple tools concurrently for improved performance
 - **Hooks System**: Intercept and modify agent behavior at runtime (validation, error recovery, context injection)
 - **Async-First Architecture**: All providers use async `invoke()` - native async clients (Anthropic, OpenAI, Ollama, OCI) or `asyncio.to_thread()` for sync SDKs (IBM, vLLM)
@@ -85,6 +86,7 @@ pip install ".[dev]"
 | `ollama` | Ollama local models |
 | `vllm` | vLLM self-hosted inference |
 | `mcp` | Model Context Protocol support |
+| `serve` | A2A server support (FastAPI, Uvicorn) |
 | `all-llm` | All LLM providers |
 | `all` | All providers + MCP |
 | `dev` | Development tools (pytest, ruff, coverage) |
@@ -196,6 +198,37 @@ response = coordinator.execute_query("Why is this query failing?")
 print(response.content)
 ```
 
+### Exposing Agents via A2A
+
+Agents can be exposed as HTTP services using the A2A (Agent-to-Agent) protocol. This enables discovery and orchestration by other systems.
+
+```bash
+# Install A2A dependencies
+uv sync --extra serve
+```
+
+```python
+from obelix.core.agent.agent_factory import AgentFactory
+
+factory = AgentFactory()
+factory.register("my_agent", MyAgent, subagent_description="Does work")
+
+# Start A2A server on port 8000
+factory.serve(
+    "my_agent",
+    host="0.0.0.0",
+    port=8000,
+    description="My awesome agent",
+)
+```
+
+The server exposes:
+- `GET /.well-known/agent-card.json` - Agent capabilities
+- `GET /health` - Health check
+- `POST /` - JSON-RPC 2.0 methods (SendMessage, GetTask, ListTasks, CancelTask)
+
+For complete details, see [A2A Server Guide](docs/a2a_server.md).
+
 ---
 
 ## Project Structure
@@ -226,14 +259,16 @@ Obelix/
 │   │       ├── llm_connection.py    # AbstractLLMConnection ABC
 │   │       └── embedding_provider.py
 │   ├── adapters/                    # Concrete implementations
-│   │   └── outbound/
-│   │       ├── anthropic/           # Anthropic Claude
-│   │       ├── openai/              # OpenAI GPT
-│   │       ├── oci/                 # Oracle Cloud Generative AI
-│   │       ├── ibm/                 # IBM Watson X
-│   │       ├── ollama/              # Ollama local models
-│   │       ├── vllm/                # vLLM self-hosted
-│   │       └── embedding/           # Embedding providers
+│   │   ├── outbound/
+│   │   │   ├── anthropic/           # Anthropic Claude
+│   │   │   ├── openai/              # OpenAI GPT
+│   │   │   ├── oci/                 # Oracle Cloud Generative AI
+│   │   │   ├── ibm/                 # IBM Watson X
+│   │   │   ├── ollama/              # Ollama local models
+│   │   │   ├── vllm/                # vLLM self-hosted
+│   │   │   └── embedding/           # Embedding providers
+│   │   └── inbound/
+│   │       └── a2a/                 # A2A protocol (HTTP server, task store)
 │   ├── infrastructure/              # Cross-cutting concerns
 │   │   ├── logging.py               # Loguru configuration
 │   │   ├── providers.py             # Providers enum
@@ -360,6 +395,7 @@ Full documentation is available in the `docs/` directory:
 - **[User Guides](docs/)** - How to use Obelix
   - [Creating and Using Agents](docs/base_agent.md)
   - [Agent Factory & Orchestration](docs/agent_factory.md)
+  - [A2A Server & HTTP Deployment](docs/a2a_server.md)
   - [Hooks System](docs/hooks.md)
 
 For detailed API reference and examples, see [docs/index.md](docs/index.md).

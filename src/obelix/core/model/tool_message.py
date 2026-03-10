@@ -1,6 +1,6 @@
 # src/core/model/tool_message.py
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,7 +14,7 @@ class ToolCall(BaseModel):
     arguments: dict[str, Any] = Field(..., description="Arguments for the tool")
 
 
-class ToolStatus(str, Enum):
+class ToolStatus(StrEnum):
     SUCCESS = "success"
     ERROR = "error"
     TIMEOUT = "timeout"

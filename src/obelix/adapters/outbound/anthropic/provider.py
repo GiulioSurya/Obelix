@@ -386,6 +386,21 @@ class AnthropicProvider(AbstractLLMProvider):
             total_tokens=response.usage.input_tokens + response.usage.output_tokens,
         )
 
+    def _extract_reasoning(self, response) -> str | None:
+        """Extract reasoning content from thinking blocks, if present."""
+        if not hasattr(response, "content"):
+            return None
+
+        thinking_parts = []
+        for block in response.content:
+            block_type = self._get_block_attribute(block, "type")
+            if block_type == "thinking":
+                thinking = self._get_block_attribute(block, "thinking")
+                if thinking:
+                    thinking_parts.append(thinking)
+
+        return "\n".join(thinking_parts) if thinking_parts else None
+
     def _convert_response_to_assistant_message(self, response) -> AssistantMessage:
         """
         Convert Anthropic response to standardized AssistantMessage.
@@ -396,13 +411,18 @@ class AnthropicProvider(AbstractLLMProvider):
         tool_calls = self._extract_tool_calls(response)
         text_content = self._extract_content(response)
         usage = self._extract_usage(response)
+        reasoning = self._extract_reasoning(response)
+
+        metadata = {}
+        if reasoning:
+            metadata["reasoning"] = reasoning
 
         logger.debug(
-            f"[AnthropicProvider] Response parsed | content_chars={len(text_content)} tool_calls={len(tool_calls)} content_blocks={len(response.content) if hasattr(response, 'content') else 0}"
+            f"[AnthropicProvider] Response parsed | content_chars={len(text_content)} tool_calls={len(tool_calls)} content_blocks={len(response.content) if hasattr(response, 'content') else 0} reasoning={'present' if reasoning else 'absent'}"
         )
 
         return AssistantMessage(
-            content=text_content, tool_calls=tool_calls, usage=usage
+            content=text_content, tool_calls=tool_calls, usage=usage, metadata=metadata
         )
 
     def _get_block_attribute(self, block, attribute: str) -> Any:
