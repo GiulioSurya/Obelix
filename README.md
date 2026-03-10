@@ -7,7 +7,7 @@ A multi-provider LLM agent framework with tool support, hooks system, and seamle
 
 ## Features
 
-- **Multi-Provider Support**: OpenAI, Anthropic, Oracle Cloud (OCI), IBM Watson, Ollama, vLLM
+- **Multi-Provider Support**: OpenAI, Anthropic, Oracle Cloud (OCI), IBM Watson, Ollama, vLLM, and **100+ providers via LiteLLM**
 - **Tool System**: Declarative tool creation with automatic validation using Pydantic
 - **Sub-Agent Orchestration**: Compose hierarchical agent workflows with the Agent Factory
 - **A2A Protocol Support**: Expose agents as HTTP services using the A2A (Agent-to-Agent) standard
@@ -58,6 +58,7 @@ pip install ".[oci]"                # Oracle Cloud Infrastructure
 pip install ".[ibm]"                # IBM Watson X
 pip install ".[ollama]"             # Ollama (local models)
 pip install ".[vllm]"               # vLLM (self-hosted inference)
+pip install ".[litellm]"            # LiteLLM (100+ providers via unified API)
 
 # Install with MCP support
 pip install ".[mcp]"
@@ -85,6 +86,7 @@ pip install ".[dev]"
 | `ibm` | IBM Watson X AI |
 | `ollama` | Ollama local models |
 | `vllm` | vLLM self-hosted inference |
+| `litellm` | LiteLLM universal adapter (100+ providers) |
 | `mcp` | Model Context Protocol support |
 | `serve` | A2A server support (FastAPI, Uvicorn) |
 | `all-llm` | All LLM providers |
@@ -266,6 +268,7 @@ Obelix/
 │   │   │   ├── ibm/                 # IBM Watson X
 │   │   │   ├── ollama/              # Ollama local models
 │   │   │   ├── vllm/                # vLLM self-hosted
+│   │   │   ├── litellm/             # LiteLLM universal adapter
 │   │   │   └── embedding/           # Embedding providers
 │   │   └── inbound/
 │   │       └── a2a/                 # A2A protocol (HTTP server, task store)
@@ -296,6 +299,9 @@ Obelix/
 | IBM Watson | Supported | `from obelix.adapters.outbound.ibm.provider import IBMProvider` |
 | Ollama | Supported | `from obelix.adapters.outbound.ollama.provider import OllamaProvider` |
 | vLLM | Supported | `from obelix.adapters.outbound.vllm.provider import VLLMProvider` |
+| **LiteLLM** | Supported | `from obelix.adapters.outbound.litellm import LiteLLMProvider` |
+
+> **LiteLLM** is a universal adapter that routes to 100+ providers (Azure, Bedrock, Vertex AI, Groq, Mistral, Together AI, DeepSeek, and many more) through a single interface. Use it when you need a provider not listed above, or when you want to switch providers without changing code.
 
 ---
 
@@ -327,6 +333,42 @@ agent = BaseAgent(
 
 response = agent.execute_query("Hello!")
 print(response.content)
+```
+
+### LiteLLM Provider (Universal Adapter)
+
+Use LiteLLM when you want to access any provider through a single interface.
+The model string controls routing — no connection object needed.
+
+```python
+from obelix.adapters.outbound.litellm import LiteLLMProvider
+from obelix.core.agent import BaseAgent
+
+# Anthropic via LiteLLM
+provider = LiteLLMProvider(
+    model_id="anthropic/claude-haiku-4-5-20251001",
+    api_key="sk-ant-...",
+)
+
+# OpenAI via LiteLLM
+provider = LiteLLMProvider(model_id="openai/gpt-4o")  # reads OPENAI_API_KEY from env
+
+# Ollama via LiteLLM
+provider = LiteLLMProvider(
+    model_id="ollama/llama3",
+    base_url="http://localhost:11434",
+)
+
+# Azure via LiteLLM
+provider = LiteLLMProvider(
+    model_id="azure/my-deployment",
+    base_url="https://my-resource.openai.azure.com",
+    api_key="...",
+    api_version="2024-02-01",
+)
+
+agent = BaseAgent(system_message="You are a helpful assistant.", provider=provider)
+response = agent.execute_query("Hello!")
 ```
 
 

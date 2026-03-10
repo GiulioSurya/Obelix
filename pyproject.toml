@@ -24,6 +24,7 @@ oci = ["oci>=2.164.0"]
 ibm = ["ibm_watsonx_ai>=1.4.0"]
 ollama = ["ollama>=0.6.0"]
 vllm = ["vllm>=0.13.0; sys_platform == 'linux'"]
+litellm = ["litellm>=1.82.1"]
 mcp = ["mcp>=1.25.0"]
 tracer = ["httpx>=0.28.0"]
 serve = [
@@ -39,6 +40,7 @@ all-llm = [
     "ibm_watsonx_ai>=1.4.0",
     "ollama>=0.6.0",
     "vllm>=0.13.0; sys_platform == 'linux'",
+    "litellm>=1.82.1",
 ]
 all = [
     "anthropic>=0.71.0",
@@ -47,6 +49,7 @@ all = [
     "ibm_watsonx_ai>=1.4.0",
     "ollama>=0.6.0",
     "vllm>=0.13.0; sys_platform == 'linux'",
+    "litellm>=1.82.1",
     "mcp>=1.25.0",
 ]
 

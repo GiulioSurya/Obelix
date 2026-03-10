@@ -18,8 +18,7 @@ import os
 from dotenv import load_dotenv
 from pydantic import Field
 
-from obelix.adapters.outbound.openai.connection import OpenAIConnection
-from obelix.adapters.outbound.openai.provider import OpenAIProvider
+from obelix.adapters.outbound.litellm import LiteLLMProvider
 from obelix.core.agent import BaseAgent, SharedMemoryGraph
 from obelix.core.agent.agent_factory import AgentFactory
 from obelix.core.agent.shared_memory import PropagationPolicy
@@ -38,12 +37,15 @@ tracer = Tracer(exporter=ConsoleExporter(verbosity=2))
 setup_logging(console_level="TRACE")
 
 
-anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+LITELLM_MODEL = "anthropic/claude-haiku-4-5-20251001"
 
-openai_connection = OpenAIConnection(
-    api_key=anthropic_api_key,
-    base_url="https://api.anthropic.com/v1/",
-)
+
+def make_provider() -> LiteLLMProvider:
+    """Create a LiteLLM provider — api_key read from ANTHROPIC_API_KEY env var."""
+    return LiteLLMProvider(
+        model_id=LITELLM_MODEL,
+        api_key=os.getenv("ANTHROPIC_API_KEY"),
+    )
 
 
 @tool(name="calculator", description="Performs basic arithmetic operations")
@@ -79,9 +81,7 @@ class MathAgent(BaseAgent):
     def __init__(self, **kwargs):
         super().__init__(
             system_message="You are a math expert equipped with a calculator tool. Use it to solve equations.",
-            provider=OpenAIProvider(
-                connection=openai_connection, model_id="claude-haiku-4-5-20251001"
-            ),
+            provider=make_provider(),
             tool_policy=[
                 ToolRequirement(
                     tool_name="calculator",
@@ -116,9 +116,7 @@ class ReportAgent(BaseAgent):
                 "   - A brief summary comment\n"
                 "ALWAYS respond in a structured format."
             ),
-            provider=OpenAIProvider(
-                connection=openai_connection, model_id="claude-haiku-4-5-20251001"
-            ),
+            provider=make_provider(),
             **kwargs,
         )
 
@@ -138,9 +136,7 @@ class CoordinatorAgent(BaseAgent):
                 "- After the Math Agent responds, call the Report Agent to format the results.\n"
                 "Use the ask_user_question tool at least once."
             ),
-            provider=OpenAIProvider(
-                connection=openai_connection, model_id="claude-haiku-4-5-20251001"
-            ),
+            provider=make_provider(),
             tools=AskUserQuestionTool,
             **kwargs,
         )

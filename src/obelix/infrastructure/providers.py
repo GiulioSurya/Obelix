@@ -8,3 +8,4 @@ class Providers(Enum):
     OLLAMA = "ollama"
     VLLM = "vllm"
     OPENAI = "openai"
+    LITELLM = "litellm"
