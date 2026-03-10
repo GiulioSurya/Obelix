@@ -12,26 +12,28 @@ The coordinator calls math_agent first, which publishes its result
 to the SharedMemoryGraph. When report_agent runs, it pulls the math
 result via shared memory and produces a formatted report.
 """
+
 import os
 
 from dotenv import load_dotenv
 from pydantic import Field
 
+from obelix.adapters.outbound.openai.connection import OpenAIConnection
+from obelix.adapters.outbound.openai.provider import OpenAIProvider
 from obelix.core.agent import BaseAgent, SharedMemoryGraph
 from obelix.core.agent.agent_factory import AgentFactory
 from obelix.core.agent.shared_memory import PropagationPolicy
+from obelix.core.model.tool_message import ToolRequirement
 from obelix.core.tool.tool_base import Tool
 from obelix.core.tool.tool_decorator import tool
-from obelix.adapters.outbound.openai.connection import OpenAIConnection
-from obelix.adapters.outbound.openai.provider import OpenAIProvider
-from obelix.core.model.tool_message import ToolRequirement
+from obelix.core.tracer import Tracer
+from obelix.core.tracer.exporters import ConsoleExporter
 from obelix.infrastructure.logging import setup_logging
-from obelix.core.tracer import Tracer, HTTPExporter
 from obelix.plugins.builtin.ask_user_question_tool import AskUserQuestionTool
 
 load_dotenv()
 
-tracer = Tracer(exporter=HTTPExporter(endpoint="http://localhost:8100/api/v1/ingest"))
+tracer = Tracer(exporter=ConsoleExporter(verbosity=2))
 
 setup_logging(console_level="TRACE")
 
@@ -44,10 +46,11 @@ openai_connection = OpenAIConnection(
 )
 
 
-
 @tool(name="calculator", description="Performs basic arithmetic operations")
 class CalculatorTool(Tool):
-    operation: str = Field(..., description="Operation: add, subtract, multiply, divide")
+    operation: str = Field(
+        ..., description="Operation: add, subtract, multiply, divide"
+    )
     a: float = Field(..., description="First number")
     b: float = Field(..., description="Second number")
 
@@ -66,22 +69,25 @@ class CalculatorTool(Tool):
         return {"result": result}
 
 
-
 class MathAgent(BaseAgent):
     """Math expert agent."""
 
-    context: str = Field(default="", description="Use this field to provide more specific instructions")
+    context: str = Field(
+        default="", description="Use this field to provide more specific instructions"
+    )
 
     def __init__(self, **kwargs):
         super().__init__(
             system_message="You are a math expert equipped with a calculator tool. Use it to solve equations.",
-            provider=OpenAIProvider(connection=openai_connection, model_id="claude-3-5-haiku-20241022"),
+            provider=OpenAIProvider(
+                connection=openai_connection, model_id="claude-haiku-4-5-20251001"
+            ),
             tool_policy=[
                 ToolRequirement(
                     tool_name="calculator",
                     require_success=True,
                     min_calls=1,
-                    error_message="You must use the calculator tool to solve the equation"
+                    error_message="You must use the calculator tool to solve the equation",
                 )
             ],
             **kwargs,
@@ -110,7 +116,9 @@ class ReportAgent(BaseAgent):
                 "   - A brief summary comment\n"
                 "ALWAYS respond in a structured format."
             ),
-            provider=OpenAIProvider(connection=openai_connection, model_id="claude-3-5-haiku-20241022"),
+            provider=OpenAIProvider(
+                connection=openai_connection, model_id="claude-haiku-4-5-20251001"
+            ),
             **kwargs,
         )
 
@@ -130,11 +138,12 @@ class CoordinatorAgent(BaseAgent):
                 "- After the Math Agent responds, call the Report Agent to format the results.\n"
                 "Use the ask_user_question tool at least once."
             ),
-            provider=OpenAIProvider(connection=openai_connection, model_id="claude-3-5-haiku-20241022"),
+            provider=OpenAIProvider(
+                connection=openai_connection, model_id="claude-haiku-4-5-20251001"
+            ),
             tools=AskUserQuestionTool,
             **kwargs,
         )
-
 
 
 def create_memory_graph() -> SharedMemoryGraph:
@@ -142,7 +151,9 @@ def create_memory_graph() -> SharedMemoryGraph:
     graph = SharedMemoryGraph()
     graph.add_agent("math_agent")
     graph.add_agent("report_agent")
-    graph.add_edge("math_agent", "report_agent", policy=PropagationPolicy.FINAL_RESPONSE_ONLY)
+    graph.add_edge(
+        "math_agent", "report_agent", policy=PropagationPolicy.FINAL_RESPONSE_ONLY
+    )
     return graph
 
 
@@ -152,6 +163,7 @@ def create_factory() -> AgentFactory:
 
     factory = AgentFactory()
 
+    factory.with_tracer(tracer)
     factory.with_memory_graph(memory_graph)
 
     factory.register(
@@ -186,8 +198,7 @@ if __name__ == "__main__":
     # The factory injects the dependency awareness message so the coordinator
     # knows to call math_agent before report_agent.
     coordinator = factory.create(
-        "coordinator",
-        subagents=["math_agent", "report_agent"]
+        "coordinator", subagents=["math_agent", "report_agent"]
     )
 
     # Execute query

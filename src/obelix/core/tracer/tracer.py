@@ -16,7 +16,6 @@ from obelix.core.tracer.exporters import TracerExporter
 from obelix.core.tracer.models import Span, SpanStatus, SpanType, TraceSession
 from obelix.infrastructure.logging import get_logger
 
-
 logger = get_logger(__name__)
 
 
@@ -91,7 +90,7 @@ class Tracer:
             f"status={status} spans={len(trace.spans)}"
         )
 
-    def start_span(
+    async def start_span(
         self,
         span_type: SpanType,
         name: str,
@@ -113,6 +112,10 @@ class Tracer:
         )
         trace.spans.append(span)
         set_current_span(span)
+
+        # Streaming: export span immediately (partial, end_time=None)
+        await self._exporter.export_span(span, self.service_name)
+
         return span
 
     async def end_span(
@@ -167,7 +170,7 @@ class Tracer:
         input: Any = None,
         metadata: dict[str, Any] | None = None,
     ) -> AsyncGenerator[Span]:
-        span = self.start_span(span_type, name, input, metadata)
+        span = await self.start_span(span_type, name, input, metadata)
         try:
             yield span
         except Exception as e:

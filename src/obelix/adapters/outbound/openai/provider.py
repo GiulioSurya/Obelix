@@ -11,7 +11,10 @@ Supports OpenAI GPT models and any OpenAI-compatible API
 
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pydantic import BaseModel
 
 from openai import (
     APIConnectionError,
@@ -163,8 +166,7 @@ class OpenAIProvider(AbstractLLMProvider):
 
         for attempt in range(1, self.MAX_EXTRACTION_RETRIES + 1):
             logger.debug(
-                f"OpenAI invoke: model={self.model_id}, messages={len(working_messages)}, "
-                f"tools={len(converted_tools)}, attempt={attempt}"
+                f"[OpenAIProvider] Invoking model | model={self.model_id} messages={len(working_messages)} tools={len(converted_tools)} attempt={attempt}/{self.MAX_EXTRACTION_RETRIES}"
             )
 
             converted_messages = self._convert_messages(working_messages)
@@ -200,25 +202,29 @@ class OpenAIProvider(AbstractLLMProvider):
 
             response = await client.chat.completions.create(**api_params)
 
-            logger.info(f"OpenAI chat completed: {self.model_id}")
-
-            if hasattr(response, "usage") and response.usage:
-                logger.debug(
-                    f"OpenAI tokens: input={response.usage.prompt_tokens}, "
-                    f"output={response.usage.completion_tokens}, "
-                    f"total={response.usage.total_tokens}"
-                )
+            _usage = getattr(response, "usage", None)
+            _input_tokens = getattr(_usage, "prompt_tokens", None) if _usage else None
+            _output_tokens = (
+                getattr(_usage, "completion_tokens", None) if _usage else None
+            )
+            _total_tokens = getattr(_usage, "total_tokens", None) if _usage else None
+            logger.info(
+                f"[OpenAIProvider] LLM call completed | model={self.model_id} input_tokens={_input_tokens} output_tokens={_output_tokens} total_tokens={_total_tokens}"
+            )
 
             try:
                 return self._convert_response_to_assistant_message(response)
             except ToolCallExtractionError as e:
                 if attempt >= self.MAX_EXTRACTION_RETRIES:
                     logger.error(
-                        f"Tool call extraction failed after {attempt} attempts: {e}"
+                        f"[OpenAIProvider] Tool call extraction failed — max retries exhausted | model={self.model_id} attempt={attempt} error={e}",
+                        exc_info=True,
                     )
                     raise
 
-                logger.warning(f"Tool call extraction failed (attempt {attempt}): {e}")
+                logger.warning(
+                    f"[OpenAIProvider] Tool call extraction failed — retrying | model={self.model_id} attempt={attempt}/{self.MAX_EXTRACTION_RETRIES} error={e}"
+                )
 
                 error_feedback = HumanMessage(
                     content=f"ERROR: Your tool call was malformed.\n{e}\nPlease retry with valid JSON arguments."
@@ -283,7 +289,7 @@ class OpenAIProvider(AbstractLLMProvider):
                     )
 
         logger.debug(
-            f"Converted {len(messages)} messages to {len(converted)} OpenAI messages"
+            f"[OpenAIProvider] Messages converted | input={len(messages)} output={len(converted)}"
         )
         return converted
 
@@ -308,7 +314,9 @@ class OpenAIProvider(AbstractLLMProvider):
                 }
             )
 
-        logger.debug(f"Converted {len(tools)} tools to OpenAI format")
+        logger.debug(
+            f"[OpenAIProvider] Tools converted | count={len(tools)} names={[t.create_schema().name for t in tools]}"
+        )
         return converted
 
     # ========== TOOL CALL EXTRACTION ==========
@@ -398,7 +406,7 @@ class OpenAIProvider(AbstractLLMProvider):
         usage = self._extract_usage(response)
 
         logger.debug(
-            f"OpenAI response: content_length={len(content)}, tool_calls={len(tool_calls)}"
+            f"[OpenAIProvider] Response parsed | content_chars={len(content)} tool_calls={len(tool_calls)}"
         )
 
         return AssistantMessage(content=content, tool_calls=tool_calls, usage=usage)

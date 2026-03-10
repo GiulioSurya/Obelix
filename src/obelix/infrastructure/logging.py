@@ -128,6 +128,9 @@ from loguru import logger
 
 # Flag to prevent multiple setups
 _is_configured = False
+_console_handler_id: int | None = None
+_console_format: str | None = None
+_console_level: str = "INFO"
 
 
 def setup_logging(
@@ -206,19 +209,51 @@ def setup_logging(
         "{message}"
     )
 
+    global _console_handler_id, _console_format, _console_level
+
     # Console handler with colors
-    logger.add(
+    _console_handler_id = logger.add(
         sink=sys.stderr,  # Output: console (stderr)
         level=console_level,  # Minimum level (INFO by default)
         format=console_format,  # Compact format
         colorize=True,  # Colors active
     )
+    _console_format = console_format
+    _console_level = console_level
 
     _is_configured = True
 
     # Initial log to confirm setup
     logger.bind(name="logging_config").info(
         f"Logging configured - file={level}, console={console_level}, path={log_path / log_filename}"
+    )
+
+
+def suppress_console() -> None:
+    """Raise console handler to WARNING level (hides INFO/DEBUG during tracing)."""
+    global _console_handler_id
+    if _console_handler_id is None:
+        return
+    logger.remove(_console_handler_id)
+    _console_handler_id = logger.add(
+        sink=sys.stderr,
+        level="WARNING",
+        format=_console_format,
+        colorize=True,
+    )
+
+
+def restore_console() -> None:
+    """Restore console handler to its original level."""
+    global _console_handler_id
+    if _console_handler_id is None:
+        return
+    logger.remove(_console_handler_id)
+    _console_handler_id = logger.add(
+        sink=sys.stderr,
+        level=_console_level,
+        format=_console_format,
+        colorize=True,
     )
 
 

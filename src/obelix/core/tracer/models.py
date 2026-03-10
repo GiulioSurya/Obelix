@@ -15,6 +15,8 @@ class SpanType(StrEnum):
     sub_agent = "sub_agent"
     memory = "memory"
     hook = "hook"
+    human = "human"
+    assistant = "assistant"
 
 
 class SpanStatus(StrEnum):
