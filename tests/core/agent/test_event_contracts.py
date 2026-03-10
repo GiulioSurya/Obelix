@@ -103,13 +103,14 @@ class TestGetEventContracts:
 class TestRetryableContracts:
     """Tests for retryable flag on each event contract."""
 
-    def test_only_after_llm_call_and_before_final_response_are_retryable(self):
-        """Only AFTER_LLM_CALL and BEFORE_FINAL_RESPONSE have retryable=True."""
+    def test_retryable_events(self):
+        """AFTER_LLM_CALL, BEFORE_FINAL_RESPONSE, and BEFORE_TOOL_EXECUTION have retryable=True."""
         contracts = get_event_contracts()
         retryable_events = {event for event, c in contracts.items() if c.retryable}
         assert retryable_events == {
             AgentEvent.AFTER_LLM_CALL,
             AgentEvent.BEFORE_FINAL_RESPONSE,
+            AgentEvent.BEFORE_TOOL_EXECUTION,
         }
 
     def test_non_retryable_events(self):
@@ -117,7 +118,6 @@ class TestRetryableContracts:
         contracts = get_event_contracts()
         non_retryable = [
             AgentEvent.BEFORE_LLM_CALL,
-            AgentEvent.BEFORE_TOOL_EXECUTION,
             AgentEvent.AFTER_TOOL_EXECUTION,
             AgentEvent.ON_TOOL_ERROR,
             AgentEvent.QUERY_END,
