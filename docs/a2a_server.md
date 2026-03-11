@@ -1,6 +1,13 @@
 # A2A Server Guide
 
-The A2A (Agent-to-Agent) protocol enables Obelix agents to be exposed as HTTP services compliant with the A2A specification. This allows agents to be discovered, invoked, and orchestrated by other systems using standardized JSON-RPC 2.0 methods.
+The [A2A (Agent-to-Agent) protocol](https://a2a-protocol.org/latest/) enables Obelix
+agents to be exposed as HTTP services compliant with the A2A specification. This allows
+agents to be discovered, invoked, and orchestrated by other systems using standardized
+JSON-RPC 2.0 methods.
+
+> **Spec version**: this implementation targets the
+> [A2A Protocol Specification RC v1.0](https://a2a-protocol.org/latest/specification/).
+> For a detailed gap analysis and roadmap, see [A2A Compliance](a2a_compliance.md).
 
 This guide covers:
 - How the A2A server works
@@ -13,13 +20,42 @@ This guide covers:
 
 ## What is A2A?
 
-A2A (Agent-to-Agent) is a standard protocol for inter-agent communication. It defines:
-- A machine-readable agent card that describes capabilities and metadata
-- HTTP endpoints for sending messages and managing tasks
-- JSON-RPC 2.0 as the method call mechanism
-- Task management with status tracking and artifacts
+[A2A (Agent-to-Agent)](https://a2a-protocol.org/latest/topics/what-is-a2a/) is an open
+standard for inter-agent communication, originally developed by Google and donated to
+the Linux Foundation. It defines:
 
-An Obelix agent exposed via A2A becomes a network service that other agents (or systems) can discover and invoke.
+- A machine-readable **Agent Card** that describes capabilities, skills, and metadata
+  ([Agent Discovery](https://a2a-protocol.org/latest/topics/agent-discovery/))
+- HTTP endpoints for sending messages and managing tasks
+  ([Specification](https://a2a-protocol.org/latest/specification/))
+- **JSON-RPC 2.0** as the primary method call mechanism (one of 3 supported bindings)
+- **Task management** with status tracking, conversation history, and artifacts
+  ([Life of a Task](https://a2a-protocol.org/latest/topics/life-of-a-task/))
+
+A2A complements [MCP (Model Context Protocol)](https://modelcontextprotocol.io/): while
+MCP connects agents to tools and data sources, A2A enables agents to collaborate with
+each other as peers
+([A2A and MCP](https://a2a-protocol.org/latest/topics/a2a-and-mcp/)).
+
+An Obelix agent exposed via A2A becomes a network service that other agents (or systems)
+can discover and invoke.
+
+### Current Implementation Scope
+
+Obelix currently implements the **A2A Server** role (inbound adapter):
+
+| Capability | Status |
+|------------|--------|
+| Agent Card (discovery) | Implemented |
+| SendMessage | Implemented |
+| GetTask | Implemented |
+| ListTasks | Implemented |
+| CancelTask | Implemented |
+| Streaming (SSE) | Not yet |
+| Push Notifications | Not yet |
+| A2A Client (outbound) | Not yet |
+
+For the full compliance matrix, see [A2A Compliance](a2a_compliance.md).
 
 ---
 
@@ -127,6 +163,11 @@ The A2A server exposes three HTTP endpoints:
 GET /.well-known/agent-card.json
 ```
 
+> **Note**: the spec defines the well-known path as `/.well-known/a2a/agent-card`
+> ([RFC 8615](https://datatracker.ietf.org/doc/html/rfc8615)). The current
+> implementation uses `/.well-known/agent-card.json`. This will be aligned in a
+> future release (see [A2A Compliance > Agent Card](a2a_compliance.md#agent-card-compliance)).
+
 Returns the A2A-compliant agent card (metadata and capabilities):
 
 ```json
@@ -187,6 +228,8 @@ Accepts JSON-RPC 2.0 requests for agent methods. See "JSON-RPC Methods" below.
 
 ## JSON-RPC Methods
 
+Ref: [Specification > Operations](https://a2a-protocol.org/latest/specification/)
+
 All methods use JSON-RPC 2.0 format:
 
 ```json
@@ -223,6 +266,11 @@ Or on error:
 
 Send a message to the agent and receive a response. Creates a task to track execution.
 
+> **Spec note**: the full spec supports a `configuration` object with
+> `acceptedOutputModes`, `historyLength`, `returnImmediately`, and
+> `taskPushNotificationConfig`. These are not yet implemented.
+> See [A2A Compliance > Operations](a2a_compliance.md#operations-json-rpc-methods).
+
 **Method**: `SendMessage`
 
 **Parameters**:
@@ -230,7 +278,7 @@ Send a message to the agent and receive a response. Creates a task to track exec
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `message` | Object | Message object with `parts` array |
-| `message.parts` | Array | Array of message parts (usually contains text) |
+| `message.parts` | Array | Array of message parts (currently text only) |
 | `message.parts[].text` | String | Text content of the message |
 | `contextId` | String (Optional) | Context identifier for grouping related tasks |
 
@@ -288,6 +336,10 @@ Send a message to the agent and receive a response. Creates a task to track exec
 2. Agent processes the message asynchronously
 3. On success: state becomes `"completed"`, response stored in artifacts
 4. On failure: state becomes `"failed"`, error message in status
+
+> **Spec note**: the full spec defines additional states: `INPUT_REQUIRED` (agent needs
+> more info from user), `AUTH_REQUIRED`, and `REJECTED`. These are not yet supported.
+> See [Life of a Task](https://a2a-protocol.org/latest/topics/life-of-a-task/).
 
 ---
 
@@ -669,7 +721,9 @@ The `AgentFactory.serve()` method accepts these parameters:
 
 ## Error Codes
 
-The A2A server uses standard JSON-RPC error codes:
+Ref: [Specification > Errors](https://a2a-protocol.org/latest/specification/)
+
+The A2A server uses standard JSON-RPC error codes plus A2A-specific codes:
 
 | Code | Meaning |
 |------|---------|
@@ -883,7 +937,18 @@ done
 
 ## See Also
 
+- [A2A Compliance](a2a_compliance.md) - Gap analysis and implementation roadmap
 - [Agent Factory Guide](agent_factory.md) - Managing agents and sub-agents
 - [BaseAgent Guide](base_agent.md) - Agent fundamentals
 - [README - Installation](../README.md#installation) - Setting up the project
-- [A2A Specification](https://spec.openapis.org/oas/latest.html) - Full A2A protocol definition
+
+### A2A Protocol References
+
+- [A2A Specification (RC v1.0)](https://a2a-protocol.org/latest/specification/) - Full protocol definition
+- [What is A2A](https://a2a-protocol.org/latest/topics/what-is-a2a/) - Protocol overview
+- [Agent Discovery](https://a2a-protocol.org/latest/topics/agent-discovery/) - How agents find each other
+- [Life of a Task](https://a2a-protocol.org/latest/topics/life-of-a-task/) - Task lifecycle and states
+- [Streaming & Async](https://a2a-protocol.org/latest/topics/streaming-and-async/) - SSE and push notifications
+- [A2A and MCP](https://a2a-protocol.org/latest/topics/a2a-and-mcp/) - How the two protocols complement each other
+- [Python SDK](https://a2a-protocol.org/latest/sdk/python/api/) - Official Python SDK reference
+- [A2A GitHub](https://github.com/a2aproject/A2A) - Protocol source (spec/a2a.proto is the canonical source)
