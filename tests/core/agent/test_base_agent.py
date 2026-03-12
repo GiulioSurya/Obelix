@@ -630,17 +630,18 @@ class TestBuildFinalResponse:
 
 
 class TestCollectToolResults:
-    """Tests for BaseAgent._collect_tool_results."""
+    """Tests for _collect_tool_results (now in tool_policy_hook module)."""
 
-    def test_empty_history(self, mock_provider):
+    def test_empty_history(self):
         """Empty history returns empty list."""
-        agent = BaseAgent(system_message="x", provider=mock_provider)
-        agent.conversation_history = []
-        assert agent._collect_tool_results() == []
+        from obelix.core.agent.tool_policy_hook import _collect_tool_results
 
-    def test_history_with_tool_message(self, mock_provider):
+        assert _collect_tool_results([]) == []
+
+    def test_history_with_tool_message(self):
         """Extracts results from ToolMessages in history."""
-        agent = BaseAgent(system_message="x", provider=mock_provider)
+        from obelix.core.agent.tool_policy_hook import _collect_tool_results
+
         tr = ToolResult(
             tool_name="calc",
             tool_call_id="tc_1",
@@ -648,28 +649,27 @@ class TestCollectToolResults:
             status=ToolStatus.SUCCESS,
         )
         tm = ToolMessage(tool_results=[tr])
-        agent.conversation_history.append(tm)
-        results = agent._collect_tool_results()
+        results = _collect_tool_results([tm])
         assert len(results) == 1
         assert results[0].tool_name == "calc"
 
-    def test_history_without_tool_message(self, mock_provider):
+    def test_history_without_tool_message(self):
         """History with no ToolMessage returns empty list."""
-        agent = BaseAgent(system_message="x", provider=mock_provider)
-        agent.conversation_history.append(HumanMessage(content="hello"))
-        assert agent._collect_tool_results() == []
+        from obelix.core.agent.tool_policy_hook import _collect_tool_results
 
-    def test_custom_history_parameter(self, mock_provider):
+        assert _collect_tool_results([HumanMessage(content="hello")]) == []
+
+    def test_custom_history_parameter(self):
         """Can pass a custom history list to scan."""
-        agent = BaseAgent(system_message="x", provider=mock_provider)
+        from obelix.core.agent.tool_policy_hook import _collect_tool_results
+
         tr = ToolResult(
             tool_name="search",
             tool_call_id="tc_2",
             result="found",
             status=ToolStatus.SUCCESS,
         )
-        custom_history = [ToolMessage(tool_results=[tr])]
-        results = agent._collect_tool_results(history=custom_history)
+        results = _collect_tool_results([ToolMessage(tool_results=[tr])])
         assert len(results) == 1
         assert results[0].tool_name == "search"
 
@@ -799,37 +799,42 @@ class TestRegisterAgent:
 class TestSharedMemoryNoOp:
     """Tests for shared memory hooks when memory_graph is None."""
 
-    @pytest.mark.asyncio
-    async def test_inject_shared_memory_noop_without_graph(self, mock_provider):
+    def test_inject_shared_memory_noop_without_graph(self, mock_provider):
         """_inject_shared_memory does nothing when memory_graph is None."""
+        from obelix.core.agent.memory_hooks import _inject_shared_memory
+
         agent = BaseAgent(system_message="x", provider=mock_provider)
         assert agent.memory_graph is None
         history_len = len(agent.conversation_history)
         status = MagicMock()
         status.agent = agent
-        agent._inject_shared_memory(status)
+        _inject_shared_memory(status)
         assert len(agent.conversation_history) == history_len
 
     @pytest.mark.asyncio
     async def test_publish_to_memory_noop_without_graph(self, mock_provider):
         """_publish_to_memory does nothing when memory_graph is None."""
+        from obelix.core.agent.memory_hooks import _publish_to_memory
+
         agent = BaseAgent(system_message="x", provider=mock_provider)
         assert agent.memory_graph is None
         status = MagicMock()
+        status.agent = agent
         status.assistant_message = AssistantMessage(content="test")
         # Should not raise
-        await agent._publish_to_memory(status)
+        await _publish_to_memory(status)
 
-    @pytest.mark.asyncio
-    async def test_inject_shared_memory_noop_without_agent_id(self, mock_provider):
+    def test_inject_shared_memory_noop_without_agent_id(self, mock_provider):
         """_inject_shared_memory does nothing when agent_id is None."""
+        from obelix.core.agent.memory_hooks import _inject_shared_memory
+
         agent = BaseAgent(system_message="x", provider=mock_provider)
         agent.memory_graph = MagicMock()
         agent.agent_id = None
         history_len = len(agent.conversation_history)
         status = MagicMock()
         status.agent = agent
-        agent._inject_shared_memory(status)
+        _inject_shared_memory(status)
         assert len(agent.conversation_history) == history_len
 
 
