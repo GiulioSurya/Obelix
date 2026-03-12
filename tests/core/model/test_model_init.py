@@ -16,6 +16,7 @@ class TestModelPackageExports:
             "HumanMessage",
             "AssistantMessage",
             "AssistantResponse",
+            "StreamEvent",
             "ToolCall",
             "ToolResult",
             "ToolStatus",

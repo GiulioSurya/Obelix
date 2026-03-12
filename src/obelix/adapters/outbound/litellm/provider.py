@@ -11,11 +11,12 @@ The model string controls routing: "anthropic/claude-3-5-sonnet",
 No connection object needed: LiteLLM is stateless, api_key and base_url
 are passed per-call.
 
-TODO: Add streaming support via litellm stream=True + CustomStreamWrapper.
+Supports both synchronous (invoke) and streaming (invoke_stream) modes.
 """
 
 import json
 import logging
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -34,6 +35,7 @@ from obelix.core.model import (
     AssistantMessage,
     HumanMessage,
     StandardMessage,
+    StreamEvent,
     SystemMessage,
     ToolMessage,
 )
@@ -234,27 +236,13 @@ class LiteLLMProvider(AbstractLLMProvider):
 
         raise RuntimeError("Unexpected end of invoke loop")
 
-    async def _call_litellm(
+    def _build_api_params(
         self,
         messages: list[StandardMessage],
         converted_tools: list[dict],
         response_schema: type["BaseModel"] | None,
-        attempt: int,
-    ):
-        """
-        Build API params and call litellm.acompletion() with tenacity retry.
-
-        Separated from invoke() to allow tenacity decorator on the actual
-        network call without interfering with the tool-extraction retry loop.
-        """
-        _get_litellm()  # Validate availability before building params
-
-        logger.debug(
-            f"[LiteLLMProvider] Invoking model | model={self.model_id} "
-            f"messages={len(messages)} tools={len(converted_tools)} "
-            f"attempt={attempt}/{self.MAX_EXTRACTION_RETRIES}"
-        )
-
+    ) -> dict[str, Any]:
+        """Build the API params dict shared by invoke and invoke_stream."""
         converted_messages = self._convert_messages(messages)
 
         api_params: dict[str, Any] = {
@@ -296,6 +284,31 @@ class LiteLLMProvider(AbstractLLMProvider):
 
         # Merge any extra kwargs from constructor
         api_params.update(self._extra_kwargs)
+
+        return api_params
+
+    async def _call_litellm(
+        self,
+        messages: list[StandardMessage],
+        converted_tools: list[dict],
+        response_schema: type["BaseModel"] | None,
+        attempt: int,
+    ):
+        """
+        Build API params and call litellm.acompletion() with tenacity retry.
+
+        Separated from invoke() to allow tenacity decorator on the actual
+        network call without interfering with the tool-extraction retry loop.
+        """
+        _get_litellm()  # Validate availability before building params
+
+        logger.debug(
+            f"[LiteLLMProvider] Invoking model | model={self.model_id} "
+            f"messages={len(messages)} tools={len(converted_tools)} "
+            f"attempt={attempt}/{self.MAX_EXTRACTION_RETRIES}"
+        )
+
+        api_params = self._build_api_params(messages, converted_tools, response_schema)
 
         return await self._acompletion_with_retry(**api_params)
 
@@ -373,6 +386,137 @@ class LiteLLMProvider(AbstractLLMProvider):
                 f"status={getattr(e, 'status_code', 'unknown')} — {e.message}"
             )
             raise
+
+    # ========== INVOKE STREAM ==========
+
+    async def invoke_stream(
+        self,
+        messages: list[StandardMessage],
+        tools: list[Tool],
+        response_schema: type["BaseModel"] | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """
+        Streaming variant of invoke(). Yields StreamEvent chunks.
+
+        Text tokens are yielded as StreamEvent(token=...) as they arrive.
+        Tool calls are accumulated silently (no token yield).
+        The final StreamEvent (is_final=True) carries the complete
+        AssistantMessage with accumulated content, tool_calls, and usage.
+
+        Note: tool call extraction retry (the feedback loop in invoke())
+        is NOT supported in streaming mode. If tool call JSON is malformed,
+        the error propagates to the caller.
+        """
+        _get_litellm()
+        converted_tools = self._convert_tools(tools)
+
+        api_params = self._build_api_params(messages, converted_tools, response_schema)
+        api_params["stream"] = True
+        api_params["stream_options"] = {"include_usage": True}
+
+        logger.debug(
+            f"[LiteLLMProvider] Invoking model (stream) | model={self.model_id} "
+            f"messages={len(messages)} tools={len(converted_tools)}"
+        )
+
+        response = await self._acompletion_with_retry(**api_params)
+
+        # Accumulators
+        content_parts: list[str] = []
+        # tool_calls_acc: {index: {"id": str, "name": str, "arguments": str}}
+        tool_calls_acc: dict[int, dict[str, str]] = {}
+        usage: Usage | None = None
+
+        async for chunk in response:
+            choice = chunk.choices[0] if chunk.choices else None
+
+            # Extract usage from the final chunk (stream_options.include_usage)
+            chunk_usage = getattr(chunk, "usage", None)
+            if chunk_usage and getattr(chunk_usage, "prompt_tokens", None) is not None:
+                usage = Usage(
+                    input_tokens=chunk_usage.prompt_tokens,
+                    output_tokens=chunk_usage.completion_tokens,
+                    total_tokens=chunk_usage.total_tokens,
+                )
+
+            if not choice:
+                continue
+
+            delta = choice.delta
+
+            # Text content
+            delta_content = getattr(delta, "content", None)
+            if delta_content:
+                content_parts.append(delta_content)
+                yield StreamEvent(token=delta_content)
+
+            # Tool calls (accumulate fragments)
+            delta_tool_calls = getattr(delta, "tool_calls", None)
+            if delta_tool_calls:
+                for tc_chunk in delta_tool_calls:
+                    idx = getattr(tc_chunk, "index", 0)
+                    if idx not in tool_calls_acc:
+                        tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
+
+                    if getattr(tc_chunk, "id", None):
+                        tool_calls_acc[idx]["id"] = tc_chunk.id
+                    fn = getattr(tc_chunk, "function", None)
+                    if fn:
+                        if getattr(fn, "name", None):
+                            tool_calls_acc[idx]["name"] = fn.name
+                        if getattr(fn, "arguments", None):
+                            tool_calls_acc[idx]["arguments"] += fn.arguments
+
+        # Build complete AssistantMessage
+        full_content = "".join(content_parts)
+
+        tool_calls: list[ToolCall] = []
+        if tool_calls_acc:
+            errors = []
+            for _idx, tc_data in sorted(tool_calls_acc.items()):
+                try:
+                    arguments = tc_data["arguments"]
+                    if isinstance(arguments, str) and arguments:
+                        arguments = json.loads(arguments, strict=False)
+                        while isinstance(arguments, str):
+                            arguments = json.loads(arguments, strict=False)
+                    elif not arguments:
+                        arguments = {}
+
+                    tool_calls.append(
+                        ToolCall(
+                            id=tc_data["id"],
+                            name=tc_data["name"],
+                            arguments=arguments,
+                        )
+                    )
+                except json.JSONDecodeError as e:
+                    errors.append(
+                        f"Tool '{tc_data['name']}': Invalid JSON in arguments - {e.msg}"
+                    )
+                except ValidationError as e:
+                    errors.append(f"Tool '{tc_data['name']}': {e.errors()[0]['msg']}")
+
+            if errors:
+                raise ToolCallExtractionError(
+                    "Failed to extract tool calls from stream:\n"
+                    + "\n".join(f"  - {err}" for err in errors)
+                )
+
+        assistant_message = AssistantMessage(
+            content=full_content,
+            tool_calls=tool_calls,
+            usage=usage,
+        )
+
+        logger.info(
+            f"[LiteLLMProvider] Stream completed | model={self.model_id} "
+            f"content_chars={len(full_content)} tool_calls={len(tool_calls)} "
+            f"input_tokens={usage.input_tokens if usage else None} "
+            f"output_tokens={usage.output_tokens if usage else None}"
+        )
+
+        yield StreamEvent(assistant_message=assistant_message, is_final=True)
 
     # ========== MESSAGE CONVERSION ==========
 

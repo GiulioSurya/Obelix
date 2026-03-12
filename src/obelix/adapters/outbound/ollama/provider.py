@@ -12,6 +12,7 @@ AsyncClient is natively async - no asyncio.to_thread() needed.
 
 import json
 import logging
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -37,6 +38,7 @@ from obelix.core.model import (
     AssistantMessage,
     HumanMessage,
     StandardMessage,
+    StreamEvent,
     SystemMessage,
     ToolMessage,
 )
@@ -198,6 +200,147 @@ class OllamaProvider(AbstractLLMProvider):
                 working_messages.append(error_feedback)
 
         raise RuntimeError("Unexpected end of invoke loop")
+
+    # ========== INVOKE STREAM ==========
+
+    async def invoke_stream(
+        self,
+        messages: list[StandardMessage],
+        tools: list[Tool],
+        response_schema: type["BaseModel"] | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """
+        Streaming variant of invoke(). Yields StreamEvent chunks.
+
+        Text tokens are yielded as StreamEvent(token=...) as they arrive.
+        Tool calls are accumulated silently (no token yield).
+        The final StreamEvent (is_final=True) carries the complete
+        AssistantMessage with accumulated content, tool_calls, and usage.
+
+        Note: tool call extraction retry is NOT supported in streaming mode.
+        Ollama streaming returns dict-based chunks via AsyncClient.chat(stream=True).
+        """
+        converted_tools = self._convert_tools(tools)
+        converted_messages = self._convert_messages(messages)
+
+        chat_params: dict[str, Any] = {
+            "model": self.model_id,
+            "messages": converted_messages,
+            "stream": True,
+        }
+
+        if converted_tools:
+            chat_params["tools"] = converted_tools
+        if self.options:
+            chat_params["options"] = self.options
+        if self.keep_alive is not None:
+            chat_params["keep_alive"] = self.keep_alive
+
+        logger.debug(
+            f"[OllamaProvider] Invoking model (stream) | model={self.model_id} "
+            f"messages={len(messages)} tools={len(converted_tools)}"
+        )
+
+        # Accumulators
+        content_parts: list[str] = []
+        tool_calls_raw: list[dict] = []
+        prompt_tokens: int | None = None
+        completion_tokens: int | None = None
+
+        async for chunk in await self.client.chat(**chat_params):
+            # Ollama streaming chunks have a "message" dict with "content" and optional "tool_calls"
+            message = (
+                chunk.get("message", {})
+                if isinstance(chunk, dict)
+                else getattr(chunk, "message", None)
+            )
+            if message is None:
+                continue
+
+            if isinstance(message, dict):
+                msg_content = message.get("content", "")
+                msg_tool_calls = message.get("tool_calls")
+            else:
+                msg_content = getattr(message, "content", "")
+                msg_tool_calls = getattr(message, "tool_calls", None)
+
+            # Text content
+            if msg_content:
+                content_parts.append(msg_content)
+                yield StreamEvent(token=msg_content)
+
+            # Tool calls (Ollama sends complete tool calls in chunks, not fragments)
+            if msg_tool_calls:
+                for tc in msg_tool_calls:
+                    tool_calls_raw.append(tc)
+
+            # Usage info from final chunk
+            if isinstance(chunk, dict):
+                if chunk.get("prompt_eval_count") is not None:
+                    prompt_tokens = chunk["prompt_eval_count"]
+                if chunk.get("eval_count") is not None:
+                    completion_tokens = chunk["eval_count"]
+            else:
+                if getattr(chunk, "prompt_eval_count", None) is not None:
+                    prompt_tokens = chunk.prompt_eval_count
+                if getattr(chunk, "eval_count", None) is not None:
+                    completion_tokens = chunk.eval_count
+
+        # Build complete AssistantMessage
+        full_content = "".join(content_parts)
+
+        tool_calls: list[ToolCall] = []
+        if tool_calls_raw:
+            errors = []
+            for tc in tool_calls_raw:
+                try:
+                    if isinstance(tc, dict):
+                        fn = tc.get("function", {})
+                        tc_name = fn.get("name", "")
+                        arguments = fn.get("arguments", {})
+                        tc_id = tc.get("id", f"ollama_{len(tool_calls)}")
+                    else:
+                        fn = getattr(tc, "function", None)
+                        tc_name = getattr(fn, "name", "") if fn else ""
+                        arguments = getattr(fn, "arguments", {}) if fn else {}
+                        tc_id = getattr(tc, "id", None) or f"ollama_{len(tool_calls)}"
+
+                    if isinstance(arguments, str):
+                        arguments = json.loads(arguments, strict=False)
+
+                    tool_calls.append(
+                        ToolCall(id=tc_id, name=tc_name, arguments=dict(arguments))
+                    )
+                except json.JSONDecodeError as e:
+                    errors.append(f"Tool '{tc_name}': Invalid JSON - {e.msg}")
+                except (ValidationError, AttributeError) as e:
+                    errors.append(f"Tool: {e}")
+
+            if errors and not tool_calls:
+                raise ToolCallExtractionError(
+                    "Failed to extract tool calls from stream:\n"
+                    + "\n".join(f"  - {err}" for err in errors)
+                )
+
+        usage = None
+        if prompt_tokens is not None or completion_tokens is not None:
+            _p = prompt_tokens or 0
+            _c = completion_tokens or 0
+            usage = Usage(input_tokens=_p, output_tokens=_c, total_tokens=_p + _c)
+
+        assistant_message = AssistantMessage(
+            content=full_content,
+            tool_calls=tool_calls,
+            usage=usage,
+        )
+
+        logger.info(
+            f"[OllamaProvider] Stream completed | model={self.model_id} "
+            f"content_chars={len(full_content)} tool_calls={len(tool_calls)} "
+            f"input_tokens={prompt_tokens} output_tokens={completion_tokens}"
+        )
+
+        yield StreamEvent(assistant_message=assistant_message, is_final=True)
 
     # ========== MESSAGE CONVERSION ==========
 

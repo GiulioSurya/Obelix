@@ -7,6 +7,7 @@ No external mapping dependencies.
 """
 
 import logging
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -31,6 +32,7 @@ from obelix.core.model import (
     AssistantMessage,
     HumanMessage,
     StandardMessage,
+    StreamEvent,
     SystemMessage,
     ToolMessage,
 )
@@ -200,6 +202,156 @@ class AnthropicProvider(AbstractLLMProvider):
                 working_messages.append(error_feedback)
 
         raise RuntimeError("Unexpected end of invoke loop")
+
+    # ========== INVOKE STREAM ==========
+
+    async def invoke_stream(
+        self,
+        messages: list[StandardMessage],
+        tools: list[Tool],
+        response_schema: type["BaseModel"] | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """
+        Streaming variant of invoke(). Yields StreamEvent chunks.
+
+        Text tokens are yielded as StreamEvent(token=...) as they arrive.
+        Tool calls are accumulated silently (no token yield).
+        The final StreamEvent (is_final=True) carries the complete
+        AssistantMessage with accumulated content, tool_calls, and usage.
+
+        Note: tool call extraction retry is NOT supported in streaming mode.
+        """
+        client = self.connection.get_client()
+        converted_tools = self._convert_tools(tools)
+
+        system_content, conversation_messages = self._convert_messages(messages)
+
+        api_params: dict[str, Any] = {
+            "model": self.model_id,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "messages": conversation_messages,
+            "thinking": self.thinking_params,
+            "stream": True,
+        }
+
+        if system_content:
+            api_params["system"] = system_content
+        if self.top_p is not None:
+            api_params["top_p"] = self.top_p
+        if converted_tools:
+            api_params["tools"] = converted_tools
+
+        logger.debug(
+            f"[AnthropicProvider] Invoking model (stream) | model={self.model_id} "
+            f"messages={len(messages)} tools={len(converted_tools)} thinking={self.thinking_mode}"
+        )
+
+        # Accumulators
+        content_parts: list[str] = []
+        # tool_calls_acc: {index: {"id": str, "name": str, "input": str}}
+        tool_calls_acc: dict[int, dict[str, str]] = {}
+        current_tool_index = 0
+        input_tokens: int | None = None
+        output_tokens: int | None = None
+
+        async with client.messages.stream(**api_params) as stream:
+            async for event in stream:
+                event_type = event.type
+
+                # Usage from message_start
+                if event_type == "message_start":
+                    msg_usage = getattr(event.message, "usage", None)
+                    if msg_usage:
+                        input_tokens = getattr(msg_usage, "input_tokens", None)
+
+                # Text delta
+                elif event_type == "content_block_delta":
+                    delta = event.delta
+                    delta_type = getattr(delta, "type", None)
+
+                    if delta_type == "text_delta":
+                        text = getattr(delta, "text", "")
+                        if text:
+                            content_parts.append(text)
+                            yield StreamEvent(token=text)
+
+                    elif delta_type == "input_json_delta":
+                        # Tool call argument fragment
+                        partial_json = getattr(delta, "partial_json", "")
+                        if current_tool_index in tool_calls_acc:
+                            tool_calls_acc[current_tool_index]["input"] += partial_json
+
+                # Tool use block start
+                elif event_type == "content_block_start":
+                    block = getattr(event, "content_block", None)
+                    if block and getattr(block, "type", None) == "tool_use":
+                        current_tool_index = getattr(event, "index", current_tool_index)
+                        tool_calls_acc[current_tool_index] = {
+                            "id": getattr(block, "id", ""),
+                            "name": getattr(block, "name", ""),
+                            "input": "",
+                        }
+
+                # Usage from message_delta (output tokens)
+                elif event_type == "message_delta":
+                    delta_usage = getattr(event, "usage", None)
+                    if delta_usage:
+                        output_tokens = getattr(delta_usage, "output_tokens", None)
+
+        # Build complete AssistantMessage
+        full_content = "".join(content_parts)
+
+        tool_calls: list[ToolCall] = []
+        if tool_calls_acc:
+            import json
+
+            errors = []
+            for _idx, tc_data in sorted(tool_calls_acc.items()):
+                try:
+                    arguments = tc_data["input"]
+                    if isinstance(arguments, str) and arguments:
+                        arguments = json.loads(arguments, strict=False)
+                    elif not arguments:
+                        arguments = {}
+
+                    tool_calls.append(
+                        ToolCall(
+                            id=tc_data["id"],
+                            name=tc_data["name"],
+                            arguments=arguments,
+                        )
+                    )
+                except json.JSONDecodeError as e:
+                    errors.append(
+                        f"Tool '{tc_data['name']}': Invalid JSON in arguments - {e.msg}"
+                    )
+
+            if errors:
+                raise ToolCallExtractionError(
+                    "Failed to extract tool calls from stream:\n"
+                    + "\n".join(f"  - {err}" for err in errors)
+                )
+
+        usage = None
+        if input_tokens is not None or output_tokens is not None:
+            _in = input_tokens or 0
+            _out = output_tokens or 0
+            usage = Usage(input_tokens=_in, output_tokens=_out, total_tokens=_in + _out)
+
+        assistant_message = AssistantMessage(
+            content=full_content,
+            tool_calls=tool_calls,
+            usage=usage,
+        )
+
+        logger.info(
+            f"[AnthropicProvider] Stream completed | model={self.model_id} "
+            f"content_chars={len(full_content)} tool_calls={len(tool_calls)} "
+            f"input_tokens={input_tokens} output_tokens={output_tokens}"
+        )
+
+        yield StreamEvent(assistant_message=assistant_message, is_final=True)
 
     def _convert_messages(
         self, messages: list[StandardMessage]

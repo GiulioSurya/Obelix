@@ -2,6 +2,7 @@
 import asyncio
 import inspect
 import time
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
@@ -14,7 +15,11 @@ if TYPE_CHECKING:
 
 from obelix.core.agent.event_contracts import EventContract, get_event_contracts
 from obelix.core.agent.hooks import AgentEvent, AgentStatus, Hook, HookDecision, Outcome
-from obelix.core.model.assistant_message import AssistantMessage, AssistantResponse
+from obelix.core.model.assistant_message import (
+    AssistantMessage,
+    AssistantResponse,
+    StreamEvent,
+)
 from obelix.core.model.human_message import HumanMessage
 from obelix.core.model.standard_message import StandardMessage
 from obelix.core.model.system_message import SystemMessage
@@ -204,6 +209,363 @@ class BaseAgent:
         Execute query synchronously (for CLI).
         """
         return asyncio.run(self.execute_query_async(query))
+
+    async def execute_query_stream(
+        self, query: str | list[StandardMessage]
+    ) -> AsyncIterator[StreamEvent]:
+        """
+        Execute query with streaming. Yields StreamEvent chunks.
+
+        Same semantics as execute_query_async() but text tokens are yielded
+        in real-time as they arrive from the LLM. The final StreamEvent
+        (is_final=True) carries the complete AssistantResponse.
+
+        Intermediate iterations (tool calls) use streaming internally
+        but do not yield tokens to the consumer.
+
+        Requires the provider to implement invoke_stream().
+        Raises NotImplementedError if the provider does not support streaming.
+
+        Usage:
+            async for event in agent.execute_query_stream("question"):
+                if event.token:
+                    print(event.token, end="", flush=True)
+                if event.is_final:
+                    response = event.assistant_response
+        """
+        self._validate_query_input(query)
+        async for event in self._async_execute_query_stream(query):
+            yield event
+
+    async def _async_execute_query_stream(
+        self, query: str | list[StandardMessage]
+    ) -> AsyncIterator[StreamEvent]:
+        """
+        Streaming query execution engine.
+
+        Same loop structure as _async_execute_query(), but uses
+        invoke_stream() instead of invoke(). Text tokens are yielded
+        in real-time on the final iteration.
+        """
+        if self._tracer:
+            from obelix.core.tracer.context import get_current_trace
+            from obelix.core.tracer.models import SpanType
+
+            self._is_root_trace = get_current_trace() is None
+            if self._is_root_trace:
+                await self._tracer.start_trace(
+                    name=self.__class__.__name__,
+                    metadata={"agent_name": self.__class__.__name__},
+                )
+            await self._tracer.start_span(
+                SpanType.agent,
+                self.__class__.__name__,
+                input=query if isinstance(query, str) else f"{len(query)} messages",
+                metadata={},
+            )
+
+        collected_tool_results: list[ToolResult] = []
+        execution_error: str | None = None
+        _trace_error: str | None = None
+        self._invocation_start = len(self.conversation_history)
+
+        if isinstance(query, str):
+            user_message = HumanMessage(content=query)
+            self.conversation_history.append(user_message)
+        elif isinstance(query, list):
+            human_messages = [msg for msg in query if isinstance(msg, HumanMessage)]
+            if len(human_messages) != 1:
+                raise ValueError(
+                    f"Message list must contain exactly 1 HumanMessage, "
+                    f"found {len(human_messages)}"
+                )
+            self.conversation_history.extend(query)
+        else:
+            raise TypeError(
+                f"query must be str or List[StandardMessage], "
+                f"received {type(query).__name__}"
+            )
+
+        try:
+            if self._tracer:
+                query_text = (
+                    query
+                    if isinstance(query, str)
+                    else str([m.content for m in query if isinstance(m, HumanMessage)])
+                )
+                await self._tracer.start_span(
+                    SpanType.human, "human.input", input=query_text
+                )
+                await self._tracer.end_span(output=query_text)
+
+            for iteration in range(1, self.max_iterations + 1):
+                # === BEFORE_LLM_CALL hooks ===
+                outcome = await self._run_hooks(
+                    AgentEvent.BEFORE_LLM_CALL, iteration=iteration
+                )
+                if outcome.decision == HookDecision.STOP:
+                    assistant_msg = outcome.value
+                    await self._emit_assistant_span(assistant_msg)
+                    response = self._build_final_response(
+                        assistant_msg, collected_tool_results, execution_error
+                    )
+                    await self._run_hooks(
+                        AgentEvent.QUERY_END,
+                        current_value=response,
+                        iteration=iteration,
+                    )
+                    yield StreamEvent(
+                        assistant_message=assistant_msg,
+                        assistant_response=response,
+                        is_final=True,
+                    )
+                    return
+                if outcome.decision == HookDecision.FAIL:
+                    raise RuntimeError("Hook BEFORE_LLM_CALL requested FAIL")
+
+                # === LLM call (streaming) ===
+                if self._tracer:
+                    await self._tracer.start_span(
+                        SpanType.llm,
+                        f"llm.{self.provider.provider_type}",
+                        input={
+                            "message_count": len(self.conversation_history),
+                            "tool_count": len(self.registered_tools),
+                            "model_id": self.provider.model_id,
+                        },
+                    )
+
+                # Try streaming; fall back to invoke() if not supported
+                assistant_msg: AssistantMessage | None = None
+                streamed_tokens = False
+
+                try:
+                    stream = self.provider.invoke_stream(
+                        self.conversation_history,
+                        self.registered_tools,
+                        self.response_schema,
+                    )
+
+                    async for event in stream:
+                        if event.is_final:
+                            assistant_msg = event.assistant_message
+                        elif event.token is not None:
+                            streamed_tokens = True
+                            yield event
+                except NotImplementedError:
+                    logger.info(
+                        f"[{self.__class__.__name__}] Provider does not support "
+                        f"streaming, falling back to invoke()"
+                    )
+                    assistant_msg = await self.provider.invoke(
+                        self.conversation_history,
+                        self.registered_tools,
+                        self.response_schema,
+                    )
+                    # Yield the full content as a single token so consumers
+                    # still receive it through the stream interface
+                    if assistant_msg.content:
+                        yield StreamEvent(token=assistant_msg.content)
+                        streamed_tokens = True
+
+                if assistant_msg is None:
+                    raise RuntimeError(
+                        "invoke_stream() did not yield a final StreamEvent"
+                    )
+
+                # === Tracer: end LLM span ===
+                if self._tracer:
+                    span_output = {
+                        "content_preview": (
+                            assistant_msg.content[:200]
+                            if assistant_msg.content
+                            else None
+                        ),
+                        "tool_calls": (
+                            len(assistant_msg.tool_calls)
+                            if assistant_msg.tool_calls
+                            else 0
+                        ),
+                        "usage": (
+                            assistant_msg.usage.model_dump()
+                            if assistant_msg.usage
+                            else None
+                        ),
+                    }
+                    if assistant_msg.metadata.get("reasoning"):
+                        span_output["reasoning"] = assistant_msg.metadata["reasoning"]
+                    await self._tracer.end_span(output=span_output)
+
+                # === AFTER_LLM_CALL hooks ===
+                outcome = await self._run_hooks(
+                    AgentEvent.AFTER_LLM_CALL,
+                    current_value=assistant_msg,
+                    iteration=iteration,
+                    assistant_message=assistant_msg,
+                )
+                if outcome.decision == HookDecision.RETRY:
+                    if streamed_tokens:
+                        raise RuntimeError(
+                            "Hook AFTER_LLM_CALL requested RETRY after tokens were "
+                            "already streamed to the consumer. This is not supported "
+                            "in streaming mode."
+                        )
+                    continue
+                if outcome.decision == HookDecision.FAIL:
+                    raise RuntimeError("Hook AFTER_LLM_CALL requested FAIL")
+                if outcome.decision == HookDecision.STOP:
+                    assistant_msg = outcome.value
+                    await self._emit_assistant_span(assistant_msg)
+                    response = self._build_final_response(
+                        assistant_msg, collected_tool_results, execution_error
+                    )
+                    await self._run_hooks(
+                        AgentEvent.QUERY_END,
+                        current_value=response,
+                        iteration=iteration,
+                    )
+                    yield StreamEvent(
+                        assistant_message=assistant_msg,
+                        assistant_response=response,
+                        is_final=True,
+                    )
+                    return
+                assistant_msg = outcome.value
+
+                if assistant_msg.usage:
+                    self.agent_usage.add_usage(assistant_msg.usage)
+
+                # === Empty response ===
+                if not assistant_msg.tool_calls and not assistant_msg.content:
+                    logger.info(
+                        f"[{self.__class__.__name__}] LLM returned empty response | iteration={iteration}"
+                    )
+                    self.conversation_history.append(assistant_msg)
+                    outcome = await self._run_hooks(
+                        AgentEvent.BEFORE_FINAL_RESPONSE,
+                        current_value=assistant_msg,
+                        iteration=iteration,
+                        assistant_message=assistant_msg,
+                    )
+                    if outcome.decision == HookDecision.RETRY:
+                        continue
+                    if outcome.decision == HookDecision.FAIL:
+                        raise RuntimeError(
+                            "Required tool call missing before final response"
+                        )
+                    assistant_msg = outcome.value
+                    await self._emit_assistant_span(assistant_msg)
+                    response = self._build_final_response(
+                        assistant_msg, collected_tool_results, execution_error
+                    )
+                    await self._run_hooks(
+                        AgentEvent.QUERY_END,
+                        current_value=response,
+                        iteration=iteration,
+                    )
+                    yield StreamEvent(
+                        assistant_message=assistant_msg,
+                        assistant_response=response,
+                        is_final=True,
+                    )
+                    return
+
+                # === Tool calls ===
+                if assistant_msg.tool_calls:
+                    execution_error, iteration_results = await self._process_tool_calls(
+                        assistant_msg,
+                        collected_tool_results,
+                        execution_error,
+                        iteration,
+                    )
+
+                    if (
+                        self._should_exit_on_success(iteration_results)
+                        and execution_error is None
+                    ):
+                        outcome = await self._run_hooks(
+                            AgentEvent.BEFORE_FINAL_RESPONSE,
+                            current_value=assistant_msg,
+                            iteration=iteration,
+                            assistant_message=assistant_msg,
+                        )
+                        if outcome.decision == HookDecision.RETRY:
+                            continue
+                        if outcome.decision == HookDecision.FAIL:
+                            raise RuntimeError(
+                                "Required tool call missing before final response"
+                            )
+                        assistant_msg = outcome.value
+                        await self._emit_assistant_span(assistant_msg)
+                        response = self._build_final_response(
+                            assistant_msg, collected_tool_results, execution_error
+                        )
+                        await self._run_hooks(
+                            AgentEvent.QUERY_END,
+                            current_value=response,
+                            iteration=iteration,
+                        )
+                        yield StreamEvent(
+                            assistant_message=assistant_msg,
+                            assistant_response=response,
+                            is_final=True,
+                        )
+                        return
+
+                    continue
+
+                # === Text response (final) — tokens already streamed ===
+                self.conversation_history.append(assistant_msg)
+
+                outcome = await self._run_hooks(
+                    AgentEvent.BEFORE_FINAL_RESPONSE,
+                    current_value=assistant_msg,
+                    iteration=iteration,
+                    assistant_message=assistant_msg,
+                )
+                if outcome.decision == HookDecision.RETRY:
+                    if streamed_tokens:
+                        raise RuntimeError(
+                            "Hook BEFORE_FINAL_RESPONSE requested RETRY after tokens "
+                            "were already streamed to the consumer. This is not "
+                            "supported in streaming mode."
+                        )
+                    continue
+                if outcome.decision == HookDecision.FAIL:
+                    raise RuntimeError(
+                        "Required tool call missing before final response"
+                    )
+                assistant_msg = outcome.value
+                await self._emit_assistant_span(assistant_msg)
+                response = self._build_final_response(
+                    assistant_msg, collected_tool_results, execution_error
+                )
+                await self._run_hooks(
+                    AgentEvent.QUERY_END,
+                    current_value=response,
+                    iteration=iteration,
+                )
+                yield StreamEvent(
+                    assistant_message=assistant_msg,
+                    assistant_response=response,
+                    is_final=True,
+                )
+                return
+
+            # Max iterations reached
+            _trace_error = f"Max iterations ({self.max_iterations}) reached"
+            timeout_response = self._build_timeout_response(
+                self.max_iterations, collected_tool_results, execution_error
+            )
+            yield StreamEvent(
+                assistant_response=timeout_response,
+                is_final=True,
+            )
+        except Exception as e:
+            _trace_error = str(e)
+            raise
+        finally:
+            await self._end_trace(error=_trace_error)
 
     def _validate_query_input(self, query: str | list[StandardMessage]) -> None:
         """

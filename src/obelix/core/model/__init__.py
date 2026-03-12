@@ -2,7 +2,11 @@
 Messages module - Message definitions for communication with LLM.
 """
 
-from obelix.core.model.assistant_message import AssistantMessage, AssistantResponse
+from obelix.core.model.assistant_message import (
+    AssistantMessage,
+    AssistantResponse,
+    StreamEvent,
+)
 from obelix.core.model.human_message import HumanMessage
 from obelix.core.model.roles import MessageRole
 from obelix.core.model.standard_message import StandardMessage
@@ -30,4 +34,5 @@ __all__ = [
     "StandardMessage",
     "Usage",
     "AgentUsage",
+    "StreamEvent",
 ]

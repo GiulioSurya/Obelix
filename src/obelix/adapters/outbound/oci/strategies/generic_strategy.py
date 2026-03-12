@@ -282,6 +282,9 @@ class GenericRequestStrategy(OCIRequestStrategy):
             request_params["stop"] = stop_sequences
         if is_stream:
             request_params["is_stream"] = is_stream
+            from oci.generative_ai_inference.models import StreamOptions
+
+            request_params["stream_options"] = StreamOptions(is_include_usage=True)
 
         # Add GENERIC-specific parameters from kwargs
         generic_specific_params = [

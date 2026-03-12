@@ -6,7 +6,10 @@ Self-contained provider with strategy-based request handling.
 No external mapping dependencies - all conversion logic is in strategies.
 """
 
+import json
 import logging
+import os
+from collections.abc import AsyncIterator
 
 import httpx
 from pydantic import BaseModel
@@ -45,7 +48,13 @@ from obelix.adapters.outbound.oci.strategies.generic_strategy import (
     GenericRequestStrategy,
     ToolCallExtractionError,
 )
-from obelix.core.model import AssistantMessage, StandardMessage, SystemMessage
+from obelix.core.model import (
+    AssistantMessage,
+    StandardMessage,
+    StreamEvent,
+    SystemMessage,
+)
+from obelix.core.model.tool_message import ToolCall
 from obelix.core.model.usage import Usage
 from obelix.core.tool.tool_base import Tool
 from obelix.infrastructure.logging import get_logger
@@ -176,8 +185,6 @@ class OCILLm(AbstractLLMProvider):
             tools: List of available tools
             response_schema: Optional Pydantic BaseModel for structured JSON output
         """
-        import os
-
         from obelix.infrastructure.k8s import YamlConfig
 
         # todo, questo andra eliminato
@@ -265,6 +272,232 @@ class OCILLm(AbstractLLMProvider):
 
         # Should not reach here, but just in case
         raise RuntimeError("Unexpected end of invoke loop")
+
+    # ========== INVOKE STREAM ==========
+
+    async def invoke_stream(
+        self,
+        messages: list[StandardMessage],
+        tools: list[Tool],
+        response_schema: type[BaseModel] | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """
+        Streaming variant of invoke(). Yields StreamEvent chunks via OCI SSE.
+
+        Text tokens are yielded as StreamEvent(token=...) as they arrive.
+        Tool calls are accumulated silently (no token yield).
+        The final StreamEvent (is_final=True) carries the complete
+        AssistantMessage with accumulated content, tool_calls, and usage.
+
+        Note: tool call extraction retry is NOT supported in streaming mode.
+        """
+        from obelix.infrastructure.k8s import YamlConfig
+
+        infra_config = YamlConfig(os.getenv("INFRASTRUCTURE_CONFIG_PATH"))
+        oci_config = infra_config.get("llm_providers.oci")
+        client = self.connection.get_client()
+
+        converted_tools = self.strategy.convert_tools(tools)
+        converted_messages = self.strategy.convert_messages(messages)
+
+        # Build request with streaming enabled
+        strategy_kwargs = dict(self.strategy_kwargs)
+
+        if response_schema is not None:
+            oci_response_format = JsonSchemaResponseFormat(
+                json_schema=ResponseJsonSchema(
+                    name=response_schema.__name__,
+                    schema=response_schema.model_json_schema(),
+                    is_strict=True,
+                )
+            )
+            strategy_kwargs["response_format"] = oci_response_format
+
+        chat_request = self.strategy.build_request(
+            converted_messages=converted_messages,
+            converted_tools=converted_tools,
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+            top_p=self.top_p,
+            top_k=self.top_k,
+            frequency_penalty=self.frequency_penalty,
+            presence_penalty=self.presence_penalty,
+            stop_sequences=self.stop_sequences,
+            is_stream=True,
+            **strategy_kwargs,
+        )
+
+        chat_details = ChatDetails(
+            compartment_id=oci_config["compartment_id"],
+            serving_mode=OnDemandServingMode(model_id=self.model_id),
+            chat_request=chat_request,
+        )
+
+        logger.debug(
+            f"[OCILLm] Invoking model (stream) | model={self.model_id} "
+            f"messages={len(messages)} tools={len(converted_tools)}"
+        )
+
+        # Accumulators
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        tool_calls_acc: dict[int, dict[str, str]] = {}
+        input_tokens: int | None = None
+        output_tokens: int | None = None
+        total_tokens: int | None = None
+
+        async for chunk in client.chat_stream(chat_details):
+            # OCI SSE format — each chunk is a choice directly:
+            #   {"index": 0, "message": {"role": "ASSISTANT", "content": [{"type": "TEXT", "text": "..."}]}, "pad": "..."}
+            #   {"index": 0, "message": {"role": "ASSISTANT", "reasoningContent": "..."}, "pad": "..."}
+            #   {"finishReason": "stop", "pad": "..."}
+            #   {"usage": {"promptTokens": ..., "completionTokens": ..., "totalTokens": ...}}
+            #
+            # Some models may also use the wrapped format:
+            #   {"chatResponse": {"choices": [{"delta": {"content": [...]}}], "usage": {...}}}
+
+            # --- Extract message from chunk (flat or wrapped) ---
+            message = chunk.get("message") or chunk.get("delta")
+            if message is None:
+                # Try wrapped format: chatResponse.choices[0].{delta|message}
+                chat_response = chunk.get("chatResponse", {})
+                choices = chat_response.get("choices", [])
+                if choices:
+                    choice = choices[0]
+                    message = choice.get("delta") or choice.get("message")
+
+                # Extract usage from wrapped format
+                chunk_usage = chat_response.get("usage")
+                if chunk_usage:
+                    input_tokens = chunk_usage.get("promptTokens", input_tokens)
+                    output_tokens = chunk_usage.get("completionTokens", output_tokens)
+                    total_tokens = chunk_usage.get("totalTokens", total_tokens)
+
+            # --- Extract usage from flat format ---
+            flat_usage = chunk.get("usage")
+            if flat_usage:
+                input_tokens = flat_usage.get("promptTokens", input_tokens)
+                output_tokens = flat_usage.get("completionTokens", output_tokens)
+                total_tokens = flat_usage.get("totalTokens", total_tokens)
+
+            # --- Reasoning content (accumulate silently, no token yield) ---
+            if message and "reasoningContent" in message:
+                reasoning_text = message["reasoningContent"]
+                if reasoning_text:
+                    reasoning_parts.append(reasoning_text)
+
+            if message is None:
+                continue
+
+            # --- Text content ---
+            msg_content = message.get("content", [])
+            if isinstance(msg_content, str):
+                if msg_content:
+                    content_parts.append(msg_content)
+                    yield StreamEvent(token=msg_content)
+            elif isinstance(msg_content, list):
+                for block in msg_content:
+                    if isinstance(block, dict) and block.get("type") == "TEXT":
+                        text = block.get("text", "")
+                        if text:
+                            content_parts.append(text)
+                            yield StreamEvent(token=text)
+                    elif isinstance(block, str):
+                        content_parts.append(block)
+                        yield StreamEvent(token=block)
+
+            # --- Tool calls ---
+            msg_tool_calls = message.get("toolCalls", [])
+            for tc_chunk in msg_tool_calls:
+                # OCI SSE: first chunk has id+name, subsequent chunks only
+                # have arguments fragments — no "index" field.
+                # A new id or name signals a new tool call; otherwise
+                # accumulate into the most recent one.
+                if tc_chunk.get("id") or tc_chunk.get("name"):
+                    # New tool call starting
+                    idx = tc_chunk.get("index", len(tool_calls_acc))
+                    tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
+                else:
+                    # Continuation of the most recent tool call
+                    idx = max(tool_calls_acc.keys()) if tool_calls_acc else 0
+                    if idx not in tool_calls_acc:
+                        tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
+
+                if tc_chunk.get("id"):
+                    tool_calls_acc[idx]["id"] = tc_chunk["id"]
+                if tc_chunk.get("name"):
+                    tool_calls_acc[idx]["name"] = tc_chunk["name"]
+                tc_args = tc_chunk.get("arguments")
+                if tc_args is not None:
+                    if isinstance(tc_args, dict):
+                        tool_calls_acc[idx]["arguments"] = json.dumps(tc_args)
+                    elif isinstance(tc_args, str):
+                        tool_calls_acc[idx]["arguments"] += tc_args
+                    else:
+                        tool_calls_acc[idx]["arguments"] += json.dumps(tc_args)
+
+        # Build complete AssistantMessage
+        full_content = "".join(content_parts)
+
+        tool_calls: list[ToolCall] = []
+        if tool_calls_acc:
+            import uuid
+
+            errors = []
+            for _idx, tc_data in sorted(tool_calls_acc.items()):
+                try:
+                    arguments = tc_data["arguments"]
+                    if isinstance(arguments, str) and arguments:
+                        arguments = json.loads(arguments, strict=False)
+                        while isinstance(arguments, str):
+                            arguments = json.loads(arguments, strict=False)
+                    if not isinstance(arguments, dict):
+                        arguments = {}
+
+                    tool_calls.append(
+                        ToolCall(
+                            id=tc_data["id"] or str(uuid.uuid4()),
+                            name=tc_data["name"],
+                            arguments=arguments,
+                        )
+                    )
+                except json.JSONDecodeError as e:
+                    errors.append(
+                        f"Tool '{tc_data['name']}': Invalid JSON in arguments - {e.msg}"
+                    )
+
+            if errors:
+                raise ToolCallExtractionError(
+                    "Failed to extract tool calls from stream:\n"
+                    + "\n".join(f"  - {err}" for err in errors)
+                )
+
+        usage = None
+        if input_tokens is not None or output_tokens is not None:
+            _in = input_tokens or 0
+            _out = output_tokens or 0
+            _tot = total_tokens or (_in + _out)
+            usage = Usage(input_tokens=_in, output_tokens=_out, total_tokens=_tot)
+
+        metadata = {}
+        if reasoning_parts:
+            metadata["reasoning"] = "".join(reasoning_parts)
+
+        assistant_message = AssistantMessage(
+            content=full_content,
+            tool_calls=tool_calls,
+            usage=usage,
+            metadata=metadata,
+        )
+
+        logger.info(
+            f"[OCILLm] Stream completed | model={self.model_id} "
+            f"content_chars={len(full_content)} tool_calls={len(tool_calls)} "
+            f"reasoning_chars={len(metadata.get('reasoning', ''))} "
+            f"input_tokens={input_tokens} output_tokens={output_tokens}"
+        )
+
+        yield StreamEvent(assistant_message=assistant_message, is_final=True)
 
     def _convert_response_to_assistant_message(self, response) -> AssistantMessage:
         """

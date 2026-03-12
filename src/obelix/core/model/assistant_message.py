@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -44,3 +45,19 @@ class AssistantResponse(BaseModel):
         if "tool_results" in kwargs and not kwargs["tool_results"]:
             kwargs["tool_results"] = None
         super().__init__(**kwargs)
+
+
+@dataclass
+class StreamEvent:
+    """A single event in a streaming LLM response.
+
+    During streaming, text chunks arrive as StreamEvent(token="...").
+    The final event has is_final=True and carries the complete
+    AssistantMessage and AssistantResponse with all metadata
+    (content, tool_results, usage, error).
+    """
+
+    token: str | None = None
+    assistant_message: AssistantMessage | None = None
+    assistant_response: AssistantResponse | None = None
+    is_final: bool = field(default=False)

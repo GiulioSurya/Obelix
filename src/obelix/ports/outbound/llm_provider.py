@@ -7,11 +7,12 @@ self-contained for message/tool conversion and response parsing.
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from obelix.core.model.assistant_message import AssistantMessage
+from obelix.core.model.assistant_message import AssistantMessage, StreamEvent
 from obelix.core.model.standard_message import StandardMessage
 from obelix.core.tool.tool_base import Tool
 
@@ -26,6 +27,10 @@ class AbstractLLMProvider(ABC):
     Contract:
     - provider_type: identifies the provider (Providers enum)
     - invoke(): messages + tools in, AssistantMessage out
+
+    Optional:
+    - invoke_stream(): streaming variant, yields StreamEvent chunks.
+      Default raises NotImplementedError. Providers override to enable streaming.
 
     Each provider is self-contained: message conversion, tool conversion,
     and response parsing are implementation details handled internally
@@ -59,3 +64,26 @@ class AbstractLLMProvider(ABC):
             AssistantMessage with model response
         """
         pass
+
+    async def invoke_stream(
+        self,
+        messages: list[StandardMessage],
+        tools: list[Tool],
+        response_schema: type[BaseModel] | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """
+        Streaming variant of invoke(). Yields StreamEvent chunks.
+
+        Text chunks are yielded as they arrive. The final StreamEvent
+        (is_final=True) contains the complete AssistantMessage with
+        accumulated content, tool_calls, and usage.
+
+        Providers that support streaming override this method.
+        Default raises NotImplementedError.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support streaming. "
+            "Override invoke_stream() to enable it."
+        )
+        # yield is needed to make this a valid AsyncIterator signature
+        yield  # pragma: no cover

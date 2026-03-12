@@ -602,6 +602,85 @@ class OCIAsyncHttpClient:
         json_response = await self._request("POST", "/actions/chat", chat_details)
         return OCIResponse(json_response)
 
+    async def chat_stream(self, chat_details: Any):
+        """
+        Call the chat endpoint with streaming (SSE).
+
+        Yields parsed JSON dicts for each SSE data event.
+        The request body must have is_stream=True set in the chat request.
+
+        If the server returns application/json instead of SSE (some models
+        don't support streaming), the full JSON body is yielded as a single chunk.
+        """
+        if self._guardrails_checker is not None:
+            text = _extract_text_from_chat_details(chat_details)
+            await self._guardrails_checker.check(text, label="chat_stream")
+
+        url = f"{self._endpoint}{self.BASE_PATH}/actions/chat"
+
+        if hasattr(chat_details, "swagger_types"):
+            body_dict = _serialize_oci_model(chat_details)
+        else:
+            body_dict = chat_details
+        body_bytes = json.dumps(body_dict).encode("utf-8")
+
+        headers = self._sign_request("POST", url, body_bytes)
+        headers["accept"] = "text/event-stream"
+
+        client = await self._get_client()
+
+        async with client.stream(
+            method="POST",
+            url=url,
+            headers=headers,
+            content=body_bytes,
+        ) as response:
+            if response.status_code >= 400:
+                await response.aread()
+                self._raise_for_status(response, body_bytes)
+
+            content_type = response.headers.get("content-type", "")
+            _logger.debug(
+                f"[OCIAsyncHttpClient] chat_stream response | "
+                f"status={response.status_code} content-type={content_type}"
+            )
+
+            # If server returned JSON instead of SSE, yield as single chunk
+            if "application/json" in content_type:
+                _logger.info(
+                    "[OCIAsyncHttpClient] Server returned JSON instead of SSE, "
+                    "yielding as single chunk"
+                )
+                await response.aread()
+                try:
+                    yield response.json()
+                except json.JSONDecodeError:
+                    _logger.warning(
+                        f"[OCIAsyncHttpClient] Failed to parse JSON body: "
+                        f"{response.text[:200]}"
+                    )
+                return
+
+            # SSE stream
+            chunk_count = 0
+            async for line in response.aiter_lines():
+                _logger.debug(f"[OCIAsyncHttpClient] SSE line: {line[:200]}")
+                if line.startswith("data: "):
+                    data_str = line[6:].strip()
+                    if not data_str or data_str == "[DONE]":
+                        continue
+                    try:
+                        chunk_count += 1
+                        yield json.loads(data_str)
+                    except json.JSONDecodeError:
+                        _logger.warning(
+                            f"[OCIAsyncHttpClient] Malformed SSE data: {data_str[:200]}"
+                        )
+
+            _logger.debug(
+                f"[OCIAsyncHttpClient] SSE stream ended | chunks_yielded={chunk_count}"
+            )
+
     async def embed_text(self, embed_details: Any) -> OCIResponse:
         """Call the embed text endpoint. Returns OCIResponse compatible with SDK access."""
         json_response = await self._request("POST", "/actions/embedText", embed_details)
