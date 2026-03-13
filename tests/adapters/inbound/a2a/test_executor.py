@@ -26,6 +26,7 @@ from obelix.adapters.inbound.a2a.executor import (
     DEFAULT_MAX_CONTEXTS,
     ObelixAgentExecutor,
     _ContextEntry,
+    _error_message,
 )
 
 # ---------------------------------------------------------------------------
@@ -87,6 +88,47 @@ def _make_factory(
         return agent
 
     return factory, created
+
+
+def _assert_error_message(status, expected_text: str) -> None:
+    """Assert that a TaskStatus has a proper A2A Message with expected text."""
+    from a2a.types import Message, Role
+
+    assert status.message is not None
+    assert isinstance(status.message, Message)
+    assert status.message.role == Role.agent
+    assert len(status.message.parts) == 1
+    assert status.message.parts[0].root.text == expected_text
+
+
+# ---------------------------------------------------------------------------
+# _error_message helper
+# ---------------------------------------------------------------------------
+
+
+class TestErrorMessage:
+    def test_returns_message_with_agent_role(self):
+        from a2a.types import Message, Role
+
+        msg = _error_message("some error")
+        assert isinstance(msg, Message)
+        assert msg.role == Role.agent
+
+    def test_has_single_text_part_with_given_text(self):
+        from a2a.types import TextPart
+
+        msg = _error_message("specific error text")
+        assert len(msg.parts) == 1
+        assert isinstance(msg.parts[0].root, TextPart)
+        assert msg.parts[0].root.text == "specific error text"
+
+    def test_message_id_is_valid_uuid(self):
+        import uuid
+
+        msg = _error_message("test")
+        # Should not raise
+        parsed = uuid.UUID(msg.message_id)
+        assert str(parsed) == msg.message_id
 
 
 # ---------------------------------------------------------------------------
@@ -435,6 +477,7 @@ class TestEmptyInput:
         assert isinstance(event, TaskStatusUpdateEvent)
         assert event.status.state == TaskState.failed
         assert event.final is True
+        _assert_error_message(event.status, "No user input provided")
 
     @pytest.mark.asyncio
     async def test_none_input_emits_failed_state(self):
@@ -450,6 +493,7 @@ class TestEmptyInput:
 
         assert len(queue.events) == 1
         assert queue.events[0].status.state == TaskState.failed
+        _assert_error_message(queue.events[0].status, "No user input provided")
 
     @pytest.mark.asyncio
     async def test_empty_input_does_not_create_agent(self):
@@ -494,9 +538,12 @@ class TestExecuteFailure:
         assert isinstance(failed_event, TaskStatusUpdateEvent)
         assert failed_event.status.state == TaskState.failed
         assert failed_event.final is True
+        _assert_error_message(
+            failed_event.status, "Execution failed: LLM provider down"
+        )
 
     @pytest.mark.asyncio
-    async def test_agent_exception_includes_error_in_metadata(self):
+    async def test_agent_exception_includes_error_in_message(self):
         def factory():
             agent = _make_mock_agent()
             agent.execute_query_async = AsyncMock(
@@ -511,7 +558,7 @@ class TestExecuteFailure:
         await executor.execute(ctx, queue)
 
         failed_event = queue.events[-1]
-        assert failed_event.metadata == {"error": "Bad input format"}
+        _assert_error_message(failed_event.status, "Execution failed: Bad input format")
 
 
 # ---------------------------------------------------------------------------
@@ -540,6 +587,7 @@ class TestCancelledError:
         assert len(queue.events) == 2
         assert queue.events[1].status.state == TaskState.canceled
         assert queue.events[1].final is True
+        _assert_error_message(queue.events[1].status, "Task canceled by client")
 
 
 # ---------------------------------------------------------------------------
@@ -653,6 +701,7 @@ class TestCancel:
         assert event.status.state == TaskState.canceled
         assert event.final is True
         assert event.task_id == "t-cancel"
+        _assert_error_message(event.status, "Task canceled by client")
 
 
 # ---------------------------------------------------------------------------

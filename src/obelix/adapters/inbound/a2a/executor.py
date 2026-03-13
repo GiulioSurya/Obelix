@@ -20,7 +20,9 @@ from a2a.server.agent_execution.agent_executor import AgentExecutor
 from a2a.server.events.event_queue import EventQueue
 from a2a.types import (
     Artifact,
+    Message,
     Part,
+    Role,
     TaskArtifactUpdateEvent,
     TaskState,
     TaskStatus,
@@ -39,6 +41,15 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 DEFAULT_MAX_CONTEXTS = 1024
+
+
+def _error_message(text: str) -> Message:
+    """Build an A2A Message for error reporting in TaskStatus."""
+    return Message(
+        role=Role.agent,
+        parts=[Part(root=TextPart(text=text))],
+        message_id=str(uuid.uuid4()),
+    )
 
 
 class _ContextEntry:
@@ -99,7 +110,10 @@ class ObelixAgentExecutor(AgentExecutor):
                 TaskStatusUpdateEvent(
                     task_id=task_id,
                     context_id=context_id,
-                    status=TaskStatus(state=TaskState.failed, message=None),
+                    status=TaskStatus(
+                        state=TaskState.failed,
+                        message=_error_message("No user input provided"),
+                    ),
                     final=True,
                 )
             )
@@ -188,7 +202,10 @@ class ObelixAgentExecutor(AgentExecutor):
                 TaskStatusUpdateEvent(
                     task_id=task_id,
                     context_id=context_id,
-                    status=TaskStatus(state=TaskState.canceled),
+                    status=TaskStatus(
+                        state=TaskState.canceled,
+                        message=_error_message("Task canceled by client"),
+                    ),
                     final=True,
                 )
             )
@@ -200,9 +217,11 @@ class ObelixAgentExecutor(AgentExecutor):
                 TaskStatusUpdateEvent(
                     task_id=task_id,
                     context_id=context_id,
-                    status=TaskStatus(state=TaskState.failed, message=None),
+                    status=TaskStatus(
+                        state=TaskState.failed,
+                        message=_error_message(f"Execution failed: {e}"),
+                    ),
                     final=True,
-                    metadata={"error": str(e)},
                 )
             )
 
@@ -216,7 +235,10 @@ class ObelixAgentExecutor(AgentExecutor):
             TaskStatusUpdateEvent(
                 task_id=task_id,
                 context_id=context_id,
-                status=TaskStatus(state=TaskState.canceled),
+                status=TaskStatus(
+                    state=TaskState.canceled,
+                    message=_error_message("Task canceled by client"),
+                ),
                 final=True,
             )
         )
