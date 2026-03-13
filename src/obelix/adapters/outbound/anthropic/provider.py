@@ -249,6 +249,7 @@ class AnthropicProvider(AbstractLLMProvider):
 
         # Accumulators
         content_parts: list[str] = []
+        thinking_parts: list[str] = []
         # tool_calls_acc: {index: {"id": str, "name": str, "input": str}}
         tool_calls_acc: dict[int, dict[str, str]] = {}
         current_tool_index = 0
@@ -270,7 +271,12 @@ class AnthropicProvider(AbstractLLMProvider):
                     delta = event.delta
                     delta_type = getattr(delta, "type", None)
 
-                    if delta_type == "text_delta":
+                    if delta_type == "thinking_delta":
+                        thinking = getattr(delta, "thinking", "")
+                        if thinking:
+                            thinking_parts.append(thinking)
+
+                    elif delta_type == "text_delta":
                         text = getattr(delta, "text", "")
                         if text:
                             content_parts.append(text)
@@ -339,16 +345,23 @@ class AnthropicProvider(AbstractLLMProvider):
             _out = output_tokens or 0
             usage = Usage(input_tokens=_in, output_tokens=_out, total_tokens=_in + _out)
 
+        metadata: dict[str, Any] = {}
+        reasoning = "\n".join(thinking_parts) if thinking_parts else None
+        if reasoning:
+            metadata["reasoning"] = reasoning
+
         assistant_message = AssistantMessage(
             content=full_content,
             tool_calls=tool_calls,
             usage=usage,
+            metadata=metadata,
         )
 
         logger.info(
             f"[AnthropicProvider] Stream completed | model={self.model_id} "
             f"content_chars={len(full_content)} tool_calls={len(tool_calls)} "
-            f"input_tokens={input_tokens} output_tokens={output_tokens}"
+            f"input_tokens={input_tokens} output_tokens={output_tokens} "
+            f"reasoning={'present' if reasoning else 'absent'}"
         )
 
         yield StreamEvent(assistant_message=assistant_message, is_final=True)

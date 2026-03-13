@@ -26,13 +26,18 @@ from obelix.core.model.tool_message import ToolRequirement
 from obelix.core.tool.tool_base import Tool
 from obelix.core.tool.tool_decorator import tool
 from obelix.core.tracer import Tracer
-from obelix.core.tracer.exporters import ConsoleExporter
+from obelix.core.tracer.exporters import HTTPExporter
 from obelix.infrastructure.logging import setup_logging
 from obelix.plugins.builtin.ask_user_question_tool import AskUserQuestionTool
 
 load_dotenv()
 
-tracer = Tracer(exporter=ConsoleExporter(verbosity=2))
+# tracer = Tracer(exporter=ConsoleExporter(verbosity=2))
+tracer = Tracer(
+    exporter=HTTPExporter(endpoint="http://localhost:8100/api/v1/ingest"),
+    service_name="demo_factory",
+)
+
 
 setup_logging(console_level="TRACE")
 
@@ -188,33 +193,33 @@ def create_factory() -> AgentFactory:
 
 
 if __name__ == "__main__":
-    factory = create_factory()
-
-    # Create orchestrator with both subagents.
-    # The factory injects the dependency awareness message so the coordinator
-    # knows to call math_agent before report_agent.
-    coordinator = factory.create(
-        "coordinator", subagents=["math_agent", "report_agent"]
-    )
-
-    # Execute query
-    response = coordinator.execute_query(
-        "What is ((18 + 6) * (14 - 8)) and also solve ((48-5)+25/8*(35+9))? "
-        "After the calculations, generate a formatted report of the results."
-    )
-
-    # Print conversation history
-    print("\n" + "=" * 50)
-    print("CONVERSATION HISTORY")
-    print("=" * 50)
-    for element in coordinator.conversation_history:
-        print(element.model_dump_json(indent=4))
-
-    # # ─── A2A serve (requires: uv sync --extra serve) ─────────────────────
     # factory = create_factory()
-    # factory.serve(
-    #     "coordinator",
-    #     subagents=["math_agent", "report_agent"],
-    #     port=8000,
-    #     description="Math coordinator with calculator and report sub-agents",
+    #
+    # # Create orchestrator with both subagents.
+    # # The factory injects the dependency awareness message so the coordinator
+    # # knows to call math_agent before report_agent.
+    # coordinator = factory.create(
+    #     "coordinator", subagents=["math_agent", "report_agent"]
     # )
+    #
+    # # Execute query
+    # response = coordinator.execute_query(
+    #     "What is ((18 + 6) * (14 - 8)) and also solve ((48-5)+25/8*(35+9))? "
+    #     "After the calculations, generate a formatted report of the results."
+    # )
+    #
+    # # Print conversation history
+    # print("\n" + "=" * 50)
+    # print("CONVERSATION HISTORY")
+    # print("=" * 50)
+    # for element in coordinator.conversation_history:
+    #     print(element.model_dump_json(indent=4))
+
+    # ─── A2A serve (requires: uv sync --extra serve) ─────────────────────
+    factory = create_factory()
+    factory.serve(
+        "coordinator",
+        subagents=["math_agent", "report_agent"],
+        port=8001,
+        description="Math coordinator with calculator and report sub-agents",
+    )

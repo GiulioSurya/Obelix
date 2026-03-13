@@ -1,0 +1,21 @@
+
+
+{
+  "mcpServers": {
+    "obelix-tracer": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "--directory",
+        "C:\\Users\\GLoverde\\PycharmProjects\\obelix-tracer-mcp",
+        "run",
+        "python",
+        "-m",
+        "obelix_tracer_mcp"
+      ],
+      "env": {
+        "virtual_env": "none"
+      }
+    }
+  }
+}
