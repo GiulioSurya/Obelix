@@ -52,6 +52,9 @@ all = [
     "vllm>=0.13.0; sys_platform == 'linux'",
     "litellm>=1.82.1",
     "mcp>=1.25.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "a2a-sdk>=0.3.25",
 ]
 
 [project.scripts]

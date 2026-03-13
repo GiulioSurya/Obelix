@@ -217,7 +217,7 @@ if __name__ == "__main__":
 
     # ─── A2A serve (requires: uv sync --extra serve) ─────────────────────
     factory = create_factory()
-    factory.serve(
+    factory.a2a_serve(
         "coordinator",
         subagents=["math_agent", "report_agent"],
         port=8001,
