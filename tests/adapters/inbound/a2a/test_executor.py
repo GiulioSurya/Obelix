@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -57,18 +57,24 @@ class FakeEventQueue:
 
 def _make_mock_agent(response_content: str = "Agent response") -> MagicMock:
     """Create a mock BaseAgent with the attributes executor expects."""
-    from obelix.core.model.assistant_message import AssistantResponse
+    from obelix.core.model.assistant_message import AssistantResponse, StreamEvent
     from obelix.core.model.system_message import SystemMessage
 
     agent = MagicMock()
     agent.system_message = SystemMessage(content="You are a test agent.")
     agent.conversation_history = [agent.system_message]
-    agent.execute_query_async = AsyncMock(
-        return_value=AssistantResponse(
-            agent_name="test_agent",
-            content=response_content,
+
+    # Mock execute_query_stream as an async generator (non-streaming fallback path)
+    async def fake_stream(query):
+        yield StreamEvent(
+            is_final=True,
+            assistant_response=AssistantResponse(
+                agent_name="test_agent",
+                content=response_content,
+            ),
         )
-    )
+
+    agent.execute_query_stream = MagicMock(side_effect=fake_stream)
     return agent
 
 
@@ -286,9 +292,11 @@ class TestExecuteSuccess:
         assert isinstance(queue.events[0], TaskStatusUpdateEvent)
         assert queue.events[0].status.state == TaskState.working
         assert queue.events[0].final is False
-        # Event 2: artifact
+        # Event 2: artifact (non-streaming fallback: append=False, last_chunk=True)
         assert isinstance(queue.events[1], TaskArtifactUpdateEvent)
         assert queue.events[1].artifact.parts[0].root.text == "Agent response"
+        assert queue.events[1].append is False
+        assert queue.events[1].last_chunk is True
         # Event 3: completed
         assert isinstance(queue.events[2], TaskStatusUpdateEvent)
         assert queue.events[2].status.state == TaskState.completed
@@ -328,7 +336,7 @@ class TestExecuteSuccess:
 
         await executor.execute(ctx, queue)
 
-        created[0].execute_query_async.assert_awaited_once_with("Hello agent")
+        created[0].execute_query_stream.assert_called_once_with("Hello agent")
 
     @pytest.mark.asyncio
     async def test_empty_response_content_yields_empty_string_artifact(self):
@@ -372,6 +380,7 @@ class TestMultiTurnHistory:
     @pytest.mark.asyncio
     async def test_second_request_gets_history_from_first(self):
         """Second request on same context_id gets history saved from first request."""
+        from obelix.core.model.assistant_message import AssistantResponse, StreamEvent
         from obelix.core.model.human_message import HumanMessage
 
         call_count = 0
@@ -383,20 +392,22 @@ class TestMultiTurnHistory:
 
             # Simulate the agent populating conversation_history during execution
             sys_msg = agent.system_message
+            current_count = call_count
 
-            async def fake_execute(query):
-                from obelix.core.model.assistant_message import AssistantResponse
-
+            async def fake_stream(query):
                 agent.conversation_history = [
                     sys_msg,
                     HumanMessage(content=query),
-                    MagicMock(content=f"Response {call_count}"),
+                    MagicMock(content=f"Response {current_count}"),
                 ]
-                return AssistantResponse(
-                    agent_name="test_agent", content=f"Response {call_count}"
+                yield StreamEvent(
+                    is_final=True,
+                    assistant_response=AssistantResponse(
+                        agent_name="test_agent", content=f"Response {current_count}"
+                    ),
                 )
 
-            agent.execute_query_async = AsyncMock(side_effect=fake_execute)
+            agent.execute_query_stream = MagicMock(side_effect=fake_stream)
             return agent
 
         executor = ObelixAgentExecutor(factory)
@@ -419,23 +430,27 @@ class TestMultiTurnHistory:
     @pytest.mark.asyncio
     async def test_different_contexts_have_independent_history(self):
         """Different context_ids maintain separate conversation histories."""
+        from obelix.core.model.assistant_message import AssistantResponse, StreamEvent
         from obelix.core.model.human_message import HumanMessage
 
         def factory():
             agent = _make_mock_agent()
             sys_msg = agent.system_message
 
-            async def fake_execute(query):
-                from obelix.core.model.assistant_message import AssistantResponse
-
+            async def fake_stream(query):
                 agent.conversation_history = [
                     sys_msg,
                     HumanMessage(content=query),
                     MagicMock(content="reply"),
                 ]
-                return AssistantResponse(agent_name="test", content="reply")
+                yield StreamEvent(
+                    is_final=True,
+                    assistant_response=AssistantResponse(
+                        agent_name="test", content="reply"
+                    ),
+                )
 
-            agent.execute_query_async = AsyncMock(side_effect=fake_execute)
+            agent.execute_query_stream = MagicMock(side_effect=fake_stream)
             return agent
 
         executor = ObelixAgentExecutor(factory)
@@ -520,9 +535,12 @@ class TestExecuteFailure:
 
         def factory():
             agent = _make_mock_agent()
-            agent.execute_query_async = AsyncMock(
-                side_effect=RuntimeError("LLM provider down")
-            )
+
+            async def failing_stream(query):
+                raise RuntimeError("LLM provider down")
+                yield  # make it a generator
+
+            agent.execute_query_stream = MagicMock(side_effect=failing_stream)
             return agent
 
         executor = ObelixAgentExecutor(factory)
@@ -546,9 +564,12 @@ class TestExecuteFailure:
     async def test_agent_exception_includes_error_in_message(self):
         def factory():
             agent = _make_mock_agent()
-            agent.execute_query_async = AsyncMock(
-                side_effect=ValueError("Bad input format")
-            )
+
+            async def failing_stream(query):
+                raise ValueError("Bad input format")
+                yield  # make it a generator
+
+            agent.execute_query_stream = MagicMock(side_effect=failing_stream)
             return agent
 
         executor = ObelixAgentExecutor(factory)
@@ -573,7 +594,12 @@ class TestCancelledError:
 
         def factory():
             agent = _make_mock_agent()
-            agent.execute_query_async = AsyncMock(side_effect=asyncio.CancelledError())
+
+            async def cancelled_stream(query):
+                raise asyncio.CancelledError()
+                yield  # make it a generator
+
+            agent.execute_query_stream = MagicMock(side_effect=cancelled_stream)
             return agent
 
         executor = ObelixAgentExecutor(factory)
@@ -599,21 +625,26 @@ class TestPerContextLocking:
     @pytest.mark.asyncio
     async def test_same_context_requests_are_serialized(self):
         """Two concurrent requests on the same context_id should NOT overlap."""
+        from obelix.core.model.assistant_message import AssistantResponse, StreamEvent
+
         execution_log: list[tuple[str, str]] = []
 
         def factory():
             agent = _make_mock_agent()
 
-            async def slow_execute(query):
-                from obelix.core.model.assistant_message import AssistantResponse
-
+            async def slow_stream(query):
                 execution_log.append(("start", query))
                 await asyncio.sleep(0.05)
                 execution_log.append(("end", query))
                 agent.conversation_history = [agent.system_message]
-                return AssistantResponse(agent_name="test", content="ok")
+                yield StreamEvent(
+                    is_final=True,
+                    assistant_response=AssistantResponse(
+                        agent_name="test", content="ok"
+                    ),
+                )
 
-            agent.execute_query_async = AsyncMock(side_effect=slow_execute)
+            agent.execute_query_stream = MagicMock(side_effect=slow_stream)
             return agent
 
         executor = ObelixAgentExecutor(factory)
@@ -638,21 +669,26 @@ class TestPerContextLocking:
     @pytest.mark.asyncio
     async def test_different_contexts_can_run_in_parallel(self):
         """Two concurrent requests on different context_ids CAN overlap."""
+        from obelix.core.model.assistant_message import AssistantResponse, StreamEvent
+
         execution_log: list[tuple[str, str]] = []
 
         def factory():
             agent = _make_mock_agent()
 
-            async def slow_execute(query):
-                from obelix.core.model.assistant_message import AssistantResponse
-
+            async def slow_stream(query):
                 execution_log.append(("start", query))
                 await asyncio.sleep(0.05)
                 execution_log.append(("end", query))
                 agent.conversation_history = [agent.system_message]
-                return AssistantResponse(agent_name="test", content="ok")
+                yield StreamEvent(
+                    is_final=True,
+                    assistant_response=AssistantResponse(
+                        agent_name="test", content="ok"
+                    ),
+                )
 
-            agent.execute_query_async = AsyncMock(side_effect=slow_execute)
+            agent.execute_query_stream = MagicMock(side_effect=slow_stream)
             return agent
 
         executor = ObelixAgentExecutor(factory)
@@ -713,23 +749,27 @@ class TestLRUEvictionIntegration:
     @pytest.mark.asyncio
     async def test_lru_eviction_during_execute(self):
         """Execute on 3 contexts with max_contexts=2, oldest is evicted."""
+        from obelix.core.model.assistant_message import AssistantResponse, StreamEvent
         from obelix.core.model.human_message import HumanMessage
 
         def factory():
             agent = _make_mock_agent()
             sys_msg = agent.system_message
 
-            async def fake_execute(query):
-                from obelix.core.model.assistant_message import AssistantResponse
-
+            async def fake_stream(query):
                 agent.conversation_history = [
                     sys_msg,
                     HumanMessage(content=query),
                     MagicMock(content="reply"),
                 ]
-                return AssistantResponse(agent_name="test", content="reply")
+                yield StreamEvent(
+                    is_final=True,
+                    assistant_response=AssistantResponse(
+                        agent_name="test", content="reply"
+                    ),
+                )
 
-            agent.execute_query_async = AsyncMock(side_effect=fake_execute)
+            agent.execute_query_stream = MagicMock(side_effect=fake_stream)
             return agent
 
         executor = ObelixAgentExecutor(factory, max_contexts=2)

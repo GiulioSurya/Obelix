@@ -548,7 +548,7 @@ class AgentFactory:
             version=version,
             provider=provider,
             capabilities=AgentCapabilities(
-                streaming=False,
+                streaming=True,
                 push_notifications=False,
                 supports_authenticated_extended_card=False,
             ),

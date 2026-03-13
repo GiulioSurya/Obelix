@@ -166,35 +166,76 @@ class ObelixAgentExecutor(AgentExecutor):
         )
 
         try:
-            response = await agent.execute_query_async(user_text)
+            artifact_id = str(uuid.uuid4())
+            first_chunk = True
 
-            # Persist updated history (everything after system message)
-            entry.history = agent.conversation_history[1:]
+            async for event in agent.execute_query_stream(user_text):
+                if event.token:
+                    # Emit incremental artifact chunk
+                    await event_queue.enqueue_event(
+                        TaskArtifactUpdateEvent(
+                            task_id=task_id,
+                            context_id=context_id,
+                            artifact=Artifact(
+                                artifact_id=artifact_id,
+                                parts=[Part(root=TextPart(text=event.token))],
+                            ),
+                            append=not first_chunk,
+                            last_chunk=False,
+                        )
+                    )
+                    first_chunk = False
 
-            # Publish artifact with the response content
-            artifact = Artifact(
-                artifact_id=str(uuid.uuid4()),
-                parts=[Part(root=TextPart(text=response.content or ""))],
-            )
-            await event_queue.enqueue_event(
-                TaskArtifactUpdateEvent(
-                    task_id=task_id,
-                    context_id=context_id,
-                    artifact=artifact,
-                )
-            )
+                if event.is_final:
+                    response = event.assistant_response
 
-            # Signal completion
-            await event_queue.enqueue_event(
-                TaskStatusUpdateEvent(
-                    task_id=task_id,
-                    context_id=context_id,
-                    status=TaskStatus(state=TaskState.completed),
-                    final=True,
-                )
-            )
+                    # Persist updated history (everything after system message)
+                    entry.history = agent.conversation_history[1:]
 
-            logger.info(f"[A2A] Agent completed | task_id={task_id}")
+                    if first_chunk:
+                        # No tokens were streamed (non-streaming fallback)
+                        # Emit a single complete artifact
+                        await event_queue.enqueue_event(
+                            TaskArtifactUpdateEvent(
+                                task_id=task_id,
+                                context_id=context_id,
+                                artifact=Artifact(
+                                    artifact_id=artifact_id,
+                                    parts=[
+                                        Part(root=TextPart(text=response.content or ""))
+                                    ],
+                                ),
+                                append=False,
+                                last_chunk=True,
+                            )
+                        )
+                    else:
+                        # Close the streamed artifact
+                        await event_queue.enqueue_event(
+                            TaskArtifactUpdateEvent(
+                                task_id=task_id,
+                                context_id=context_id,
+                                artifact=Artifact(
+                                    artifact_id=artifact_id,
+                                    parts=[Part(root=TextPart(text=""))],
+                                ),
+                                append=True,
+                                last_chunk=True,
+                            )
+                        )
+
+                    # Signal completion
+                    await event_queue.enqueue_event(
+                        TaskStatusUpdateEvent(
+                            task_id=task_id,
+                            context_id=context_id,
+                            status=TaskStatus(state=TaskState.completed),
+                            final=True,
+                        )
+                    )
+
+                    logger.info(f"[A2A] Agent completed | task_id={task_id}")
+                    break
 
         except asyncio.CancelledError:
             logger.info(f"[A2A] Agent canceled | task_id={task_id}")

@@ -49,7 +49,7 @@ Ref: [Specification > Operations](https://a2a-protocol.org/latest/specification/
 | Method | Spec Description | Status | Notes |
 |--------|-----------------|--------|-------|
 | `message/send` | Send a message, get back Task or Message. Blocking. | **Working** | Routes to `ObelixAgentExecutor.execute()` |
-| `message/stream` | Send a message, get SSE stream of events. | **SDK-ready, executor TODO** | SDK has SSE infra via `A2AFastAPIApplication`. Executor must use `execute_query_stream()` and emit `TaskStatusUpdateEvent` + `TaskArtifactUpdateEvent` via `EventQueue`. |
+| `message/stream` | Send a message, get SSE stream of events. | **Working** | Executor uses `execute_query_stream()`, emits incremental `TaskArtifactUpdateEvent` per token. SDK wraps in SSE via `A2AFastAPIApplication`. |
 
 **`message/send` response**: spec allows returning either a `Task` (long-running) or a
 `Message` (immediate response). Currently we always create a Task. Returning a direct
@@ -66,7 +66,7 @@ TaskStatusUpdateEvent | TaskArtifactUpdateEvent). Stream closes on terminal stat
 | `tasks/get` | Retrieve current task state by ID. Params: `id`, `historyLength?`, `tenant?`. | **Working** | Via `InMemoryTaskStore` |
 | `tasks/list` | List tasks with filtering and pagination. | **TODO (NEW in v1.0)** | Params: `contextId?`, `status?`, `pageSize?`, `pageToken?`, `historyLength?`, `statusTimestampAfter?`, `includeArtifacts?`, `tenant?`. Returns `{tasks[], nextPageToken, pageSize, totalSize}`. Need to verify SDK support. |
 | `tasks/cancel` | Request task cancellation. | **Partial** | SDK routes to `ObelixAgentExecutor.cancel()`. But cancel is "fake" — emits `canceled` state without actually interrupting `execute_query_async()`. Needs cancellation token. |
-| `tasks/resubscribe` | Reconnect SSE stream for an active task. | **SDK-ready, executor TODO** | Requires streaming executor. Client uses this to reconnect after broken SSE connection. |
+| `tasks/resubscribe` | Reconnect SSE stream for an active task. | **SDK-ready** | Requires streaming executor (DONE). Client uses this to reconnect after broken SSE connection. SDK handles reconnection via `QueueManager.tap()`. |
 
 ### 1.3 Push Notification Config Methods
 
@@ -96,13 +96,13 @@ Ref: [Life of a Task](https://a2a-protocol.org/latest/topics/life-of-a-task/)
 
 | State | Category | Description | Obelix Status |
 |-------|----------|-------------|---------------|
-| `submitted` | Initial | Task acknowledged, not yet processing. | **Never emitted** — we jump straight to `working`. Should emit on task creation before processing starts. |
+| `submitted` | Initial | Task acknowledged, not yet processing. | **OK** — SDK creates task in `submitted` state via `TaskManager._init_task_obj()`. Executor emits `working` which transitions the task. |
 | `working` | Active | Agent is processing. | **OK** |
 | `input-required` | Interrupted | Agent needs more input from the client. Client must send another `message/send` with same `contextId`. | **Never emitted** — see Section 2.2. |
 | `auth-required` | Interrupted | Agent needs authentication. Client must authenticate and retry. | **Never emitted** — enterprise scenario, low priority. |
 | `completed` | Terminal | Successfully finished. | **OK** |
-| `failed` | Terminal | Execution error. | **OK** (but error message could be richer, see Section 2.3) |
-| `canceled` | Terminal | Client-initiated cancellation. | **OK** (but cancellation is not real — see Section 1.2) |
+| `failed` | Terminal | Execution error. | **OK** — structured `Message(role=agent, TextPart)` in `TaskStatus.message` |
+| `canceled` | Terminal | Client-initiated cancellation. | **OK** — structured `Message` in status (but cancellation is not real — see Section 1.2) |
 | `rejected` | Terminal | Agent declined the task. | **Never emitted** — useful when agent determines it cannot handle the request. |
 
 ### 2.2 `input-required` Flow
@@ -121,21 +121,25 @@ This is a **protocol-level** concept: the A2A server tells the A2A client
 (heuristic or explicit signal) and emit `input-required` instead of `completed`.
 Resume when next message arrives on same `contextId`.
 
-### 2.3 Error Reporting in TaskStatus
+### 2.3 Error Reporting in TaskStatus (DONE - 2026-03-13)
 
-Current: `TaskStatus(state=failed, message=None)` with `metadata={"error": str(e)}`.
+All error and cancel paths now use structured `Message` objects in `TaskStatus.message`:
 
-Spec: `TaskStatus.message` should be a `Message` object with details. Better:
 ```python
-TaskStatus(
-    state=TaskState.failed,
-    message=Message(
+# Helper in executor.py
+def _error_message(text: str) -> Message:
+    return Message(
         role=Role.agent,
-        parts=[Part(root=TextPart(text=f"Execution failed: {e}"))],
+        parts=[Part(root=TextPart(text=text))],
         message_id=str(uuid.uuid4()),
-    ),
-)
+    )
+
+# Empty input → "No user input provided"
+# Agent exception → "Execution failed: {error details}"
+# Cancel (CancelledError + cancel()) → "Task canceled by client"
 ```
+
+Verified via E2E tests (A2A server + JSON-RPC client).
 
 ### 2.4 Task Immutability
 
@@ -161,7 +165,7 @@ Simple but inefficient for long tasks. Currently the only supported pattern.
 
 ### 3.2 Streaming (SSE)
 
-**Status: SDK-ready, executor TODO**
+**Status: Working**
 
 Client sends `message/stream` → gets SSE stream with real-time events.
 
@@ -330,7 +334,7 @@ Ref: [Agent Discovery](https://a2a-protocol.org/latest/topics/agent-discovery/)
 
 | Field | Spec | Obelix Status |
 |-------|------|---------------|
-| `streaming` | Supports SSE | `False` — TODO |
+| `streaming` | Supports SSE | **`True`** — executor emits incremental artifact events |
 | `push_notifications` | Supports webhooks | `False` — TODO |
 | `extended_agent_card` | Supports authenticated card | `False` — TODO |
 | `extensions` | `AgentExtension[]` | **Not set** |
@@ -499,7 +503,7 @@ agent.register_agent(
 
 Executor improvements to fully leverage the protocol.
 
-#### Context isolation & thread safety (DONE - 2026-03-13)
+#### 2a. Context isolation & thread safety (DONE - 2026-03-13)
 
 - [x] **Agent factory pattern**: `ObelixAgentExecutor` receives a `Callable[[], BaseAgent]` instead of a single instance. Each request creates a fresh agent via the factory.
 - [x] **Per-context conversation history**: `_ContextEntry` stores `list[StandardMessage]` per `context_id`. History injected into fresh agent before execution, saved back after.
@@ -507,18 +511,89 @@ Executor improvements to fully leverage the protocol.
 - [x] **LRU eviction**: `OrderedDict` with `max_contexts=1024` evicts oldest contexts when at capacity.
 - [x] **CancelledError handling**: executor catches `asyncio.CancelledError`, emits `canceled` state, re-raises for proper SDK cleanup.
 
-#### Remaining items (TODO)
+#### 2b. Error messages (DONE - 2026-03-13)
 
-- [ ] **`submitted` state**: emit `submitted` before `working` on task creation. Enables `return_immediately` (async tasks) for free — the SDK's `ResultAggregator` returns after first event when `blocking=False`.
-- [ ] **Streaming SSE**: emit `TaskArtifactUpdateEvent` chunks with `append`/`last_chunk` during execution. Set `capabilities.streaming=true` in Agent Card. Note: A2A streaming is about incremental *events*, not token-by-token LLM streaming. The SDK `DefaultRequestHandler.on_message_send_stream()` wraps our EventQueue in SSE automatically.
-- [ ] **`input-required` flow**: detect when agent needs clarification, emit `input-required` state with explanatory Message, resume on next `message/send` with same `contextId`. Note: this is a protocol-level concept, NOT related to Obelix's `AskUserQuestionTool`.
-- [ ] **`rejected` state**: emit when agent determines it cannot handle the request
-- [ ] **Structured artifacts**: emit `DataPart` for tool results, not just `TextPart`
-- [ ] **Agent response in history**: add agent Message to task history alongside user message
-- [ ] **Error messages**: use `Message` object in `TaskStatus.message` instead of bare metadata
-- [ ] **`accepted_output_modes`**: respect client content negotiation from `SendMessageConfiguration`
-- [ ] **`tasks/list`**: SDK's `TaskStore` ABC has no `list_tasks()`. Need custom store or skip.
-- [ ] **`supported_interfaces`**: use `AgentInterface` in card instead of flat `url`
+- [x] **Structured error reporting**: `_error_message()` helper creates `Message(role=agent, TextPart)` for all error/cancel paths.
+- [x] **Empty input**: `TaskStatus(state=failed, message="No user input provided")`
+- [x] **Agent exception**: `TaskStatus(state=failed, message="Execution failed: {e}")`
+- [x] **Cancel**: `TaskStatus(state=canceled, message="Task canceled by client")`
+- [x] **E2E verified**: A2A server + JSON-RPC client, all 3 error paths return compliant `Message`.
+
+#### 2c. `submitted` state (DONE — handled by SDK)
+
+- [x] **SDK handles it**: `TaskManager._init_task_obj()` creates tasks in `submitted` state. Our first `TaskStatusUpdateEvent(state=working)` triggers the transition `submitted → working`. No executor changes needed.
+
+#### 2d. Streaming SSE (DONE - 2026-03-13)
+
+Incremental `TaskArtifactUpdateEvent` during execution. Both `message/send` and `message/stream` work.
+
+- [x] **Executor uses `execute_query_stream()`** instead of `execute_query_async()`. BaseAgent has streaming with automatic fallback to `invoke()` if the provider doesn't support `invoke_stream()`.
+- [x] **Incremental artifact events**: one `TaskArtifactUpdateEvent` per LLM token. First chunk `append=False`, subsequent `append=True`, final `last_chunk=True`. Same `artifact_id` across all chunks.
+- [x] **Agent Card update**: `capabilities.streaming=True` in `_build_agent_card()`.
+- [x] **Fallback behavior**: if provider doesn't support streaming, BaseAgent falls back to `invoke()` internally — executor emits a single artifact event with `append=False, last_chunk=True`. Works for both `message/send` and `message/stream`.
+- [x] **E2E verified**: `message/send` returns complete response (7K chars). `message/stream` delivers 437 SSE chunks in real-time (6.7K chars). Both produce identical content.
+
+**Implementation note**: the SDK uses the same `EventQueue` for both paths. `on_message_send()` aggregates all events into a final Task. `on_message_send_stream()` yields them as SSE. The executor doesn't need to distinguish — it always emits granular events.
+
+#### 2e. `input-required` flow (TODO — richiede ricerca)
+
+Quando l'agent ha bisogno di input dal client, emettere `input-required` invece di `completed`, e riprendere sul prossimo `message/send` con lo stesso `contextId`.
+
+- [ ] **Segnale di detection**: l'agent ha gia' `AskUserQuestionTool`. Quando il tool viene invocato, l'executor puo' intercettare la tool call e interpretarla come segnale "input-required" a livello di protocollo A2A.
+- [ ] **Emissione stato**: `TaskStatusUpdateEvent(state=input-required)` con `Message` che contiene la domanda dell'agent.
+- [ ] **Resume**: il prossimo `message/send` sullo stesso `contextId` riprende l'esecuzione. L'executor deve ripassare la risposta dell'utente all'agent e continuare il loop.
+
+**Gap informativi — ricerca necessaria**:
+1. **Intercettazione tool call**: come intercettiamo `AskUserQuestionTool` *prima* che il loop dell'agent completi? Oggi `execute_query_async()` esegue il tool e poi continua il loop. Serve un meccanismo per "sospendere" il loop a meta' esecuzione e riprendere dopo. Opzioni da esplorare:
+   - Hook `BEFORE_TOOL_EXECUTION`: iniettare un hook che rileva `AskUserQuestionTool` e solleva un'eccezione custom (`InputRequiredError`?) che l'executor cattura.
+   - Modifica a `BaseAgent._execute_loop()`: aggiungere supporto per "yield control" quando un tool richiede input esterno.
+   - Flag in `AssistantResponse` (`requires_input: bool`): l'agent segnala esplicitamente che la risposta e' una domanda.
+2. **Persistenza stato sospeso**: quando l'agent e' in `input-required`, il suo stato interno (conversation_history a meta' loop, tool calls pendenti) deve essere salvato per riprendere. Oggi `_ContextEntry` salva solo la history finale. Serve salvare anche lo stato intermedio?
+3. **AskUserQuestionTool semantica A2A**: oggi il tool stampa una domanda su stdin e aspetta risposta. In contesto A2A non c'e' stdin — la risposta arriva come nuovo `message/send`. Il tool deve cambiare comportamento in base al contesto (CLI vs A2A)?
+4. **Casi limite**: cosa succede se il client non risponde mai? Timeout? Il task resta in `input-required` indefinitamente?
+
+#### 2f. `rejected` state (TODO — richiede definizione use case)
+
+Emettere `rejected` quando l'agent determina di non poter gestire la richiesta.
+
+- [ ] **Definire i criteri**: quando un agent "rifiuta"? Possibili scenari:
+  - L'agent non ha tool e la query richiede un'azione
+  - L'agent risponde esplicitamente "non posso aiutarti"
+  - Il contenuto viola una policy
+
+**Gap informativi**:
+1. **Nessun use case concreto attuale**: nessun agent Obelix oggi rifiuta esplicitamente una richiesta. Il caso piu' vicino e' un agent senza tool che risponde "non so", ma quello e' `completed` con contenuto informativo, non `rejected`.
+2. **Criterio di detection**: euristica (analisi contenuto risposta) vs segnale esplicito (flag/eccezione dall'agent). L'euristica e' fragile; un segnale esplicito richiede modifiche al core.
+3. **Priorita' bassa**: la spec dice che `rejected` e' per scenari in cui l'agent "determines it cannot handle the request". Piu' rilevante in contesti multi-agent dove un agent potrebbe non avere le skill richieste.
+
+#### 2g. Structured artifacts con `DataPart` (TODO — bassa priorita')
+
+Emettere `DataPart` per risultati strutturati (tool results JSON) invece di serializzare tutto come `TextPart`.
+
+- [ ] **Artifact con DataPart**: quando l'agent produce tool results strutturati, wrappare il JSON in `DataPart(data=..., media_type="application/json")` invece di `TextPart(text=str(...))`.
+- [ ] **Coesistenza**: il testo di risposta dell'agent resta `TextPart`, i tool results come `DataPart` aggiuntivi nello stesso artifact o in artifact separati.
+
+**Gap informativi**:
+1. **Formato DataPart**: la spec dice `data: Any` (JSON value) + `media_type`. Ma come strutturiamo i tool results? Un `DataPart` per tool result, o un unico `DataPart` con lista di results?
+2. **Utilita' pratica**: nessun client A2A noto oggi consuma `DataPart` in modo diverso da `TextPart`. Il valore e' principalmente semantico (machine-readable vs human-readable).
+
+#### 2h. Agent response in task history (TODO — bassa priorita')
+
+Aggiungere la risposta dell'agent come `Message` nella history del task (oggi c'e' solo il messaggio utente).
+
+- [ ] **Emit agent Message**: dopo il completamento, aggiungere `Message(role=agent, parts=[TextPart(response)])` alla task history via `TaskManager`.
+
+**Gap informativi**:
+1. **SDK behavior**: verificare se il `TaskManager` / `ResultAggregator` aggiunge automaticamente l'agent message alla history quando processa il `TaskArtifactUpdateEvent`, o se dobbiamo farlo noi esplicitamente.
+
+#### 2i. Altre migliorie (TODO — bassa priorita')
+
+| Item | Stato | Gap informativi |
+|------|-------|-----------------|
+| **`accepted_output_modes`** | TODO | Come accediamo alla `SendMessageConfiguration` dall'executor? `RequestContext` la espone? Se no, serve accesso ai `params` originali. Inoltre: come negoziiamo se il client chiede `application/json` ma l'agent produce solo testo? |
+| **`tasks/list`** | TODO | L'SDK's `TaskStore` ABC non ha `list_tasks()`. Serve un custom `TaskStore` (subclass di `InMemoryTaskStore` con metodo `list`). Verificare se l'SDK ha aggiunto supporto nelle versioni recenti. |
+| **`supported_interfaces`** | TODO | Cosmetico: usare `AgentInterface(url, protocol_binding, protocol_version)` nella card invece del flat `url`. Nessun gap, solo lavoro meccanico. |
+| **Real cancellation** | TODO | `cancel()` oggi emette `canceled` senza interrompere `execute_query_async()`. Serve un `CancellationToken` o `asyncio.Task.cancel()` per interrompere davvero l'esecuzione. Richiede modifiche a BaseAgent per supportare cancellation cooperativa. |
 
 ### Phase 3: A2A Client — Outbound (High Priority)
 
