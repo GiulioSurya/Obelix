@@ -4,6 +4,7 @@ Agent Factory for centralized agent creation and composition.
 All agents should be created through this factory in production code.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Union
 
@@ -341,6 +342,7 @@ class AgentFactory:
         *,
         host: str = "0.0.0.0",
         port: int = 8000,
+        endpoint: str | None = None,
         version: str = "0.1.0",
         description: str | None = None,
         provider_name: str = "Obelix",
@@ -360,6 +362,9 @@ class AgentFactory:
             agent: Name of the registered agent to serve.
             host: Bind address.
             port: Bind port.
+            endpoint: The agent's reachable URL for the Agent Card
+                (e.g. "https://my-agent.prod.example.com"). If not provided,
+                falls back to http://{host}:{port}.
             version: Version string for the Agent Card.
             description: Description for the Agent Card. Falls back to
                 the agent's system message (truncated) if not provided.
@@ -378,6 +383,7 @@ class AgentFactory:
                 "Install them with: uv sync --extra serve"
             ) from e
 
+        # Build one instance for Agent Card introspection (tools, skills, etc.)
         agent_instance = self.create(
             agent,
             subagents=subagents,
@@ -385,11 +391,22 @@ class AgentFactory:
             **create_overrides,
         )
 
+        # Factory callable: creates a fresh agent per A2A request
+        def agent_factory() -> "BaseAgent":
+            return self.create(
+                agent,
+                subagents=subagents,
+                subagent_config=subagent_config,
+                **create_overrides,
+            )
+
         app = self._create_a2a_app(
             agent_instance=agent_instance,
+            agent_factory=agent_factory,
             agent_name=agent,
             host=host,
             port=port,
+            endpoint=endpoint,
             version=version,
             description=description,
             provider_name=provider_name,
@@ -404,15 +421,26 @@ class AgentFactory:
     def _create_a2a_app(
         self,
         agent_instance: "BaseAgent",
+        agent_factory: "Callable[[], BaseAgent]",
         agent_name: str,
         host: str,
         port: int,
+        endpoint: str | None,
         version: str,
         description: str | None,
         provider_name: str,
         provider_url: str | None,
     ) -> Any:
-        """Build a FastAPI application using the a2a-sdk infrastructure."""
+        """Build a FastAPI application using the a2a-sdk infrastructure.
+
+        Args:
+            agent_instance: A pre-built agent used to derive the Agent Card
+                (reads registered tools, system message, etc.). NOT used
+                for request execution.
+            agent_factory: Callable that creates a fresh BaseAgent for each
+                A2A request. Ensures context isolation between concurrent
+                requests.
+        """
         from a2a.server.apps.jsonrpc.fastapi_app import A2AFastAPIApplication
         from a2a.server.request_handlers.default_request_handler import (
             DefaultRequestHandler,
@@ -426,6 +454,7 @@ class AgentFactory:
             agent_name=agent_name,
             host=host,
             port=port,
+            endpoint=endpoint,
             version=version,
             description=description,
             provider_name=provider_name,
@@ -433,7 +462,7 @@ class AgentFactory:
         )
 
         task_store = InMemoryTaskStore()
-        executor = ObelixAgentExecutor(agent_instance)
+        executor = ObelixAgentExecutor(agent_factory)
         request_handler = DefaultRequestHandler(
             agent_executor=executor,
             task_store=task_store,
@@ -452,6 +481,7 @@ class AgentFactory:
         agent_name: str,
         host: str,
         port: int,
+        endpoint: str | None,
         version: str,
         description: str | None,
         provider_name: str,
@@ -491,9 +521,12 @@ class AgentFactory:
                     )
                 )
 
-        # Build URL — use localhost for display if binding to 0.0.0.0
-        display_host = "localhost" if host == "0.0.0.0" else host
-        url = f"http://{display_host}:{port}"
+        # Build URL — explicit endpoint takes priority, otherwise derive from bind address
+        if endpoint:
+            url = endpoint.rstrip("/")
+        else:
+            display_host = "localhost" if host == "0.0.0.0" else host
+            url = f"http://{display_host}:{port}"
 
         # Description: explicit override > system message fallback
         if description:

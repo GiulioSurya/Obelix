@@ -423,6 +423,7 @@ class LiteLLMProvider(AbstractLLMProvider):
 
         # Accumulators
         content_parts: list[str] = []
+        reasoning_parts: list[str] = []
         # tool_calls_acc: {index: {"id": str, "name": str, "arguments": str}}
         tool_calls_acc: dict[int, dict[str, str]] = {}
         usage: Usage | None = None
@@ -443,6 +444,11 @@ class LiteLLMProvider(AbstractLLMProvider):
                 continue
 
             delta = choice.delta
+
+            # Reasoning/thinking content (accumulated, not yielded as token)
+            delta_reasoning = getattr(delta, "reasoning_content", None)
+            if delta_reasoning:
+                reasoning_parts.append(delta_reasoning)
 
             # Text content
             delta_content = getattr(delta, "content", None)
@@ -503,15 +509,22 @@ class LiteLLMProvider(AbstractLLMProvider):
                     + "\n".join(f"  - {err}" for err in errors)
                 )
 
+        metadata = {}
+        reasoning = "".join(reasoning_parts) if reasoning_parts else None
+        if reasoning:
+            metadata["reasoning"] = reasoning
+
         assistant_message = AssistantMessage(
             content=full_content,
             tool_calls=tool_calls,
             usage=usage,
+            metadata=metadata,
         )
 
         logger.info(
             f"[LiteLLMProvider] Stream completed | model={self.model_id} "
             f"content_chars={len(full_content)} tool_calls={len(tool_calls)} "
+            f"reasoning={'present' if reasoning else 'absent'} "
             f"input_tokens={usage.input_tokens if usage else None} "
             f"output_tokens={usage.output_tokens if usage else None}"
         )
@@ -691,6 +704,33 @@ class LiteLLMProvider(AbstractLLMProvider):
             total_tokens=response.usage.total_tokens,
         )
 
+    def _extract_reasoning(self, response) -> str | None:
+        """
+        Extract reasoning/thinking content from LiteLLM response.
+
+        LiteLLM exposes thinking blocks as:
+        response.choices[0].message.thinking_blocks -> list[dict]
+        Each block: {"type": "thinking", "thinking": "...", "signature": "..."}
+        """
+        if not hasattr(response, "choices") or not response.choices:
+            return None
+
+        message = response.choices[0].message
+        thinking_blocks = getattr(message, "thinking_blocks", None)
+        if not thinking_blocks:
+            return None
+
+        thinking_parts = []
+        for block in thinking_blocks:
+            if isinstance(block, dict):
+                thinking = block.get("thinking", "")
+            else:
+                thinking = getattr(block, "thinking", "")
+            if thinking:
+                thinking_parts.append(thinking)
+
+        return "\n".join(thinking_parts) if thinking_parts else None
+
     def _convert_response_to_assistant_message(self, response) -> AssistantMessage:
         """
         Convert LiteLLM ModelResponse to standardized AssistantMessage.
@@ -701,10 +741,18 @@ class LiteLLMProvider(AbstractLLMProvider):
         tool_calls = self._extract_tool_calls(response)
         content = self._extract_content(response)
         usage = self._extract_usage(response)
+        reasoning = self._extract_reasoning(response)
+
+        metadata = {}
+        if reasoning:
+            metadata["reasoning"] = reasoning
 
         logger.debug(
             f"[LiteLLMProvider] Response parsed | content_chars={len(content)} "
-            f"tool_calls={len(tool_calls)}"
+            f"tool_calls={len(tool_calls)} "
+            f"reasoning={'present' if reasoning else 'absent'}"
         )
 
-        return AssistantMessage(content=content, tool_calls=tool_calls, usage=usage)
+        return AssistantMessage(
+            content=content, tool_calls=tool_calls, usage=usage, metadata=metadata
+        )

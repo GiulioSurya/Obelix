@@ -50,6 +50,8 @@ def make_provider() -> LiteLLMProvider:
     return LiteLLMProvider(
         model_id=LITELLM_MODEL,
         api_key=os.getenv("ANTHROPIC_API_KEY"),
+        reasoning_effort="low",
+        temperature=1,
     )
 
 
