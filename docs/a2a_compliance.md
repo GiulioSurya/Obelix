@@ -6,7 +6,7 @@ It serves as a complete gap analysis, behavioral reference, and implementation r
 
 > **Spec reference**: https://a2a-protocol.org/latest/specification/ (v1.0, Linux Foundation).
 > **SDK**: [`a2a-sdk`](https://github.com/a2aproject/a2a-python) v0.3.25.
-> **Last updated**: 2026-03-13.
+> **Last updated**: 2026-03-14.
 
 ---
 
@@ -27,11 +27,14 @@ a2a-sdk infrastructure (managed by SDK):
   |
   v
 ObelixAgentExecutor (our only code):
-  RequestContext.get_user_input() -> BaseAgent.execute_query_async() -> EventQueue events
+  RequestContext.get_user_input() -> BaseAgent.execute_query_stream() -> EventQueue events
+  InputChannel (asyncio.Future) <-> RequestUserInputTool (auto-registered)
 ```
 
 **Files**:
-- `src/obelix/adapters/inbound/a2a/executor.py` — `ObelixAgentExecutor(AgentExecutor)`
+- `src/obelix/adapters/inbound/a2a/server.py` — `ObelixAgentExecutor(AgentExecutor)`
+- `src/obelix/adapters/inbound/a2a/input_channel.py` — `InputChannel` (tool ↔ executor async channel)
+- `src/obelix/adapters/inbound/a2a/request_user_input_tool.py` — `RequestUserInputTool` (A2A-specific)
 - `src/obelix/core/agent/agent_factory.py` — `a2a_serve()`, `_build_agent_card()`
 
 **Implication**: data model compliance (Task, Message, Part, Artifact, errors,
@@ -98,28 +101,35 @@ Ref: [Life of a Task](https://a2a-protocol.org/latest/topics/life-of-a-task/)
 |-------|----------|-------------|---------------|
 | `submitted` | Initial | Task acknowledged, not yet processing. | **OK** — SDK creates task in `submitted` state via `TaskManager._init_task_obj()`. Executor emits `working` which transitions the task. |
 | `working` | Active | Agent is processing. | **OK** |
-| `input-required` | Interrupted | Agent needs more input from the client. Client must send another `message/send` with same `contextId`. | **Never emitted** — see Section 2.2. |
+| `input-required` | Interrupted | Agent needs more input from the client. Client must send another `message/send` with same `contextId`. | **Working** — emitted when agent calls `RequestUserInputTool`. See Section 2.2. |
 | `auth-required` | Interrupted | Agent needs authentication. Client must authenticate and retry. | **Never emitted** — enterprise scenario, low priority. |
 | `completed` | Terminal | Successfully finished. | **OK** |
 | `failed` | Terminal | Execution error. | **OK** — structured `Message(role=agent, TextPart)` in `TaskStatus.message` |
 | `canceled` | Terminal | Client-initiated cancellation. | **OK** — structured `Message` in status (but cancellation is not real — see Section 1.2) |
 | `rejected` | Terminal | Agent declined the task. | **Never emitted** — useful when agent determines it cannot handle the request. |
 
-### 2.2 `input-required` Flow
+### 2.2 `input-required` Flow (DONE - 2026-03-14)
 
-This is NOT about Obelix's `AskUserQuestionTool` (which is an internal tool).
-This is a **protocol-level** concept: the A2A server tells the A2A client
-"I need more information before I can continue".
+Implemented via `RequestUserInputTool` — an A2A-specific tool that is
+auto-registered on every agent created by `a2a_serve()`. When the LLM
+calls the tool, execution suspends until the client responds.
 
-**Spec flow**:
-1. Agent determines it needs clarification
-2. Server emits `TaskStatusUpdateEvent(state=input-required)` with a Message explaining what's needed
-3. Client sends another `message/send` with same `contextId`
-4. Server resumes processing (state back to `working`)
+**Spec flow** (implemented):
+1. Agent calls `RequestUserInputTool(question="...", options=[...])` — tool suspends on `asyncio.Future`
+2. Executor detects suspension via `InputChannel.wait_for_request()`
+3. Server emits `TaskStatusUpdateEvent(state=input-required, message=question)` with `final=True`
+4. Client sends another `message/send` with same `contextId`
+5. Executor delivers response via `InputChannel.provide_input(text)` — tool resumes
+6. Agent loop continues normally (state back to `working` → `completed`)
 
-**Obelix implementation TODO**: detect when the agent's response is a question
-(heuristic or explicit signal) and emit `input-required` instead of `completed`.
-Resume when next message arrives on same `contextId`.
+**Architecture**:
+- `InputChannel` (`input_channel.py`): asyncio.Future-based channel, exposed via `ContextVar`
+- `RequestUserInputTool` (`request_user_input_tool.py`): same UX pattern as `AskUserQuestionTool` (question + structured options), but suspends via `InputChannel` instead of blocking on stdin
+- Deadlock prevention: per-context `asyncio.Lock` replaced with `asyncio.Event` (idle gate). Resume path bypasses the gate since it's a continuation, not a new execution.
+- `_RequestRef`: mutable wrapper for queue/task_id/context_id — necessary because the SDK creates a new `task_id` for each `message/send`, and post-resume events must use the new IDs.
+- Timeout: 60s (configurable via `INPUT_TIMEOUT_SECONDS`). If client doesn't respond, `TimeoutError` → `TaskState.failed`.
+
+**E2E verified**: `message/send("Calculate 25*4")` → `input-required("Should I proceed?")` → `message/send("Yes")` → calculator executes → report agent formats → `completed("25 × 4 = 100")`.
 
 ### 2.3 Error Reporting in TaskStatus (DONE - 2026-03-13)
 
@@ -535,22 +545,16 @@ Incremental `TaskArtifactUpdateEvent` during execution. Both `message/send` and 
 
 **Implementation note**: the SDK uses the same `EventQueue` for both paths. `on_message_send()` aggregates all events into a final Task. `on_message_send_stream()` yields them as SSE. The executor doesn't need to distinguish — it always emits granular events.
 
-#### 2e. `input-required` flow (TODO — richiede ricerca)
+#### 2e. `input-required` flow (DONE - 2026-03-14)
 
-Quando l'agent ha bisogno di input dal client, emettere `input-required` invece di `completed`, e riprendere sul prossimo `message/send` con lo stesso `contextId`.
+Implemented via `RequestUserInputTool` + `InputChannel`. See Section 2.2 for full details.
 
-- [ ] **Segnale di detection**: l'agent ha gia' `AskUserQuestionTool`. Quando il tool viene invocato, l'executor puo' intercettare la tool call e interpretarla come segnale "input-required" a livello di protocollo A2A.
-- [ ] **Emissione stato**: `TaskStatusUpdateEvent(state=input-required)` con `Message` che contiene la domanda dell'agent.
-- [ ] **Resume**: il prossimo `message/send` sullo stesso `contextId` riprende l'esecuzione. L'executor deve ripassare la risposta dell'utente all'agent e continuare il loop.
-
-**Gap informativi — ricerca necessaria**:
-1. **Intercettazione tool call**: come intercettiamo `AskUserQuestionTool` *prima* che il loop dell'agent completi? Oggi `execute_query_async()` esegue il tool e poi continua il loop. Serve un meccanismo per "sospendere" il loop a meta' esecuzione e riprendere dopo. Opzioni da esplorare:
-   - Hook `BEFORE_TOOL_EXECUTION`: iniettare un hook che rileva `AskUserQuestionTool` e solleva un'eccezione custom (`InputRequiredError`?) che l'executor cattura.
-   - Modifica a `BaseAgent._execute_loop()`: aggiungere supporto per "yield control" quando un tool richiede input esterno.
-   - Flag in `AssistantResponse` (`requires_input: bool`): l'agent segnala esplicitamente che la risposta e' una domanda.
-2. **Persistenza stato sospeso**: quando l'agent e' in `input-required`, il suo stato interno (conversation_history a meta' loop, tool calls pendenti) deve essere salvato per riprendere. Oggi `_ContextEntry` salva solo la history finale. Serve salvare anche lo stato intermedio?
-3. **AskUserQuestionTool semantica A2A**: oggi il tool stampa una domanda su stdin e aspetta risposta. In contesto A2A non c'e' stdin — la risposta arriva come nuovo `message/send`. Il tool deve cambiare comportamento in base al contesto (CLI vs A2A)?
-4. **Casi limite**: cosa succede se il client non risponde mai? Timeout? Il task resta in `input-required` indefinitamente?
+- [x] **`RequestUserInputTool`**: A2A-specific tool, auto-registered by `a2a_serve()`. LLM calls it with `question` + optional `options`. Tool suspends via `InputChannel.request_input()` (asyncio.Future).
+- [x] **`InputChannel`**: ContextVar-based async channel. Tool side: `await request_input(question)`. Executor side: `await wait_for_request()` to detect, `provide_input(text)` to resume.
+- [x] **Executor two-path dispatch**: normal path (new execution, waits on `idle` gate) vs resume path (delivers input, bypasses gate). `asyncio.Event` replaces `asyncio.Lock` to avoid deadlock.
+- [x] **`_RequestRef`**: mutable wrapper for queue/task_id/context_id. SDK creates new task_id per `message/send`, so post-resume events must use updated IDs.
+- [x] **Timeout**: 60s default (`INPUT_TIMEOUT_SECONDS`). `TimeoutError` → `TaskState.failed`.
+- [x] **E2E verified**: full round-trip with calculator + report sub-agents, streaming tokens on resume.
 
 #### 2f. `rejected` state (TODO — richiede definizione use case)
 
