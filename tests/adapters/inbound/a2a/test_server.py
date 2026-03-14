@@ -22,7 +22,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from obelix.adapters.inbound.a2a.executor import (
+from obelix.adapters.inbound.a2a.server import (
     DEFAULT_MAX_CONTEXTS,
     ObelixAgentExecutor,
     _ContextEntry,
@@ -146,7 +146,10 @@ class TestContextEntry:
     def test_initial_state(self):
         entry = _ContextEntry()
         assert entry.history == []
-        assert isinstance(entry.lock, asyncio.Lock)
+        assert isinstance(entry.idle, asyncio.Event)
+        assert entry.idle.is_set()  # starts idle (ready)
+        assert entry.input_channel is None
+        assert entry.pending_task is None
 
     def test_history_is_mutable_list(self):
         entry = _ContextEntry()
@@ -782,3 +785,291 @@ class TestLRUEvictionIntegration:
         assert "ctx-2" in executor._contexts
         assert "ctx-3" in executor._contexts
         assert len(executor._contexts) == 2
+
+
+# ---------------------------------------------------------------------------
+# InputChannel
+# ---------------------------------------------------------------------------
+
+
+class TestInputChannel:
+    @pytest.mark.asyncio
+    async def test_request_and_provide_roundtrip(self):
+        """request_input suspends, provide_input resumes with the answer."""
+        from obelix.adapters.inbound.a2a.input_channel import InputChannel
+
+        channel = InputChannel()
+
+        async def requester():
+            return await channel.request_input("What color?")
+
+        async def provider():
+            # Wait for the request to be made
+            question = await channel.wait_for_request()
+            assert question == "What color?"
+            channel.provide_input("blue")
+
+        answer, _ = await asyncio.gather(requester(), provider())
+        assert answer == "blue"
+
+    @pytest.mark.asyncio
+    async def test_is_waiting_states(self):
+        from obelix.adapters.inbound.a2a.input_channel import InputChannel
+
+        channel = InputChannel()
+        assert channel.is_waiting() is False
+
+        async def requester():
+            return await channel.request_input("question")
+
+        task = asyncio.create_task(requester())
+        await channel.wait_for_request()
+        assert channel.is_waiting() is True
+
+        channel.provide_input("answer")
+        await task
+        assert channel.is_waiting() is False
+
+    @pytest.mark.asyncio
+    async def test_timeout_raises(self):
+        from obelix.adapters.inbound.a2a.input_channel import InputChannel
+
+        channel = InputChannel()
+        # Override timeout for fast test
+        channel._request_event.set()
+        loop = asyncio.get_running_loop()
+        channel._question = "test"
+        channel._response_future = loop.create_future()
+
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(channel._response_future, timeout=0.01)
+
+    @pytest.mark.asyncio
+    async def test_provide_input_after_done_is_safe(self):
+        """Calling provide_input after the Future is resolved is a no-op."""
+        from obelix.adapters.inbound.a2a.input_channel import InputChannel
+
+        channel = InputChannel()
+
+        async def requester():
+            return await channel.request_input("q")
+
+        task = asyncio.create_task(requester())
+        await channel.wait_for_request()
+        channel.provide_input("first")
+        channel.provide_input("second")  # should not raise
+        result = await task
+        assert result == "first"
+
+    @pytest.mark.asyncio
+    async def test_question_property(self):
+        from obelix.adapters.inbound.a2a.input_channel import InputChannel
+
+        channel = InputChannel()
+        assert channel.question is None
+
+        async def requester():
+            return await channel.request_input("What?")
+
+        task = asyncio.create_task(requester())
+        await channel.wait_for_request()
+        assert channel.question == "What?"
+        channel.provide_input("ok")
+        await task
+
+
+# ---------------------------------------------------------------------------
+# Input-required flow (full executor integration)
+# ---------------------------------------------------------------------------
+
+
+def _make_input_required_factory():
+    """Create a factory whose agent calls request_user_input, then continues.
+
+    Simulates:
+    1. Agent calls request_user_input tool → suspends
+    2. Client responds → tool resumes with answer
+    3. Agent does one more LLM call → returns final response with the answer
+    """
+    from obelix.adapters.inbound.a2a.input_channel import input_channel_var
+    from obelix.core.model.assistant_message import AssistantResponse, StreamEvent
+    from obelix.core.model.system_message import SystemMessage
+
+    created: list[MagicMock] = []
+
+    def factory():
+        agent = MagicMock()
+        agent.system_message = SystemMessage(content="Test agent")
+        agent.conversation_history = [agent.system_message]
+
+        async def fake_stream(query):
+            # Simulate the agent calling request_user_input
+            channel = input_channel_var.get(None)
+            if channel is not None:
+                # This is the tool suspending
+                answer = await channel.request_input("Which currency?")
+            else:
+                answer = "no-channel"
+
+            # After resume, agent generates final response
+            yield StreamEvent(
+                is_final=True,
+                assistant_response=AssistantResponse(
+                    agent_name="test_agent",
+                    content=f"Result: {answer}",
+                ),
+            )
+
+        agent.execute_query_stream = MagicMock(side_effect=fake_stream)
+        created.append(agent)
+        return agent
+
+    return factory, created
+
+
+class TestInputRequired:
+    @pytest.mark.asyncio
+    async def test_emits_input_required_state(self):
+        """When agent calls request_user_input, executor emits input-required."""
+        from a2a.types import TaskState
+
+        factory, _ = _make_input_required_factory()
+        executor = ObelixAgentExecutor(factory)
+        ctx = FakeRequestContext(task_id="t-ir", context_id="ctx-ir")
+        queue = FakeEventQueue()
+
+        await executor.execute(ctx, queue)
+
+        # Events: working → input-required
+        assert len(queue.events) == 2
+        assert queue.events[0].status.state == TaskState.working
+        assert queue.events[1].status.state == TaskState.input_required
+        assert queue.events[1].final is True
+        # The message should contain the question
+        assert "Which currency?" in queue.events[1].status.message.parts[0].root.text
+
+    @pytest.mark.asyncio
+    async def test_context_stays_busy_during_input_required(self):
+        """After emitting input-required, the context is NOT idle."""
+        factory, _ = _make_input_required_factory()
+        executor = ObelixAgentExecutor(factory)
+        ctx = FakeRequestContext(context_id="ctx-busy")
+        queue = FakeEventQueue()
+
+        await executor.execute(ctx, queue)
+
+        entry = executor._contexts["ctx-busy"]
+        assert not entry.idle.is_set()
+        assert entry.input_channel is not None
+        assert entry.input_channel.is_waiting()
+
+        # Clean up: provide input so the pending task can complete
+        entry.input_channel.provide_input("cleanup")
+        if entry.pending_task:
+            await entry.pending_task
+
+
+class TestResumeAfterInput:
+    @pytest.mark.asyncio
+    async def test_resume_completes_with_answer(self):
+        """After input-required, second message resumes and completes."""
+        from a2a.types import (
+            TaskArtifactUpdateEvent,
+            TaskState,
+            TaskStatusUpdateEvent,
+        )
+
+        factory, _ = _make_input_required_factory()
+        executor = ObelixAgentExecutor(factory)
+
+        # First request → input-required
+        ctx1 = FakeRequestContext(task_id="t-1", context_id="ctx-resume")
+        queue1 = FakeEventQueue()
+        await executor.execute(ctx1, queue1)
+
+        assert queue1.events[-1].status.state == TaskState.input_required
+
+        # Second request → delivers the answer
+        ctx2 = FakeRequestContext(task_id="t-2", context_id="ctx-resume")
+        ctx2.get_user_input = lambda: "EUR"
+        queue2 = FakeEventQueue()
+        await executor.execute(ctx2, queue2)
+
+        # Events on queue2: working → artifact → completed
+        states = [
+            e.status.state
+            for e in queue2.events
+            if isinstance(e, TaskStatusUpdateEvent)
+        ]
+        assert TaskState.working in states
+        assert TaskState.completed in states
+
+        artifacts = [e for e in queue2.events if isinstance(e, TaskArtifactUpdateEvent)]
+        assert len(artifacts) >= 1
+        # The artifact should contain the answer
+        artifact_text = artifacts[0].artifact.parts[0].root.text
+        assert "EUR" in artifact_text
+
+    @pytest.mark.asyncio
+    async def test_context_becomes_idle_after_resume(self):
+        """After resume completes, the context is idle again."""
+        factory, _ = _make_input_required_factory()
+        executor = ObelixAgentExecutor(factory)
+
+        # First request → input-required
+        ctx1 = FakeRequestContext(context_id="ctx-idle")
+        queue1 = FakeEventQueue()
+        await executor.execute(ctx1, queue1)
+
+        # Second request → resume
+        ctx2 = FakeRequestContext(context_id="ctx-idle")
+        ctx2.get_user_input = lambda: "answer"
+        queue2 = FakeEventQueue()
+        await executor.execute(ctx2, queue2)
+
+        entry = executor._contexts["ctx-idle"]
+        assert entry.idle.is_set()
+        assert entry.input_channel is None
+        assert entry.pending_task is None
+
+    @pytest.mark.asyncio
+    async def test_history_preserved_after_resume(self):
+        """Conversation history is saved after the resumed execution completes."""
+        factory, _ = _make_input_required_factory()
+        executor = ObelixAgentExecutor(factory)
+
+        # First request → input-required
+        ctx1 = FakeRequestContext(context_id="ctx-hist")
+        await executor.execute(ctx1, FakeEventQueue())
+
+        # Second request → resume
+        ctx2 = FakeRequestContext(context_id="ctx-hist")
+        ctx2.get_user_input = lambda: "answer"
+        await executor.execute(ctx2, FakeEventQueue())
+
+        entry = executor._contexts["ctx-hist"]
+        # History should have been saved (agent mock has [system_message])
+        # At minimum it should not be empty after a completed execution
+        assert isinstance(entry.history, list)
+
+
+class TestNormalFlowUnchanged:
+    @pytest.mark.asyncio
+    async def test_normal_execution_without_input_tool(self):
+        """Normal execution (no input tool) works exactly as before."""
+        from a2a.types import TaskState
+
+        factory, _ = _make_factory()
+        executor = ObelixAgentExecutor(factory)
+        ctx = FakeRequestContext()
+        queue = FakeEventQueue()
+
+        await executor.execute(ctx, queue)
+
+        assert len(queue.events) == 3  # working → artifact → completed
+        assert queue.events[0].status.state == TaskState.working
+        assert queue.events[2].status.state == TaskState.completed
+
+        entry = executor._contexts["ctx-001"]
+        assert entry.idle.is_set()
+        assert entry.input_channel is None

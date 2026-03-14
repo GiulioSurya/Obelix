@@ -28,7 +28,6 @@ from obelix.core.tool.tool_decorator import tool
 from obelix.core.tracer import Tracer
 from obelix.core.tracer.exporters import HTTPExporter
 from obelix.infrastructure.logging import setup_logging
-from obelix.plugins.builtin.ask_user_question_tool import AskUserQuestionTool
 
 load_dotenv()
 
@@ -136,15 +135,14 @@ class CoordinatorAgent(BaseAgent):
             system_message=(
                 "You are an orchestrator agent with a Math Agent and a Report Agent.\n"
                 "MANDATORY RULES:\n"
-                "- You MUST ALWAYS use ask_user_question to collect or confirm input.\n"
-                "- You CANNOT call the Math Agent without first using ask_user_question.\n"
-                "- If information is missing or ambiguous, stop and ask for clarification.\n"
+                "- You MUST use the request_user_input tool to confirm or collect input from the user before proceeding.\n"
+                "- You CANNOT call the Math Agent without first using request_user_input to validate the request.\n"
+                "- If information is missing or ambiguous, use request_user_input to ask for clarification.\n"
                 "- Only after the user responds can you call the Math Agent.\n"
                 "- After the Math Agent responds, call the Report Agent to format the results.\n"
-                "Use the ask_user_question tool at least once."
+                "Always use request_user_input at least once before doing any calculation."
             ),
             provider=make_provider(),
-            tools=AskUserQuestionTool,
             **kwargs,
         )
 

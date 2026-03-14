@@ -392,13 +392,20 @@ class AgentFactory:
         )
 
         # Factory callable: creates a fresh agent per A2A request
+        # with RequestUserInputTool auto-registered for input-required flow
         def agent_factory() -> "BaseAgent":
-            return self.create(
+            from obelix.adapters.inbound.a2a.request_user_input_tool import (
+                RequestUserInputTool,
+            )
+
+            instance = self.create(
                 agent,
                 subagents=subagents,
                 subagent_config=subagent_config,
                 **create_overrides,
             )
+            instance.register_tool(RequestUserInputTool())
+            return instance
 
         app = self._create_a2a_app(
             agent_instance=agent_instance,
@@ -447,7 +454,7 @@ class AgentFactory:
         )
         from a2a.server.tasks.inmemory_task_store import InMemoryTaskStore
 
-        from obelix.adapters.inbound.a2a.executor import ObelixAgentExecutor
+        from obelix.adapters.inbound.a2a.server import ObelixAgentExecutor
 
         agent_card = self._build_agent_card(
             agent_instance=agent_instance,
