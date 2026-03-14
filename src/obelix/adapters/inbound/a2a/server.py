@@ -64,18 +64,20 @@ def _agent_message(text: str) -> Message:
 _error_message = _agent_message
 
 
-class _EventQueueRef:
-    """Mutable reference to an EventQueue.
+class _RequestRef:
+    """Mutable reference to the current A2A request state.
 
-    Allows swapping the target queue mid-stream so that events
-    emitted after an input-required resume go to the correct
-    (second) A2A request's queue.
+    Allows swapping the target queue, task_id, and context_id
+    mid-stream so that events emitted after an input-required
+    resume go to the correct (second) A2A request.
     """
 
-    __slots__ = ("queue",)
+    __slots__ = ("queue", "task_id", "context_id")
 
-    def __init__(self, queue: EventQueue) -> None:
+    def __init__(self, queue: EventQueue, task_id: str, context_id: str) -> None:
         self.queue = queue
+        self.task_id = task_id
+        self.context_id = context_id
 
     async def enqueue_event(self, event: Any) -> None:
         await self.queue.enqueue_event(event)
@@ -90,7 +92,7 @@ class _ContextEntry:
         "input_channel",
         "pending_task",
         "pending_agent",
-        "pending_queue_ref",
+        "pending_ref",
     )
 
     def __init__(self) -> None:
@@ -100,7 +102,7 @@ class _ContextEntry:
         self.input_channel: InputChannel | None = None
         self.pending_task: asyncio.Task | None = None
         self.pending_agent: BaseAgent | None = None
-        self.pending_queue_ref: _EventQueueRef | None = None
+        self.pending_ref: _RequestRef | None = None
 
 
 class ObelixAgentExecutor(AgentExecutor):
@@ -172,6 +174,12 @@ class ObelixAgentExecutor(AgentExecutor):
             entry = self._get_or_create_context(context_id)
 
         # ── RESUME PATH: deliver response to suspended tool ──
+        logger.debug(
+            f"[A2A] Checking resume path | context_id={context_id} "
+            f"has_channel={entry.input_channel is not None} "
+            f"is_waiting={entry.input_channel.is_waiting() if entry.input_channel else 'N/A'} "
+            f"idle={entry.idle.is_set()}"
+        )
         if entry.input_channel and entry.input_channel.is_waiting():
             await self._resume_with_input(
                 task_id=task_id,
@@ -226,12 +234,12 @@ class ObelixAgentExecutor(AgentExecutor):
         entry.input_channel = channel
         input_channel_var.set(channel)
 
-        # Mutable event queue ref (allows swapping for resume path)
-        queue_ref = _EventQueueRef(event_queue)
-        entry.pending_queue_ref = queue_ref
+        # Mutable request ref (allows swapping queue/task_id/context_id for resume)
+        req_ref = _RequestRef(event_queue, task_id, context_id)
+        entry.pending_ref = req_ref
 
         # Signal that the agent is working
-        await queue_ref.enqueue_event(
+        await req_ref.enqueue_event(
             TaskStatusUpdateEvent(
                 task_id=task_id,
                 context_id=context_id,
@@ -242,15 +250,15 @@ class ObelixAgentExecutor(AgentExecutor):
 
         try:
             # Run the agent stream as a task so we can multiplex
-            # with the input-required detection
+            # with the input-required detection.
+            # _consume_stream reads task_id/context_id from req_ref
+            # so they stay current after a resume swaps them.
             stream_task = asyncio.create_task(
                 self._consume_stream(
                     agent=agent,
                     user_text=user_text,
-                    task_id=task_id,
-                    context_id=context_id,
                     entry=entry,
-                    queue_ref=queue_ref,
+                    req_ref=req_ref,
                 )
             )
             entry.pending_task = stream_task
@@ -278,7 +286,7 @@ class ObelixAgentExecutor(AgentExecutor):
                     f"context_id={context_id} question_len={len(question)}"
                 )
 
-                await queue_ref.enqueue_event(
+                await req_ref.enqueue_event(
                     TaskStatusUpdateEvent(
                         task_id=task_id,
                         context_id=context_id,
@@ -295,7 +303,7 @@ class ObelixAgentExecutor(AgentExecutor):
 
         except asyncio.CancelledError:
             logger.info(f"[A2A] Agent canceled | task_id={task_id}")
-            await queue_ref.enqueue_event(
+            await req_ref.enqueue_event(
                 TaskStatusUpdateEvent(
                     task_id=task_id,
                     context_id=context_id,
@@ -310,7 +318,7 @@ class ObelixAgentExecutor(AgentExecutor):
 
         except Exception as e:
             logger.error(f"[A2A] Agent failed | task_id={task_id} error={e}")
-            await queue_ref.enqueue_event(
+            await req_ref.enqueue_event(
                 TaskStatusUpdateEvent(
                     task_id=task_id,
                     context_id=context_id,
@@ -330,25 +338,27 @@ class ObelixAgentExecutor(AgentExecutor):
         *,
         agent: BaseAgent,
         user_text: str,
-        task_id: str,
-        context_id: str,
         entry: _ContextEntry,
-        queue_ref: _EventQueueRef,
+        req_ref: _RequestRef,
     ) -> None:
         """Consume the agent's streaming output and emit A2A events.
 
         This runs as an asyncio.Task so the executor can multiplex
         between the stream and the input-required signal.
+
+        IMPORTANT: reads task_id/context_id from req_ref (not parameters)
+        so that after an input-required resume, events use the new
+        request's task_id.
         """
         artifact_id = str(uuid.uuid4())
         first_chunk = True
 
         async for event in agent.execute_query_stream(user_text):
             if event.token:
-                await queue_ref.enqueue_event(
+                await req_ref.enqueue_event(
                     TaskArtifactUpdateEvent(
-                        task_id=task_id,
-                        context_id=context_id,
+                        task_id=req_ref.task_id,
+                        context_id=req_ref.context_id,
                         artifact=Artifact(
                             artifact_id=artifact_id,
                             parts=[Part(root=TextPart(text=event.token))],
@@ -367,10 +377,10 @@ class ObelixAgentExecutor(AgentExecutor):
 
                 if first_chunk:
                     # Non-streaming fallback: single complete artifact
-                    await queue_ref.enqueue_event(
+                    await req_ref.enqueue_event(
                         TaskArtifactUpdateEvent(
-                            task_id=task_id,
-                            context_id=context_id,
+                            task_id=req_ref.task_id,
+                            context_id=req_ref.context_id,
                             artifact=Artifact(
                                 artifact_id=artifact_id,
                                 parts=[
@@ -383,10 +393,10 @@ class ObelixAgentExecutor(AgentExecutor):
                     )
                 else:
                     # Close the streamed artifact
-                    await queue_ref.enqueue_event(
+                    await req_ref.enqueue_event(
                         TaskArtifactUpdateEvent(
-                            task_id=task_id,
-                            context_id=context_id,
+                            task_id=req_ref.task_id,
+                            context_id=req_ref.context_id,
                             artifact=Artifact(
                                 artifact_id=artifact_id,
                                 parts=[Part(root=TextPart(text=""))],
@@ -397,16 +407,16 @@ class ObelixAgentExecutor(AgentExecutor):
                     )
 
                 # Signal completion
-                await queue_ref.enqueue_event(
+                await req_ref.enqueue_event(
                     TaskStatusUpdateEvent(
-                        task_id=task_id,
-                        context_id=context_id,
+                        task_id=req_ref.task_id,
+                        context_id=req_ref.context_id,
                         status=TaskStatus(state=TaskState.completed),
                         final=True,
                     )
                 )
 
-                logger.info(f"[A2A] Agent completed | task_id={task_id}")
+                logger.info(f"[A2A] Agent completed | task_id={req_ref.task_id}")
                 break
 
     async def _resume_with_input(
@@ -429,10 +439,12 @@ class ObelixAgentExecutor(AgentExecutor):
             f"context_id={context_id} input_len={len(user_text)}"
         )
 
-        # Swap the event queue ref so post-resume events go to the
-        # new request's queue (not the old one from the first request)
-        if entry.pending_queue_ref:
-            entry.pending_queue_ref.queue = event_queue
+        # Swap the request ref so post-resume events use the new
+        # request's queue, task_id, and context_id
+        if entry.pending_ref:
+            entry.pending_ref.queue = event_queue
+            entry.pending_ref.task_id = task_id
+            entry.pending_ref.context_id = context_id
 
         # Signal working on the new event queue
         await event_queue.enqueue_event(
@@ -506,7 +518,7 @@ class ObelixAgentExecutor(AgentExecutor):
         entry.input_channel = None
         entry.pending_task = None
         entry.pending_agent = None
-        entry.pending_queue_ref = None
+        entry.pending_ref = None
         entry.idle.set()
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
