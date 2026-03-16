@@ -146,7 +146,7 @@ class CoordinatorAgent(BaseAgent):
             provider=LiteLLMProvider(
                 model_id=LITELLM_MODEL,
                 api_key=os.getenv("ANTHROPIC_API_KEY"),
-                reasoning_effort="high",
+                reasoning_effort="medium",
                 max_tokens=10_000,
                 temperature=1,
             ),

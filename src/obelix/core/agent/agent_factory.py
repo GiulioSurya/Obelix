@@ -280,7 +280,7 @@ class AgentFactory:
         # Execution order
         try:
             order = self._memory_graph.get_topological_order(subagent_names)
-            order_str = " → ".join(order)
+            order_str = " -> ".join(order)
         except Exception as e:
             logger.warning(f"AgentFactory: cannot compute topological order: {e}")
             order_str = ", ".join(subagent_names)
@@ -295,7 +295,7 @@ class AgentFactory:
             edge_data = self._memory_graph._graph.edges[src, dst]
             policy = edge_data.get("policy", PropagationPolicy.FINAL_RESPONSE_ONLY)
             label = policy_labels.get(policy, policy.value)
-            flow_lines.append(f"  {src} → {dst} [propagates: {label}]")
+            flow_lines.append(f"  {src} -> {dst} [propagates: {label}]")
 
         protocol = (
             "\n\n---\n"
