@@ -55,9 +55,15 @@ class StreamEvent:
     The final event has is_final=True and carries the complete
     AssistantMessage and AssistantResponse with all metadata
     (content, tool_results, usage, error).
+
+    When deferred_tool_calls is set, the agent loop has stopped because
+    one or more deferred tools returned None — their results must come
+    from the client. The caller (e.g. A2A executor) should signal
+    input-required and resume the agent with the tool responses.
     """
 
     token: str | None = None
     assistant_message: AssistantMessage | None = None
     assistant_response: AssistantResponse | None = None
     is_final: bool = field(default=False)
+    deferred_tool_calls: list[ToolCall] | None = field(default=None)

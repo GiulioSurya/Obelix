@@ -9,10 +9,12 @@ A multi-provider LLM agent framework with tool support, hooks system, and seamle
 
 - **Multi-Provider Support**: OpenAI, Anthropic, Oracle Cloud (OCI), IBM Watson, Ollama, vLLM, and **100+ providers via LiteLLM**
 - **Tool System**: Declarative tool creation with automatic validation using Pydantic
-- **Sub-Agent Orchestration**: Compose hierarchical agent workflows with the Agent Factory
-- **A2A Protocol Support**: Expose agents as HTTP services using the A2A (Agent-to-Agent) standard
+- **Sub-Agent Orchestration**: Compose hierarchical agent workflows with the Agent Factory, shared memory graph, and automatic dependency-aware coordination
+- **Planning Mode**: Built-in planning protocol that instructs agents to analyze, decompose, and plan before acting
+- **A2A Protocol Support**: Expose agents as HTTP services using the [A2A (Agent-to-Agent)](https://a2a-protocol.org/) standard — streaming SSE, input-required flow, context isolation
 - **Parallel Tool Calls**: Execute multiple tools concurrently for improved performance
 - **Hooks System**: Intercept and modify agent behavior at runtime (validation, error recovery, context injection)
+- **Token Streaming**: Real-time token streaming across all providers via `execute_query_stream()`
 - **Async-First Architecture**: All providers use async `invoke()` - native async clients (Anthropic, OpenAI, Ollama, OCI) or `asyncio.to_thread()` for sync SDKs (IBM, vLLM)
 - **Thread-Safe Execution**: Parallel agent and tool calls don't share mutable state
 - **Loguru Logging**: Structured logging with rotation and color output
@@ -200,9 +202,23 @@ response = coordinator.execute_query("Why is this query failing?")
 print(response.content)
 ```
 
+### Planning Mode
+
+Enable the planning protocol to instruct agents to analyze and decompose requests before acting:
+
+```python
+agent = BaseAgent(
+    system_message="You are a data analyst.",
+    provider=provider,
+    planning=True,  # Agent will plan before using tools
+)
+```
+
+When `planning=True`, the agent's system prompt is augmented with a structured protocol: ANALYZE → DECOMPOSE → EXECUTE → REVISE → RESPOND. For best results, set `reasoning_effort='high'` (or `thinking_mode=True` for Anthropic) on the provider.
+
 ### Exposing Agents via A2A
 
-Agents can be exposed as HTTP services using the A2A (Agent-to-Agent) protocol. This enables discovery and orchestration by other systems.
+Agents can be exposed as HTTP services using the [A2A (Agent-to-Agent)](https://a2a-protocol.org/) protocol. This enables discovery and orchestration by other systems.
 
 ```bash
 # Install A2A dependencies
@@ -216,7 +232,7 @@ factory = AgentFactory()
 factory.register("my_agent", MyAgent, subagent_description="Does work")
 
 # Start A2A server on port 8000
-factory.serve(
+factory.a2a_serve(
     "my_agent",
     host="0.0.0.0",
     port=8000,
@@ -225,67 +241,12 @@ factory.serve(
 ```
 
 The server exposes:
-- `GET /.well-known/agent-card.json` - Agent capabilities
-- `GET /health` - Health check
-- `POST /` - JSON-RPC 2.0 methods (SendMessage, GetTask, ListTasks, CancelTask)
+- `GET /.well-known/agent.json` — Agent Card (capabilities, skills)
+- `POST /` — JSON-RPC 2.0 (`message/send`, `message/stream`)
 
-For complete details, see [A2A Server Guide](docs/a2a_server.md).
+Features: streaming SSE, input-required flow (via `RequestUserInputTool`), per-context isolation, multi-turn conversations.
 
----
-
-## Project Structure
-
-```
-Obelix/
-├── src/obelix/                      # Main package
-│   ├── core/                        # Core domain logic
-│   │   ├── agent/                   # Agent framework
-│   │   │   ├── base_agent.py        # BaseAgent execution engine
-│   │   │   ├── agent_factory.py     # Factory for agent creation/composition
-│   │   │   ├── subagent_wrapper.py  # Bridge between agents and tools
-│   │   │   ├── hooks.py             # Hook system and lifecycle events
-│   │   │   ├── shared_memory.py     # Shared memory for agent coordination
-│   │   │   └── event_contracts.py   # Event validation specifications
-│   │   ├── model/                   # Message types (all Pydantic models)
-│   │   │   ├── human_message.py
-│   │   │   ├── assistant_message.py
-│   │   │   ├── system_message.py
-│   │   │   ├── tool_message.py
-│   │   │   └── standard_message.py
-│   │   └── tool/                    # Tool infrastructure
-│   │       ├── tool_base.py         # Tool Protocol
-│   │       └── tool_decorator.py    # @tool decorator
-│   ├── ports/                       # Inbound/Outbound abstract interfaces
-│   │   └── outbound/
-│   │       ├── llm_provider.py      # AbstractLLMProvider ABC
-│   │       ├── llm_connection.py    # AbstractLLMConnection ABC
-│   │       └── embedding_provider.py
-│   ├── adapters/                    # Concrete implementations
-│   │   ├── outbound/
-│   │   │   ├── anthropic/           # Anthropic Claude
-│   │   │   ├── openai/              # OpenAI GPT
-│   │   │   ├── oci/                 # Oracle Cloud Generative AI
-│   │   │   ├── ibm/                 # IBM Watson X
-│   │   │   ├── ollama/              # Ollama local models
-│   │   │   ├── vllm/                # vLLM self-hosted
-│   │   │   ├── litellm/             # LiteLLM universal adapter
-│   │   │   └── embedding/           # Embedding providers
-│   │   └── inbound/
-│   │       └── a2a/                 # A2A protocol (HTTP server, task store)
-│   ├── infrastructure/              # Cross-cutting concerns
-│   │   ├── logging.py               # Loguru configuration
-│   │   ├── providers.py             # Providers enum
-│   │   ├── k8s.py                   # Kubernetes configuration
-│   │   └── utility/
-│   └── plugins/                     # Optional extensions
-│       ├── builtin/                 # AskUserQuestionTool
-│       └── mcp/                     # Model Context Protocol
-├── tests/                           # Comprehensive test suite (200+ tests)
-├── docs/                            # User documentation
-├── pyproject.toml                   # Project configuration
-├── uv.lock                          # uv lockfile
-└── README.md                        # This file
-```
+A working example is available in `demo_factory.py` (server) and `test_a2a_client.py` (client).
 
 ---
 

@@ -27,6 +27,7 @@ class ValidToolImpl:
 
     tool_name: str = "valid_tool"
     tool_description: str = "A valid tool"
+    is_deferred: bool = False
 
     async def execute(self, tool_call: ToolCall) -> ToolResult:
         return ToolResult(

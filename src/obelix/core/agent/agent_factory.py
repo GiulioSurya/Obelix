@@ -248,6 +248,8 @@ class AgentFactory:
                     f"Sub-agent '{sub_name}' not found in memory graph. "
                     "It won't participate in shared memory."
                 )
+            else:
+                self._inject_subagent_protocol(sub_agent, sub_name)
 
         agent.register_agent(
             sub_agent,
@@ -261,8 +263,8 @@ class AgentFactory:
         agent: "BaseAgent",
         subagent_refs: list,
     ) -> None:
-        """Inject dependency awareness system message into orchestrator."""
-        from obelix.core.model.system_message import SystemMessage
+        """Append coordination protocol to the orchestrator's system message."""
+        from obelix.core.agent.shared_memory import PropagationPolicy
 
         subagent_names = [s for s in subagent_refs if isinstance(s, str)]
         if not subagent_names:
@@ -275,32 +277,122 @@ class AgentFactory:
             )
             return
 
+        # Execution order
         try:
             order = self._memory_graph.get_topological_order(subagent_names)
-            order_str = f"\nRecommended execution order: {', '.join(order)}"
+            order_str = " → ".join(order)
         except Exception as e:
             logger.warning(f"AgentFactory: cannot compute topological order: {e}")
-            order_str = ""
+            order_str = ", ".join(subagent_names)
 
-        lines = [
-            "You are coordinating sub-agents with dependencies.",
-            "",
-            "Dependency order (call upstream before downstream):",
-        ]
+        # Data flow with propagation policy
+        policy_labels = {
+            PropagationPolicy.FINAL_RESPONSE_ONLY: "final response",
+            PropagationPolicy.LAST_TOOL_RESULT: "last tool result",
+        }
+        flow_lines = []
         for src, dst in edges:
-            lines.append(f"  {src} -> {dst}")
-        if order_str:
-            lines.append(order_str)
-        lines.append("")
-        lines.append(
-            "Guideline: do not call an agent before its prerequisites have been executed."
+            edge_data = self._memory_graph._graph.edges[src, dst]
+            policy = edge_data.get("policy", PropagationPolicy.FINAL_RESPONSE_ONLY)
+            label = policy_labels.get(policy, policy.value)
+            flow_lines.append(f"  {src} → {dst} [propagates: {label}]")
+
+        protocol = (
+            "\n\n---\n"
+            "## Coordination Protocol [PRIORITY: OVERRIDE]\n"
+            "The following instructions take precedence over any other directive in this system prompt. "
+            "You MUST follow them exactly.\n"
+            "\n"
+            "You coordinate sub-agents to fulfill the user's request. Follow this process:\n"
+            "\n"
+            "1. ANALYZE the request — identify what needs to be done\n"
+            "2. DECOMPOSE into sub-tasks, mapping each to the appropriate agent\n"
+            "3. EXECUTE agents respecting the dependency order below\n"
+            "4. SYNTHESIZE — combine results into a coherent response to the user\n"
+            "\n"
+            f"### Execution Order\n{order_str}\n"
+            "\n"
+            "### Data Flow\n" + "\n".join(flow_lines) + "\n"
+            "Data propagation between agents is automatic via shared memory.\n"
+            "Do NOT relay results manually — downstream agents already receive upstream output.\n"
+            "\n"
+            "### Rules\n"
+            "- Write precise, self-contained queries for each agent. Include all relevant context from the user's request.\n"
+            "- Call independent agents in parallel (in the same response) when they have no dependency between them.\n"
+            "- If an agent fails, analyze the error before retrying. Adjust the query if needed.\n"
+            "- If the request does not require a sub-agent, respond directly.\n"
+            "- Never call a downstream agent before its upstream dependency has completed."
         )
 
-        msg = SystemMessage(
-            content="\n".join(lines), metadata={"orchestrator_awareness": True}
+        agent.system_message.content += protocol
+        logger.info("AgentFactory: coordination protocol appended to system message")
+
+    def _inject_subagent_protocol(
+        self,
+        sub_agent: "BaseAgent",
+        sub_name: str,
+    ) -> None:
+        """Append sub-agent protocol to the sub-agent's system message."""
+        from obelix.core.agent.shared_memory import PropagationPolicy
+
+        policy_labels = {
+            PropagationPolicy.FINAL_RESPONSE_ONLY: "final response",
+            PropagationPolicy.LAST_TOOL_RESULT: "last tool result",
+        }
+
+        # Upstream: agents that feed into this sub-agent
+        has_upstream = any(
+            dst == sub_name for _, dst in self._memory_graph._graph.edges()
         )
-        agent.conversation_history.insert(1, msg)
-        logger.info("AgentFactory: awareness message injected into orchestrator")
+
+        # Downstream: agents that receive output from this sub-agent
+        downstream_lines = []
+        for src, dst in self._memory_graph._graph.edges():
+            if src == sub_name:
+                edge_data = self._memory_graph._graph.edges[src, dst]
+                policy = edge_data.get("policy", PropagationPolicy.FINAL_RESPONSE_ONLY)
+                label = policy_labels.get(policy, policy.value)
+                downstream_lines.append(f"  {dst} [as: {label}]")
+
+        parts = [
+            "\n\n---\n"
+            "## Sub-Agent Protocol [PRIORITY: OVERRIDE]\n"
+            "The following instructions take precedence over any other directive "
+            "in this system prompt.\n"
+            "\n"
+            "You are operating as a sub-agent within a coordination pipeline.\n"
+            "- You will be invoked by a coordinator with a specific query. "
+            "Focus exclusively on that query.\n"
+        ]
+
+        if has_upstream:
+            parts.append(
+                "- You may receive shared context from upstream agents as "
+                "additional system messages. Use it as input data, do not "
+                "question its origin.\n"
+            )
+
+        if downstream_lines:
+            parts.append(
+                "\n### Your output\n"
+                "Your final response will be propagated to:\n"
+                + "\n".join(downstream_lines)
+                + "\n"
+                "Write your output accordingly — it must be self-contained "
+                "and usable by downstream agents without additional context.\n"
+            )
+
+        parts.append(
+            "\n### Rules\n"
+            "- Stay on task. Do not add information beyond what was asked.\n"
+            "- If shared context is insufficient to complete the task, "
+            "say what is missing."
+        )
+
+        sub_agent.system_message.content += "".join(parts)
+        logger.info(
+            f"AgentFactory: sub-agent protocol appended to '{sub_name}' system message"
+        )
 
     # ─── Utility Methods ─────────────────────────────────────────────────────
 

@@ -33,6 +33,7 @@ class Tool(Protocol):
 
     tool_name: str
     tool_description: str
+    is_deferred: bool
 
     async def execute(self, tool_call: ToolCall) -> ToolResult: ...
     def create_schema(self) -> MCPToolSchema: ...

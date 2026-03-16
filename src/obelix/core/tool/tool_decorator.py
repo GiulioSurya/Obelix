@@ -39,13 +39,16 @@ from obelix.core.model.tool_message import (
 from obelix.infrastructure.utility.pydantic_validation import format_validation_error
 
 
-def tool(name: str = None, description: str = None):
+def tool(name: str = None, description: str = None, is_deferred: bool = False):
     """
     Decorator for declaratively defining tools.
 
     Args:
         name: Tool name (REQUIRED)
         description: Tool description (REQUIRED)
+        is_deferred: If True, the tool's result is expected from the client.
+            When a deferred tool returns None, the agent loop stops and
+            signals the caller (e.g. A2A executor) that client input is needed.
 
     Raises:
         ValueError: If name or description are missing (at import time)
@@ -70,6 +73,7 @@ def tool(name: str = None, description: str = None):
         # 2. Add class attributes for direct access
         cls.tool_name = name
         cls.tool_description = description
+        cls.is_deferred = is_deferred
 
         # 3. Extract Fields from class to create Pydantic schema
         cls._input_schema = _create_input_schema(cls, name)

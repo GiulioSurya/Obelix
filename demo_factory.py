@@ -26,19 +26,19 @@ from obelix.core.model.tool_message import ToolRequirement
 from obelix.core.tool.tool_base import Tool
 from obelix.core.tool.tool_decorator import tool
 from obelix.core.tracer import Tracer
-from obelix.core.tracer.exporters import HTTPExporter
+from obelix.core.tracer.exporters import ConsoleExporter
 from obelix.infrastructure.logging import setup_logging
 
 load_dotenv()
 
-# tracer = Tracer(exporter=ConsoleExporter(verbosity=2))
-tracer = Tracer(
-    exporter=HTTPExporter(endpoint="http://localhost:8100/api/v1/ingest"),
-    service_name="demo_factory",
-)
+tracer = Tracer(exporter=ConsoleExporter(verbosity=3))
+# tracer = Tracer(
+#     exporter=HTTPExporter(endpoint="http://localhost:8100/api/v1/ingest"),
+#     service_name="demo_factory",
+# )
 
 
-setup_logging(console_level="TRACE")
+setup_logging(console_level="INFO")
 
 
 LITELLM_MODEL = "anthropic/claude-haiku-4-5-20251001"
@@ -49,6 +49,7 @@ def make_provider() -> LiteLLMProvider:
     return LiteLLMProvider(
         model_id=LITELLM_MODEL,
         api_key=os.getenv("ANTHROPIC_API_KEY"),
+        max_tokens=8000,
         reasoning_effort="low",
         temperature=1,
     )
@@ -142,8 +143,15 @@ class CoordinatorAgent(BaseAgent):
                 "- After the Math Agent responds, call the Report Agent to format the results.\n"
                 "Always use request_user_input at least once before doing any calculation."
             ),
-            provider=make_provider(),
+            provider=LiteLLMProvider(
+                model_id=LITELLM_MODEL,
+                api_key=os.getenv("ANTHROPIC_API_KEY"),
+                reasoning_effort="high",
+                max_tokens=10_000,
+                temperature=1,
+            ),
             **kwargs,
+            planning=True,
         )
 
 

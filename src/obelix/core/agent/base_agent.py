@@ -3,6 +3,7 @@ import asyncio
 import inspect
 import time
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
@@ -59,6 +60,7 @@ class BaseAgent:
         exit_on_success: list[str] | None = None,
         response_schema: type[BaseModel] | None = None,
         tracer: "Tracer | None" = None,
+        planning: bool = False,
     ):
         self.system_message = SystemMessage(content=system_message)
         self.max_iterations = max_iterations
@@ -66,6 +68,7 @@ class BaseAgent:
             set(exit_on_success) if exit_on_success else set()
         )
         self.response_schema = response_schema
+        self._planning = planning
 
         self.provider = provider
 
@@ -90,6 +93,17 @@ class BaseAgent:
             from obelix.core.agent.tool_policy_hook import ToolPolicyHook
 
             ToolPolicyHook(self._tool_policy).register(self)
+
+        # Planning protocol: append instructions to system message
+        if self._planning:
+            from obelix.core.agent.planning import get_planning_instruction
+
+            self.system_message.content += get_planning_instruction()
+            logger.info(
+                f"[{self.__class__.__name__}] Planning mode enabled. "
+                "For best results, set reasoning_effort='high' (or thinking_mode=True "
+                "for Anthropic) on the provider."
+            )
 
         # Tracer (optional, zero overhead when None)
         self._tracer: Tracer | None = tracer
@@ -206,9 +220,10 @@ class BaseAgent:
         Execute query asynchronously (for FastAPI).
         """
         self._validate_query_input(query)
-        async for event in self._execute_loop(query, stream=False):
-            if event.is_final:
-                return event.assistant_response
+        async with aclosing(self._execute_loop(query, stream=False)) as stream:
+            async for event in stream:
+                if event.is_final:
+                    return event.assistant_response
         raise RuntimeError("Execution loop ended without a final event")
 
     def execute_query(self, query: str | list[StandardMessage]) -> AssistantResponse:
@@ -244,27 +259,56 @@ class BaseAgent:
         async for event in self._execute_loop(query, stream=True):
             yield event
 
+    async def resume_after_deferred(self) -> AsyncIterator[StreamEvent]:
+        """Resume the agent loop after a deferred tool response was injected.
+
+        Call this after injecting the deferred tool's ToolMessage into
+        conversation_history. The loop restarts from the current history
+        without adding a new HumanMessage — the LLM sees the pending
+        tool_call + tool_result and continues normally.
+        """
+        async for event in self._execute_loop(None, stream=True, resume=True):
+            yield event
+
     # ─── Unified Execution Loop ───────────────────────────────────────────────
 
     async def _execute_loop(
-        self, query: str | list[StandardMessage], *, stream: bool = False
+        self,
+        query: str | list[StandardMessage] | None,
+        *,
+        stream: bool = False,
+        resume: bool = False,
     ) -> AsyncIterator[StreamEvent]:
         """
         Unified execution loop. Always an async generator yielding StreamEvent.
 
         When stream=False, only yields the final StreamEvent (is_final=True).
         When stream=True, also yields intermediate token events.
+        When resume=True, skips adding a HumanMessage — the conversation_history
+        already contains everything needed (used after deferred tool response).
         """
-        is_root_trace = await start_agent_trace(
-            self._tracer, self.__class__.__name__, query
-        )
+        if resume:
+            # Resume after deferred: trace and agent span are still open
+            # from the first invocation. Don't create new ones.
+            # We must close the root trace at the end.
+            is_root_trace = True
+        else:
+            is_root_trace = await start_agent_trace(
+                self._tracer,
+                self.__class__.__name__,
+                query if query is not None else "",
+            )
 
         collected_tool_results: list[ToolResult] = []
         execution_error: str | None = None
         _trace_error: str | None = None
+        _stopped_for_deferred = False
         self._invocation_start = len(self.conversation_history)
 
-        if isinstance(query, str):
+        if resume:
+            # Resume after deferred: history already has everything
+            pass
+        elif isinstance(query, str):
             user_message = HumanMessage(content=query)
             self.conversation_history.append(user_message)
         elif isinstance(query, list):
@@ -282,12 +326,13 @@ class BaseAgent:
             )
 
         try:
-            query_text = (
-                query
-                if isinstance(query, str)
-                else str([m.content for m in query if isinstance(m, HumanMessage)])
-            )
-            await emit_human_span(self._tracer, query_text)
+            if not resume:
+                query_text = (
+                    query
+                    if isinstance(query, str)
+                    else str([m.content for m in query if isinstance(m, HumanMessage)])
+                )
+                await emit_human_span(self._tracer, query_text)
 
             for iteration in range(1, self.max_iterations + 1):
                 # === BEFORE_LLM_CALL hooks ===
@@ -441,12 +486,25 @@ class BaseAgent:
 
                 # === Tool calls ===
                 if assistant_msg.tool_calls:
-                    execution_error, iteration_results = await self._process_tool_calls(
+                    (
+                        execution_error,
+                        iteration_results,
+                        deferred_calls,
+                    ) = await self._process_tool_calls(
                         assistant_msg,
                         collected_tool_results,
                         execution_error,
                         iteration,
                     )
+
+                    # === Deferred tools: stop loop, signal caller ===
+                    if deferred_calls:
+                        _stopped_for_deferred = True
+                        yield StreamEvent(
+                            deferred_tool_calls=deferred_calls,
+                            is_final=True,
+                        )
+                        return
 
                     if (
                         self._should_exit_on_success(iteration_results)
@@ -534,13 +592,17 @@ class BaseAgent:
             _trace_error = str(e)
             raise
         finally:
-            await end_agent_trace(
-                self._tracer,
-                is_root_trace,
-                self.conversation_history,
-                self.system_message,
-                error=_trace_error,
-            )
+            if not _stopped_for_deferred:
+                # Normal completion or error — close agent span and
+                # (if root) the trace. When stopped for deferred, leave
+                # everything open for resume_after_deferred().
+                await end_agent_trace(
+                    self._tracer,
+                    is_root_trace,
+                    self.conversation_history,
+                    self.system_message,
+                    error=_trace_error,
+                )
 
     # ─── Input Validation ─────────────────────────────────────────────────────
 
@@ -569,7 +631,7 @@ class BaseAgent:
         collected_tool_results: list[ToolResult],
         execution_error: str | None,
         iteration: int,
-    ) -> tuple[str | None, list[ToolResult]]:
+    ) -> tuple[str | None, list[ToolResult], list[ToolCall] | None]:
         tool_names = [tc.name for tc in assistant_msg.tool_calls]
         logger.debug(
             f"[{self.__class__.__name__}] Dispatching tool batch | iteration={iteration} count={len(tool_names)} tools={tool_names}"
@@ -584,6 +646,30 @@ class BaseAgent:
         tool_results = await asyncio.gather(*tasks)
 
         batch_duration = time.perf_counter() - batch_start_time
+
+        # Detect deferred tools: is_deferred=True AND result is None
+        deferred_calls: list[ToolCall] = []
+        resolved_results: list[ToolResult] = []
+        for call, result in zip(assistant_msg.tool_calls, tool_results, strict=True):
+            tool = self._find_tool(call.name)
+            if tool and getattr(tool, "is_deferred", False) and result.result is None:
+                deferred_calls.append(call)
+            else:
+                resolved_results.append(result)
+
+        if deferred_calls:
+            # Save assistant message (with tool_calls) to history
+            self.conversation_history.append(assistant_msg)
+            # Save resolved (non-deferred) results if any
+            if resolved_results:
+                self.conversation_history.append(
+                    ToolMessage(tool_results=resolved_results)
+                )
+            logger.info(
+                f"[{self.__class__.__name__}] Deferred tool detected — stopping loop | "
+                f"iteration={iteration} deferred={[c.name for c in deferred_calls]}"
+            )
+            return execution_error, tool_results, deferred_calls
 
         collected_tool_results.extend(tool_results)
 
@@ -607,7 +693,7 @@ class BaseAgent:
         tool_message = ToolMessage(tool_results=tool_results)
         self.conversation_history.extend([assistant_msg, tool_message])
 
-        return execution_error, tool_results
+        return execution_error, tool_results, None
 
     def _should_exit_on_success(self, iteration_results: list[ToolResult]) -> bool:
         if not self._exit_on_success:
@@ -690,6 +776,13 @@ class BaseAgent:
         )
 
         return result
+
+    def _find_tool(self, name: str) -> Tool | None:
+        """Find a registered tool by name."""
+        for tool in self.registered_tools:
+            if getattr(tool, "tool_name", None) == name:
+                return tool
+        return None
 
     async def _async_execute_tool(self, tool_call: ToolCall) -> ToolResult | None:
         for tool in self.registered_tools:
