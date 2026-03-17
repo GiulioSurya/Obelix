@@ -8,7 +8,6 @@ No external mapping dependencies - all conversion logic is in strategies.
 
 import json
 import logging
-import os
 from collections.abc import AsyncIterator
 
 import httpx
@@ -82,6 +81,7 @@ class OCILLm(AbstractLLMProvider):
     def __init__(
         self,
         connection: OCIConnection,
+        compartment_id: str,
         model_id: str = "openai.gpt-oss-120b",
         max_tokens: int = 3500,
         temperature: float = 0.1,
@@ -100,6 +100,7 @@ class OCILLm(AbstractLLMProvider):
 
         Args:
             connection: OCIConnection singleton
+            compartment_id: OCI compartment OCID
             model_id: OCI model ID
             max_tokens: Maximum number of tokens
             temperature: Sampling temperature
@@ -121,6 +122,7 @@ class OCILLm(AbstractLLMProvider):
             oci.base_client.is_http_log_enabled(False)
 
         self.connection = connection
+        self.compartment_id = compartment_id
 
         # Save parameters
         self.model_id = model_id
@@ -185,11 +187,6 @@ class OCILLm(AbstractLLMProvider):
             tools: List of available tools
             response_schema: Optional Pydantic BaseModel for structured JSON output
         """
-        from obelix.infrastructure.k8s import YamlConfig
-
-        # todo, questo andra eliminato
-        infra_config = YamlConfig(os.getenv("INFRASTRUCTURE_CONFIG_PATH"))
-        oci_config = infra_config.get("llm_providers.oci")
         client = self.connection.get_client()
 
         # Work with a copy of messages for retry loop
@@ -240,7 +237,7 @@ class OCILLm(AbstractLLMProvider):
 
             # 3. Call OCI
             chat_details = ChatDetails(
-                compartment_id=oci_config["compartment_id"],
+                compartment_id=self.compartment_id,
                 serving_mode=OnDemandServingMode(model_id=self.model_id),
                 chat_request=chat_request,
             )
@@ -291,10 +288,6 @@ class OCILLm(AbstractLLMProvider):
 
         Note: tool call extraction retry is NOT supported in streaming mode.
         """
-        from obelix.infrastructure.k8s import YamlConfig
-
-        infra_config = YamlConfig(os.getenv("INFRASTRUCTURE_CONFIG_PATH"))
-        oci_config = infra_config.get("llm_providers.oci")
         client = self.connection.get_client()
 
         converted_tools = self.strategy.convert_tools(tools)
@@ -328,7 +321,7 @@ class OCILLm(AbstractLLMProvider):
         )
 
         chat_details = ChatDetails(
-            compartment_id=oci_config["compartment_id"],
+            compartment_id=self.compartment_id,
             serving_mode=OnDemandServingMode(model_id=self.model_id),
             chat_request=chat_request,
         )

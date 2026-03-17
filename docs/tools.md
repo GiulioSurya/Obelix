@@ -458,6 +458,30 @@ LLM continues reasoning with the result
 | `OutputSchema` | Optional | Recommended |
 | Use cases | Calculate, search, filter | Shell, file I/O, user input |
 
+### Dynamic is_deferred
+
+The `is_deferred` flag can be **dynamic** (set at instance creation time) instead of fixed at class definition. This is useful for tools that can operate in both modes depending on configuration:
+
+```python
+@tool(name="bash", description="Execute shell command", is_deferred=True)
+class BashTool:
+    command: str = Field(...)
+
+    def __init__(self, executor: ShellExecutor | None = None):
+        self._executor = executor
+        # Override is_deferred based on whether executor is provided
+        self.is_deferred = executor is None
+
+    async def execute(self) -> dict | None:
+        if self._executor is None:
+            return None  # Deferred: client executes
+        return await self._executor.execute(self.command)  # Normal: server executes
+```
+
+In this example:
+- **Without executor** (`executor=None`): `is_deferred=True`, tool is deferred (client executes)
+- **With executor** (e.g., `LocalShellExecutor()`): `is_deferred=False`, tool is normal (server executes)
+
 ### When to Use Each
 
 **Use normal tools for**:
@@ -480,26 +504,214 @@ Obelix provides several built-in tools for common use cases.
 
 ### BashTool
 
-Deferred tool for shell command execution. The client receives the command and executes it locally.
+Shell command execution tool with pluggable execution backend. Behavior depends on whether a shell executor is provided.
 
 **Import**:
 ```python
 from obelix.plugins.builtin import BashTool
 ```
 
-**Usage**:
-```python
-agent = BaseAgent(system_message="You are helpful", tools=[BashTool])
+#### Usage Without Executor (Deferred)
 
-# LLM can call: bash -c "git status"
+By default, BashTool operates as a deferred tool. The agent stops and delegates command execution to the client:
+
+```python
+agent = BaseAgent(system_message="You are helpful", tools=[BashTool()])
+
+# LLM calls: bash -c "git status"
 # Agent stops, yields deferred_tool_calls
 # Client executes locally, returns { stdout: "...", stderr: "...", exit_code: 0 }
-# Agent resumes
+# Agent resumes with result
 ```
+
+This is useful for:
+- A2A clients that handle shell execution locally
+- CLI runners where the user executes commands
+- Security-conscious setups where the agent cannot execute arbitrary commands
+
+#### Usage With Executor (Normal)
+
+Pass a `AbstractShellExecutor` to make BashTool execute commands directly on the server:
+
+```python
+from obelix.adapters.outbound.shell import LocalShellExecutor
+
+executor = LocalShellExecutor()
+agent = BaseAgent(
+    system_message="You are helpful",
+    tools=[BashTool(executor=executor)]
+)
+
+# LLM calls: bash -c "git status"
+# Agent executes immediately via executor
+# Returns { stdout: "...", stderr: "...", exit_code: 0 }
+# LLM continues reasoning (no stop/resume needed)
+```
+
+This is useful for:
+- Autonomous agents that need local command execution
+- Server-side environments where the agent has filesystem access
+- Development and testing scenarios
 
 **Schema**:
 - **Input**: `command` (str), `description` (str), `timeout` (int, 1-600s), `working_directory` (optional str)
 - **Output**: `stdout`, `stderr`, `exit_code`
+
+### Shell Executor
+
+The `AbstractShellExecutor` interface defines how shell commands are executed. This allows BashTool to be configured with different execution backends (local, Docker, SSH, etc.).
+
+**Import**:
+```python
+from obelix.ports.outbound.shell_executor import AbstractShellExecutor
+from obelix.adapters.outbound.shell import LocalShellExecutor
+```
+
+#### AbstractShellExecutor Interface
+
+```python
+from abc import ABC, abstractmethod
+
+class AbstractShellExecutor(ABC):
+    """Contract for executing shell commands."""
+
+    @property
+    def shell_info(self) -> dict:
+        """Platform and shell details for system message injection.
+
+        Returns dict with 'platform' (e.g., 'Linux'), 'shell' (path),
+        'shell_name' (e.g., 'bash').
+        """
+        return {}
+
+    @abstractmethod
+    async def execute(
+        self,
+        command: str,
+        timeout: int = 120,
+        working_directory: str | None = None,
+    ) -> dict:
+        """Execute a shell command and return its output.
+
+        Returns:
+            dict with keys:
+                stdout (str): Standard output of the command
+                stderr (str): Standard error of the command
+                exit_code (int): Process exit code (0 = success, -1 = timeout/error)
+        """
+        pass
+```
+
+#### LocalShellExecutor
+
+Built-in executor for local subprocess execution. Automatically detects the best available shell (bash > zsh > sh > cmd.exe on Windows).
+
+```python
+from obelix.adapters.outbound.shell import LocalShellExecutor
+
+# Auto-detect shell
+executor = LocalShellExecutor()
+
+# Or specify a shell explicitly
+executor = LocalShellExecutor(shell="/bin/bash")
+
+# Get platform and shell info for system message injection
+info = executor.shell_info
+# { "platform": "Linux", "shell": "/bin/bash", "shell_name": "bash" }
+```
+
+**Key features**:
+- **Shell detection**: Prefers bash over zsh over sh, falls back to cmd.exe on Windows
+- **Explicit shell execution**: Uses `create_subprocess_exec(shell, "-c", command)` instead of `create_subprocess_shell()` for cross-platform compatibility (critical: cmd.exe lacks heredoc and pipe support)
+- **Output truncation**: Limits stdout/stderr to 50,000 characters to avoid bloating context
+- **Timeout support**: Kills processes that exceed the timeout, returns exit_code=-1
+- **Thread-safe**: Stateless design allows concurrent usage
+
+**Example**:
+```python
+executor = LocalShellExecutor()
+result = await executor.execute(
+    command="ls -la",
+    timeout=10,
+    working_directory="/tmp"
+)
+print(result)
+# { "stdout": "...", "stderr": "", "exit_code": 0 }
+```
+
+#### Injecting Shell Info into System Message
+
+Use `executor.shell_info` to inject environment details into the agent's system message:
+
+```python
+from obelix.core.agent import BaseAgent
+from obelix.adapters.outbound.shell import LocalShellExecutor
+from obelix.plugins.builtin import BashTool
+
+executor = LocalShellExecutor()
+
+# Build system message with shell environment
+system_message = (
+    "You are a helpful assistant with access to a bash tool. "
+    "You can execute shell commands to read files and perform operations."
+)
+
+info = executor.shell_info
+if info:
+    system_message += (
+        f"\n\nEnvironment: {info['platform']}, shell: {info['shell_name']}. "
+        f"Use {info['shell_name']}-compatible syntax (heredoc, pipes, etc. are supported)."
+    )
+
+agent = BaseAgent(
+    system_message=system_message,
+    tools=[BashTool(executor=executor)]
+)
+```
+
+This tells the LLM which shell it's working with, so it generates compatible commands.
+
+#### Creating Custom Executors
+
+To implement a custom executor (Docker, SSH, cloud shell, etc.):
+
+```python
+from obelix.ports.outbound.shell_executor import AbstractShellExecutor
+
+class DockerExecutor(AbstractShellExecutor):
+    """Executes commands inside a Docker container."""
+
+    def __init__(self, image: str, container_name: str):
+        self.image = image
+        self.container_name = container_name
+
+    @property
+    def shell_info(self) -> dict:
+        return {
+            "platform": "Docker",
+            "shell": "/bin/bash",
+            "shell_name": "bash",
+            "container": self.container_name,
+            "image": self.image,
+        }
+
+    async def execute(
+        self,
+        command: str,
+        timeout: int = 120,
+        working_directory: str | None = None,
+    ) -> dict:
+        # Run command via docker exec
+        # Return { "stdout": ..., "stderr": ..., "exit_code": ... }
+        ...
+
+# Usage
+docker_exec = DockerExecutor(image="python:3.13", container_name="my-app")
+agent = BaseAgent(
+    system_message="...",
+    tools=[BashTool(executor=docker_exec)]
+)
+```
 
 ### AskUserQuestionTool
 

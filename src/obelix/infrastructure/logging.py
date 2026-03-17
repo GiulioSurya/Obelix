@@ -230,9 +230,24 @@ def setup_logging(
 
 
 def suppress_console() -> None:
-    """Raise console handler to WARNING level (hides INFO/DEBUG during tracing)."""
+    """Raise console handler to WARNING level (hides INFO/DEBUG during tracing).
+
+    Works even if ``setup_logging()`` was never called: in that case the
+    loguru default handler (id 0, stderr) is removed and replaced with a
+    WARNING-level handler.
+    """
     global _console_handler_id
     if _console_handler_id is None:
+        # setup_logging() was never called — remove loguru's default handler
+        try:
+            logger.remove(0)
+        except ValueError:
+            pass  # already removed
+        _console_handler_id = logger.add(
+            sink=sys.stderr,
+            level="WARNING",
+            colorize=True,
+        )
         return
     logger.remove(_console_handler_id)
     _console_handler_id = logger.add(

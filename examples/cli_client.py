@@ -1,10 +1,10 @@
-# demo_cli.py -- Interactive CLI client for A2A agents
+# examples/cli_client.py -- Interactive CLI client for A2A agents
 """
 Connect to one or more A2A agent servers and chat interactively.
 
 Usage:
-    uv run python demo_cli.py http://localhost:8002
-    uv run python demo_cli.py http://localhost:8001 http://localhost:8002
+    uv run python examples/cli_client.py http://localhost:8002
+    uv run python examples/cli_client.py http://localhost:8001 http://localhost:8002
 
 Commands:
     /agents         List connected agents

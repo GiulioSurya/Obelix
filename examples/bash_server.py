@@ -1,4 +1,4 @@
-# demo_bash_server.py — A2A server with BashTool
+# examples/bash_server.py -- A2A server with BashTool
 """
 Minimal A2A server that exposes an agent with BashTool.
 
@@ -10,61 +10,52 @@ Two modes available (toggle LOCAL_EXECUTOR below):
 - **Deferred**: BashTool returns None, the A2A client must execute the
   command and send back the result. Set LOCAL_EXECUTOR = False.
 
+Requirements:
+    uv sync --extra litellm --extra serve
+
 Usage:
-    uv run python demo_bash_server.py
+    API_KEY=sk-... uv run python examples/bash_server.py
     # Server starts on http://localhost:8002
 """
 
-from pathlib import Path
+import os
 
-import yaml
+from dotenv import load_dotenv
 
-from obelix.adapters.outbound.oci.connection import OCIConnection
-from obelix.adapters.outbound.oci.provider import OCILLm
+from obelix.adapters.outbound.litellm import LiteLLMProvider
 from obelix.adapters.outbound.shell import LocalShellExecutor
 from obelix.core.agent import BaseAgent
 from obelix.core.agent.agent_factory import AgentFactory
 from obelix.core.tracer import Tracer
-from obelix.core.tracer.exporters import HTTPExporter
+from obelix.core.tracer.exporters import ConsoleExporter
 from obelix.infrastructure.logging import setup_logging
 from obelix.plugins.builtin import BashTool
 
+load_dotenv()
 setup_logging(console_level="INFO")
 
 # Toggle: True = server executes commands, False = client executes (deferred)
-LOCAL_EXECUTOR = False
+LOCAL_EXECUTOR = True
 
-tracer = Tracer(
-    exporter=HTTPExporter(endpoint="http://localhost:8100/api/v1/ingest"),
-    service_name="demo_bash",
-)
+LITELLM_MODEL = "anthropic/claude-haiku-4-5-20251001"
 
-# -- OCI config from infrastructure.yaml ------------------------------------
-
-_CONFIG_PATH = Path(__file__).parent / "config" / "infrastructure.yaml"
-_cfg = yaml.safe_load(_CONFIG_PATH.read_text())["llm_providers"]["oci"]
-
-_oci_connection = OCIConnection(
-    oci_config={
-        "user": _cfg["user_id"],
-        "fingerprint": _cfg["fingerprint"],
-        "key_content": _cfg["private_key_content"],
-        "tenancy": _cfg["tenancy"],
-        "region": _cfg["region"],
-        "compartment_id": _cfg["compartment_id"],
-    }
-)
+tracer = Tracer(exporter=ConsoleExporter(verbosity=3))
 
 
-def make_provider() -> OCILLm:
-    return OCILLm(
-        connection=_oci_connection,
-        compartment_id=_cfg["compartment_id"],
-        model_id="openai.gpt-oss-120b",
+# -- Provider ----------------------------------------------------------------
+
+
+def make_provider() -> LiteLLMProvider:
+    return LiteLLMProvider(
+        model_id=LITELLM_MODEL,
+        api_key=os.getenv("API_KEY"),
+        reasoning_effort="medium",
         max_tokens=4000,
-        temperature=0.1,
+        temperature=1,
     )
 
+
+# -- Agent -------------------------------------------------------------------
 
 _executor = LocalShellExecutor() if LOCAL_EXECUTOR else None
 
@@ -87,6 +78,8 @@ class BashAgent(BaseAgent):
         )
         self.register_tool(BashTool(executor=_executor) if _executor else BashTool())
 
+
+# -- Serve -------------------------------------------------------------------
 
 if __name__ == "__main__":
     mode = "local executor" if LOCAL_EXECUTOR else "deferred (client executes)"
