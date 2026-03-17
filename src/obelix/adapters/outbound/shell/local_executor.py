@@ -1,6 +1,9 @@
 # src/obelix/adapters/outbound/shell/local_executor.py
 """Local shell executor — runs commands via asyncio subprocess.
 
+Detects the best available shell (bash, zsh, sh) and uses it explicitly,
+avoiding cmd.exe on Windows which lacks heredoc, pipes, and other Unix features.
+
 Stateless: each call spawns a fresh process. No persistent session.
 Thread-safe: asyncio subprocess is safe for concurrent use.
 """
@@ -8,6 +11,8 @@ Thread-safe: asyncio subprocess is safe for concurrent use.
 from __future__ import annotations
 
 import asyncio
+import platform
+import shutil
 from pathlib import Path
 
 from obelix.infrastructure.logging import get_logger
@@ -19,8 +24,56 @@ _MAX_OUTPUT_CHARS = 50_000
 _TRUNCATION_MSG = "\n\n... [output truncated at {limit} chars — {total} total]"
 
 
+def _detect_shell() -> str:
+    """Find the best available shell for command execution.
+
+    Priority: bash > zsh > sh > cmd.exe (Windows fallback).
+    On Windows with Git Bash installed, bash is preferred over cmd.exe
+    because it supports heredoc, pipes, and standard Unix syntax.
+    """
+    for shell in ("bash", "zsh", "sh"):
+        path = shutil.which(shell)
+        if path:
+            return path
+
+    # Windows fallback — cmd.exe
+    if platform.system() == "Windows":
+        return "cmd.exe"
+
+    return "/bin/sh"
+
+
 class LocalShellExecutor(AbstractShellExecutor):
-    """Executes shell commands locally via asyncio subprocess."""
+    """Executes shell commands locally via asyncio subprocess.
+
+    Automatically detects the best available shell. Pass ``shell``
+    to override (e.g. ``LocalShellExecutor(shell="/bin/zsh")``).
+
+    The ``shell_info`` property returns a dict with platform and shell
+    details — inject this into the agent's system message so the LLM
+    generates compatible commands.
+    """
+
+    def __init__(self, shell: str | None = None):
+        self._shell = shell or _detect_shell()
+        self._platform = platform.system()
+        logger.info(
+            f"[Shell] Initialized | shell={self._shell} platform={self._platform}"
+        )
+
+    @property
+    def shell_info(self) -> dict:
+        """Platform and shell info for agent system message injection.
+
+        Example usage:
+            executor = LocalShellExecutor()
+            system_msg += f"\\nShell: {executor.shell_info['shell']} on {executor.shell_info['platform']}"
+        """
+        return {
+            "platform": self._platform,
+            "shell": self._shell,
+            "shell_name": Path(self._shell).stem,
+        }
 
     async def execute(
         self,
@@ -30,17 +83,23 @@ class LocalShellExecutor(AbstractShellExecutor):
     ) -> dict:
         """Execute a shell command in a subprocess.
 
+        Uses the detected shell explicitly (e.g. ``bash -c "command"``),
+        avoiding cmd.exe on Windows.
+
         Returns dict with stdout, stderr, exit_code.
         On timeout, kills the process and returns exit_code=-1.
         """
         cwd = str(Path(working_directory).resolve()) if working_directory else None
 
         logger.info(
-            f"[Shell] Executing | command={command!r} timeout={timeout}s cwd={cwd}"
+            f"[Shell] Executing | shell={self._shell} "
+            f"command={command!r} timeout={timeout}s cwd={cwd}"
         )
 
         try:
-            process = await asyncio.create_subprocess_shell(
+            process = await asyncio.create_subprocess_exec(
+                self._shell,
+                "-c",
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

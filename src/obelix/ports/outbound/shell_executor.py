@@ -12,6 +12,15 @@ from abc import ABC, abstractmethod
 class AbstractShellExecutor(ABC):
     """Contract for executing shell commands."""
 
+    @property
+    def shell_info(self) -> dict:
+        """Platform and shell details for system message injection.
+
+        Returns dict with platform, shell (path), shell_name.
+        Override in subclasses; default returns empty dict.
+        """
+        return {}
+
     @abstractmethod
     async def execute(
         self,

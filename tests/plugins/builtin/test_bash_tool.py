@@ -230,3 +230,75 @@ class TestBashToolExecute:
         )
         result = await tool_instance.execute(call)
         assert result.status == ToolStatus.ERROR
+
+
+class TestBashToolWithExecutor:
+    """Tests for BashTool with an executor (local execution mode)."""
+
+    @pytest.fixture
+    def mock_executor(self):
+        """A mock AbstractShellExecutor that returns a fixed result."""
+        from unittest.mock import AsyncMock
+
+        executor = AsyncMock()
+        executor.execute = AsyncMock(
+            return_value={"stdout": "hello\n", "stderr": "", "exit_code": 0}
+        )
+        return executor
+
+    def test_with_executor_not_deferred(self, mock_executor):
+        """BashTool with executor should NOT be deferred."""
+        tool = BashTool(executor=mock_executor)
+        assert tool.is_deferred is False
+
+    def test_without_executor_is_deferred(self):
+        """BashTool without executor should be deferred."""
+        tool = BashTool()
+        assert tool.is_deferred is True
+
+    def test_class_level_is_deferred_true(self):
+        """Class-level is_deferred should remain True (default)."""
+        assert BashTool.is_deferred is True
+
+    async def test_execute_with_executor_returns_result(self, mock_executor):
+        """With executor, execute() should return the executor's result."""
+        tool = BashTool(executor=mock_executor)
+        call = ToolCall(
+            id="tc_exec_1",
+            name="bash",
+            arguments={"command": "echo hello", "description": "Print hello"},
+        )
+        result = await tool.execute(call)
+        assert result.result == {"stdout": "hello\n", "stderr": "", "exit_code": 0}
+        assert result.status == ToolStatus.SUCCESS
+
+    async def test_execute_with_executor_passes_arguments(self, mock_executor):
+        """Executor should receive command, timeout, working_directory."""
+        tool = BashTool(executor=mock_executor)
+        call = ToolCall(
+            id="tc_exec_2",
+            name="bash",
+            arguments={
+                "command": "ls -la",
+                "description": "List files",
+                "timeout": 30,
+                "working_directory": "/tmp",
+            },
+        )
+        await tool.execute(call)
+        mock_executor.execute.assert_called_once_with(
+            command="ls -la",
+            timeout=30,
+            working_directory="/tmp",
+        )
+
+    async def test_execute_without_executor_returns_none(self):
+        """Without executor, execute() should still return None (deferred)."""
+        tool = BashTool()
+        call = ToolCall(
+            id="tc_def_1",
+            name="bash",
+            arguments={"command": "ls", "description": "List files"},
+        )
+        result = await tool.execute(call)
+        assert result.result is None
