@@ -6,7 +6,7 @@ It serves as a complete gap analysis, behavioral reference, and implementation r
 
 > **Spec reference**: https://a2a-protocol.org/latest/specification/ (v1.0, Linux Foundation).
 > **SDK**: [`a2a-sdk`](https://github.com/a2aproject/a2a-python) v0.3.25.
-> **Last updated**: 2026-03-14.
+> **Last updated**: 2026-03-17.
 
 ---
 
@@ -28,13 +28,15 @@ a2a-sdk infrastructure (managed by SDK):
   v
 ObelixAgentExecutor (our only code):
   RequestContext.get_user_input() -> BaseAgent.execute_query_stream() -> EventQueue events
-  InputChannel (asyncio.Future) <-> RequestUserInputTool (auto-registered)
+  Generic deferred tool protocol (OutputSchema-based parsing)
+  Built-in deferred tools: RequestUserInputTool (auto-registered), BashTool (opt-in)
 ```
 
 **Files**:
 - `src/obelix/adapters/inbound/a2a/server.py` — `ObelixAgentExecutor(AgentExecutor)`
-- `src/obelix/adapters/inbound/a2a/input_channel.py` — `InputChannel` (tool ↔ executor async channel)
+- `src/obelix/adapters/inbound/a2a/input_channel.py` — `InputChannel` (tool <-> executor async channel)
 - `src/obelix/adapters/inbound/a2a/request_user_input_tool.py` — `RequestUserInputTool` (A2A-specific)
+- `src/obelix/plugins/builtin/bash_tool.py` — `BashTool` (deferred, opt-in)
 - `src/obelix/core/agent/agent_factory.py` — `a2a_serve()`, `_build_agent_card()`
 
 **Implication**: data model compliance (Task, Message, Part, Artifact, errors,
@@ -108,28 +110,151 @@ Ref: [Life of a Task](https://a2a-protocol.org/latest/topics/life-of-a-task/)
 | `canceled` | Terminal | Client-initiated cancellation. | **OK** — structured `Message` in status (but cancellation is not real — see Section 1.2) |
 | `rejected` | Terminal | Agent declined the task. | **Never emitted** — useful when agent determines it cannot handle the request. |
 
-### 2.2 `input-required` Flow (DONE - 2026-03-14)
+### 2.2 Deferred Tool Protocol & `input-required` Flow (2026-03-17)
 
-Implemented via `RequestUserInputTool` — an A2A-specific tool that is
-auto-registered on every agent created by `a2a_serve()`. When the LLM
-calls the tool, execution suspends until the client responds.
+The `input-required` A2A state is implemented via **deferred tools** — tools with
+`is_deferred=True` whose `execute()` returns `None`. The executor is fully generic:
+zero tool-specific logic. Any deferred tool works without executor changes.
 
-**Spec flow** (implemented):
-1. Agent calls `RequestUserInputTool(question="...", options=[...])` — tool suspends on `asyncio.Future`
-2. Executor detects suspension via `InputChannel.wait_for_request()`
-3. Server emits `TaskStatusUpdateEvent(state=input-required, message=question)` with `final=True`
-4. Client sends another `message/send` with same `contextId`
-5. Executor delivers response via `InputChannel.provide_input(text)` — tool resumes
-6. Agent loop continues normally (state back to `working` → `completed`)
+#### How deferred tools work
 
-**Architecture**:
-- `InputChannel` (`input_channel.py`): asyncio.Future-based channel, exposed via `ContextVar`
-- `RequestUserInputTool` (`request_user_input_tool.py`): same UX pattern as `AskUserQuestionTool` (question + structured options), but suspends via `InputChannel` instead of blocking on stdin
-- Deadlock prevention: per-context `asyncio.Lock` replaced with `asyncio.Event` (idle gate). Resume path bypasses the gate since it's a continuation, not a new execution.
-- `_RequestRef`: mutable wrapper for queue/task_id/context_id — necessary because the SDK creates a new `task_id` for each `message/send`, and post-resume events must use the new IDs.
-- Timeout: 60s (configurable via `INPUT_TIMEOUT_SECONDS`). If client doesn't respond, `TimeoutError` → `TaskState.failed`.
+A deferred tool splits execution between two parties:
 
-**E2E verified**: `message/send("Calculate 25*4")` → `input-required("Should I proceed?")` → `message/send("Yes")` → calculator executes → report agent formats → `completed("25 × 4 = 100")`.
+- **`inputSchema`** (Pydantic Fields) — declares what the **LLM** must provide when
+  invoking the tool. This is identical to normal tools.
+- **`OutputSchema`** (optional inner `BaseModel`) — declares what the **client** must
+  return after executing the deferred action. This is new to deferred tools.
+- **`execute()`** returns `None` — the server never executes anything. It signals the
+  `BaseAgent` loop to stop and yield the tool call to the consumer.
+
+```
+Normal tool:    LLM -> inputSchema -> execute() on SERVER -> ToolResult -> LLM
+Deferred tool:  LLM -> inputSchema -> None (stop loop) -> CLIENT executes -> OutputSchema -> ToolResult -> LLM
+```
+
+#### A2A flow (step by step)
+
+```
+1. LLM invokes deferred tool
+   ToolCall(name="bash", arguments={"command": "ls -la", ...})
+
+2. BaseAgent._process_tool_calls() detects is_deferred=True + result=None
+   → saves assistant message + non-deferred results to history
+   → yields StreamEvent(deferred_tool_calls=[...], is_final=True)
+   → loop STOPS, trace remains OPEN
+
+3. ObelixAgentExecutor receives the StreamEvent
+   → saves entry.deferred_tool_calls + entry.deferred_tools (tool snapshot)
+   → saves entry.trace_session + entry.trace_span
+   → builds client message via _build_deferred_message():
+     JSON: [{"tool_name": "bash", "arguments": {...}}]
+   → emits TaskState.input_required with the JSON message
+   → returns (idle gate released)
+
+4. Client receives input-required
+   → identifies tool by "tool_name" in the JSON payload
+   → executes the action locally (or asks human for input)
+   → responds on same contextId with result
+
+5. ObelixAgentExecutor.execute() on same contextId
+   → detects entry.deferred_tool_calls is not None (resume path)
+   → calls _inject_deferred_response():
+     - looks up tool by name in entry.deferred_tools
+     - if tool has _output_schema: json.loads(raw) → validate → model_dump()
+     - if no _output_schema: fallback to {"answer": raw_text}
+     - appends ToolMessage to entry.history
+   → restores trace context
+   → creates fresh agent, injects history
+   → calls agent.resume_after_deferred() (query=None, resume=True)
+
+6. Agent loop resumes
+   → LLM sees tool_call + tool_result in history
+   → continues normally → completed
+```
+
+**Serialization**: per-context `asyncio.Event` (idle gate) ensures requests on the same
+context are serialized. No Futures, no suspended tasks — pure stop-and-resume.
+
+#### OutputSchema convention
+
+A deferred tool **may** declare an inner `OutputSchema(BaseModel)` class:
+
+```python
+@tool(name="bash", description="...", is_deferred=True)
+class BashTool:
+    # Input (for the LLM)
+    command: str = Field(...)
+    description: str = Field(...)
+
+    # Output (for the client)
+    class OutputSchema(BaseModel):
+        stdout: str = Field(default="")
+        stderr: str = Field(default="")
+        exit_code: int = Field(default=0)
+
+    def execute(self) -> None:
+        return None
+```
+
+The `@tool` decorator:
+1. Detects `OutputSchema` and stores it as `cls._output_schema`
+2. Uses `OutputSchema.model_json_schema()` as `MCPToolSchema.outputSchema`
+   (replacing the generic `{"type": "object", "additionalProperties": True}`)
+
+This means `tool.create_schema()` (or `tool.print_schema()`) shows both input and
+output schemas — the full contract for any consumer.
+
+#### Response parsing (`_parse_deferred_result`)
+
+| Scenario | Behavior |
+|----------|----------|
+| Tool has `_output_schema`, client sends valid JSON | Validate with `OutputSchema(**parsed)`, use `model_dump()` |
+| Tool has `_output_schema`, client sends plain text | Populate defaults, override first `str` field with raw text |
+| Tool has no `_output_schema` (e.g. `RequestUserInputTool`) | Fallback to `{"answer": raw_text}` |
+
+#### Current deferred tools
+
+| Tool | Auto-registered | InputSchema | OutputSchema | Purpose |
+|------|----------------|-------------|--------------|---------|
+| `RequestUserInputTool` | Yes (in `a2a_serve()`) | question, options | None (fallback) | Ask client for clarification |
+| `BashTool` | No (opt-in) | command, description, timeout, working_directory | stdout, stderr, exit_code | Delegate shell execution to client |
+
+**BashTool registration** (explicit, per agent):
+```python
+from obelix.plugins.builtin import BashTool
+agent.register_tool(BashTool())
+```
+
+**Client contract for `bash` tool calls:**
+- Client receives: `[{"tool_name": "bash", "arguments": {"command": "...", "description": "...", "timeout": 120, "working_directory": null}}]`
+- Client should: review/authorize the command, execute locally, respond with JSON:
+  ```json
+  {"stdout": "file.txt\nREADME.md\n", "stderr": "", "exit_code": 0}
+  ```
+- If the client sends plain text instead of JSON, the executor treats it as stdout with exit_code=0
+
+**Security**: command authorization is the **client's responsibility**. The framework does
+not execute commands and does not enforce any command whitelist/blacklist. Clients should
+implement their own permission layer before executing.
+
+#### Building new deferred tools
+
+Any tool can participate in the deferred protocol by:
+1. Setting `is_deferred=True` in `@tool()`
+2. Having `execute()` return `None`
+3. Optionally declaring an `OutputSchema(BaseModel)` inner class
+
+No changes to `BaseAgent`, `Tool` Protocol, or the A2A executor are needed.
+
+#### TODO: CLI runner for local deferred execution
+
+The A2A executor handles deferred tools for remote clients. For **local usage** (human at
+terminal, scripts), a CLI runner is needed that:
+1. Consumes `execute_query_stream()` events
+2. On `deferred_tool_calls`: shows the command, asks confirmation on stdin, executes subprocess
+3. Builds `ToolMessage` from `OutputSchema`, calls `agent.resume_after_deferred()`
+
+This is planned as `src/obelix/adapters/inbound/cli/bash_runner.py` (future work).
 
 ### 2.3 Error Reporting in TaskStatus (DONE - 2026-03-13)
 
@@ -545,15 +670,16 @@ Incremental `TaskArtifactUpdateEvent` during execution. Both `message/send` and 
 
 **Implementation note**: the SDK uses the same `EventQueue` for both paths. `on_message_send()` aggregates all events into a final Task. `on_message_send_stream()` yields them as SSE. The executor doesn't need to distinguish — it always emits granular events.
 
-#### 2e. `input-required` flow (DONE - 2026-03-14)
+#### 2e. Deferred tool protocol + `input-required` (DONE - 2026-03-17)
 
-Implemented via `RequestUserInputTool` + `InputChannel`. See Section 2.2 for full details.
+Generic deferred tool protocol. See Section 2.2 for full architecture.
 
-- [x] **`RequestUserInputTool`**: A2A-specific tool, auto-registered by `a2a_serve()`. LLM calls it with `question` + optional `options`. Tool suspends via `InputChannel.request_input()` (asyncio.Future).
-- [x] **`InputChannel`**: ContextVar-based async channel. Tool side: `await request_input(question)`. Executor side: `await wait_for_request()` to detect, `provide_input(text)` to resume.
-- [x] **Executor two-path dispatch**: normal path (new execution, waits on `idle` gate) vs resume path (delivers input, bypasses gate). `asyncio.Event` replaces `asyncio.Lock` to avoid deadlock.
-- [x] **`_RequestRef`**: mutable wrapper for queue/task_id/context_id. SDK creates new task_id per `message/send`, so post-resume events must use updated IDs.
-- [x] **Timeout**: 60s default (`INPUT_TIMEOUT_SECONDS`). `TimeoutError` → `TaskState.failed`.
+- [x] **`RequestUserInputTool`**: A2A-specific deferred tool, auto-registered by `a2a_serve()`. LLM calls it with `question` + optional `options`. Tool returns `None` (deferred), executor emits `input-required`.
+- [x] **`BashTool`**: Deferred tool that delegates shell execution to client. Opt-in registration. Declares `OutputSchema` (stdout/stderr/exit_code) for structured client response.
+- [x] **Generic executor**: `_build_deferred_message()` serialises deferred calls as JSON (no tool-specific logic). `_parse_deferred_result()` uses tool's `OutputSchema` if present, falls back to `{"answer": text}`.
+- [x] **`OutputSchema` convention**: deferred tools can declare an inner `OutputSchema(BaseModel)` class. The `@tool` decorator detects it and uses it for `MCPToolSchema.outputSchema`. The executor validates client responses against it.
+- [x] **Stop-and-resume architecture**: no Futures, no suspended tasks. Loop stops, history + tool snapshot saved to `_ContextEntry`, executor emits `input-required`. Next request on same `contextId` injects `ToolMessage` and calls `resume_after_deferred()`.
+- [x] **Trace continuity**: trace session + span saved when loop stops, restored on resume. Deferred round-trip appears under same trace.
 - [x] **E2E verified**: full round-trip with calculator + report sub-agents, streaming tokens on resume.
 
 #### 2f. `rejected` state (TODO — richiede definizione use case)

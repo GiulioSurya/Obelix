@@ -18,6 +18,7 @@ and restarts the agent loop — no Futures, no suspended tasks.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable
@@ -78,6 +79,7 @@ class _ContextEntry:
         "history",
         "idle",
         "deferred_tool_calls",
+        "deferred_tools",
         "trace_session",
         "trace_span",
     )
@@ -87,6 +89,7 @@ class _ContextEntry:
         self.idle = asyncio.Event()
         self.idle.set()  # starts as idle (ready for new executions)
         self.deferred_tool_calls: list[ToolCall] | None = None
+        self.deferred_tools: list | None = None  # tool snapshot for OutputSchema lookup
         self.trace_session = None  # TraceSession saved when loop stops for deferred
         self.trace_span = None  # Current span saved when loop stops for deferred
 
@@ -177,18 +180,26 @@ class ObelixAgentExecutor(AgentExecutor):
             entry.idle.set()
 
     def _inject_deferred_response(self, entry: _ContextEntry, user_text: str) -> None:
-        """Inject the client's response as ToolMessage for deferred tools."""
-        tool_results = [
-            ToolResult(
-                tool_name=call.name,
-                tool_call_id=call.id,
-                result={"answer": user_text},
-                status=ToolStatus.SUCCESS,
+        """Inject the client's response as ToolMessage for deferred tools.
+
+        Uses the tool's OutputSchema (if declared) to validate and parse
+        the client's response. Falls back to ``{"answer": raw_text}`` for
+        tools without an OutputSchema (e.g. RequestUserInputTool).
+        """
+        tool_results = []
+        for call in entry.deferred_tool_calls:
+            result_data = _parse_deferred_result(call, entry.deferred_tools, user_text)
+            tool_results.append(
+                ToolResult(
+                    tool_name=call.name,
+                    tool_call_id=call.id,
+                    result=result_data,
+                    status=ToolStatus.SUCCESS,
+                )
             )
-            for call in entry.deferred_tool_calls
-        ]
         entry.history.append(ToolMessage(tool_results=tool_results))
         entry.deferred_tool_calls = None
+        entry.deferred_tools = None
         logger.info(
             f"[A2A] Injected deferred response | "
             f"tool_count={len(tool_results)} input_len={len(user_text)}"
@@ -250,12 +261,13 @@ class ObelixAgentExecutor(AgentExecutor):
                 if event.deferred_tool_calls:
                     entry.history = agent.conversation_history[1:]
                     entry.deferred_tool_calls = event.deferred_tool_calls
+                    entry.deferred_tools = list(agent.registered_tools)
                     # Save trace context so the resume continues the same trace
                     entry.trace_session = get_current_trace()
                     entry.trace_span = get_current_span()
 
-                    # Build question from deferred tool arguments
-                    question = self._extract_question(event.deferred_tool_calls)
+                    # Build message from deferred tool calls (generic)
+                    question = _build_deferred_message(event.deferred_tool_calls)
 
                     await event_queue.enqueue_event(
                         TaskStatusUpdateEvent(
@@ -370,15 +382,6 @@ class ObelixAgentExecutor(AgentExecutor):
                 )
             )
 
-    @staticmethod
-    def _extract_question(deferred_calls: list[ToolCall]) -> str:
-        """Extract the question text from deferred tool call arguments."""
-        for call in deferred_calls:
-            question = call.arguments.get("question")
-            if question:
-                return question
-        return "Additional input required."
-
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         task_id = context.task_id
         context_id = context.context_id
@@ -396,3 +399,58 @@ class ObelixAgentExecutor(AgentExecutor):
                 final=True,
             )
         )
+
+
+# ── Module-level helpers for deferred tool protocol ─────────────────
+
+
+def _build_deferred_message(deferred_calls: list[ToolCall]) -> str:
+    """Build the input-required message from deferred tool calls.
+
+    Serialises each deferred call as JSON so any client (programmatic or
+    human) can identify the tool and its arguments without hardcoded
+    field sniffing.
+    """
+    payload = [
+        {"tool_name": call.name, "arguments": call.arguments} for call in deferred_calls
+    ]
+    return json.dumps(payload)
+
+
+def _parse_deferred_result(
+    call: ToolCall,
+    tools: list | None,
+    raw_input: str,
+) -> dict:
+    """Parse a client response using the tool's OutputSchema if available.
+
+    If the deferred tool declares an ``OutputSchema`` inner class (stored
+    as ``_output_schema`` by the ``@tool`` decorator), the raw client
+    response is parsed as JSON and validated against that schema.
+
+    Falls back to ``{"answer": raw_input}`` when:
+    - The tool has no OutputSchema (e.g. RequestUserInputTool)
+    - The client response is not valid JSON
+    - Validation against OutputSchema fails
+    """
+    output_schema = None
+    for tool in tools or []:
+        if getattr(tool, "tool_name", None) == call.name:
+            output_schema = getattr(tool, "_output_schema", None)
+            break
+
+    if output_schema:
+        try:
+            parsed = json.loads(raw_input)
+            validated = output_schema(**parsed)
+            return validated.model_dump()
+        except Exception:
+            # Fallback: populate defaults, override first string field with raw text
+            defaults = output_schema().model_dump()
+            for field_name, field_info in output_schema.model_fields.items():
+                if field_info.annotation is str:
+                    defaults[field_name] = raw_input
+                    break
+            return defaults
+
+    return {"answer": raw_input}

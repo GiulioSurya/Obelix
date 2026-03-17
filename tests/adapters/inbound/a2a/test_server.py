@@ -23,13 +23,17 @@ from dataclasses import dataclass
 from unittest.mock import MagicMock
 
 import pytest
+from pydantic import BaseModel
 
 from obelix.adapters.inbound.a2a.server import (
     DEFAULT_MAX_CONTEXTS,
     ObelixAgentExecutor,
+    _build_deferred_message,
     _ContextEntry,
     _error_message,
+    _parse_deferred_result,
 )
+from obelix.core.model.tool_message import ToolCall
 
 # ---------------------------------------------------------------------------
 # Lightweight fakes for a2a-sdk types (avoid importing the real SDK in tests)
@@ -1000,3 +1004,117 @@ class TestNormalFlowUnchanged:
         entry = executor._contexts["ctx-001"]
         assert entry.idle.is_set()
         assert entry.deferred_tool_calls is None
+
+
+# ---------------------------------------------------------------------------
+# _build_deferred_message
+# ---------------------------------------------------------------------------
+
+
+class TestBuildDeferredMessage:
+    def test_serializes_json_with_tool_name_and_arguments(self):
+        """Given a list with one ToolCall, produces valid JSON with tool_name and arguments."""
+        calls = [
+            ToolCall(id="tc-1", name="bash", arguments={"cmd": "ls -la"}),
+        ]
+        result = _build_deferred_message(calls)
+
+        import json
+
+        parsed = json.loads(result)
+        assert isinstance(parsed, list)
+        assert len(parsed) == 1
+        assert parsed[0]["tool_name"] == "bash"
+        assert parsed[0]["arguments"] == {"cmd": "ls -la"}
+
+    def test_multiple_calls_all_serialized(self):
+        """Given multiple deferred calls, the JSON array contains all of them."""
+        calls = [
+            ToolCall(id="tc-1", name="bash", arguments={"cmd": "echo hi"}),
+            ToolCall(
+                id="tc-2",
+                name="request_user_input",
+                arguments={"question": "Which env?"},
+            ),
+        ]
+        result = _build_deferred_message(calls)
+
+        import json
+
+        parsed = json.loads(result)
+        assert len(parsed) == 2
+        assert parsed[0]["tool_name"] == "bash"
+        assert parsed[1]["tool_name"] == "request_user_input"
+        assert parsed[1]["arguments"] == {"question": "Which env?"}
+
+
+# ---------------------------------------------------------------------------
+# _parse_deferred_result
+# ---------------------------------------------------------------------------
+
+
+class _MockOutputSchema(BaseModel):
+    """Pydantic schema for a bash-like tool output."""
+
+    stdout: str = ""
+    stderr: str = ""
+    exit_code: int = 0
+
+
+class _MockBashTool:
+    """Fake tool with _output_schema (mimics what @tool decorator sets)."""
+
+    tool_name = "bash"
+    _output_schema = _MockOutputSchema
+
+
+class _MockSimpleTool:
+    """Fake tool without _output_schema (like RequestUserInputTool)."""
+
+    tool_name = "request_user_input"
+
+
+class TestParseDeferredResult:
+    def test_with_output_schema_valid_json(self):
+        """Tool has _output_schema, client sends valid JSON matching schema -> validated dict."""
+        call = ToolCall(id="tc-1", name="bash", arguments={})
+        tools = [_MockBashTool(), _MockSimpleTool()]
+        raw_input = '{"stdout": "hello world", "exit_code": 0}'
+
+        result = _parse_deferred_result(call, tools, raw_input)
+
+        assert result["stdout"] == "hello world"
+        assert result["exit_code"] == 0
+        assert result["stderr"] == ""  # default filled in by schema
+
+    def test_with_output_schema_raw_text_fallback(self):
+        """Tool has _output_schema, client sends plain text -> fallback populates first string field."""
+        call = ToolCall(id="tc-1", name="bash", arguments={})
+        tools = [_MockBashTool()]
+        raw_input = "some raw output from user"
+
+        result = _parse_deferred_result(call, tools, raw_input)
+
+        # First string field in _MockOutputSchema is 'stdout'
+        assert result["stdout"] == "some raw output from user"
+        assert result["stderr"] == ""
+        assert result["exit_code"] == 0
+
+    def test_without_output_schema(self):
+        """Tool has no _output_schema -> returns {"answer": raw_text}."""
+        call = ToolCall(id="tc-1", name="request_user_input", arguments={})
+        tools = [_MockSimpleTool()]
+        raw_input = "EUR"
+
+        result = _parse_deferred_result(call, tools, raw_input)
+
+        assert result == {"answer": "EUR"}
+
+    def test_no_tools_provided(self):
+        """Tools list is None -> returns {"answer": raw_text}."""
+        call = ToolCall(id="tc-1", name="bash", arguments={})
+        raw_input = "some answer"
+
+        result = _parse_deferred_result(call, None, raw_input)
+
+        assert result == {"answer": "some answer"}

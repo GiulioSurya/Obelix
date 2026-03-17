@@ -25,7 +25,7 @@ import inspect
 import time
 from typing import get_type_hints
 
-from pydantic import ValidationError, create_model
+from pydantic import BaseModel, ValidationError, create_model
 from pydantic.fields import FieldInfo
 
 from obelix.core.model.tool_message import (
@@ -77,6 +77,17 @@ def tool(name: str = None, description: str = None, is_deferred: bool = False):
 
         # 3. Extract Fields from class to create Pydantic schema
         cls._input_schema = _create_input_schema(cls, name)
+
+        # 3b. Detect optional OutputSchema inner class (for deferred tools)
+        output_schema_cls = getattr(cls, "OutputSchema", None)
+        if (
+            output_schema_cls
+            and isinstance(output_schema_cls, type)
+            and issubclass(output_schema_cls, BaseModel)
+        ):
+            cls._output_schema = output_schema_cls
+        else:
+            cls._output_schema = None
 
         # 4. Wrap the original execute method
         original_execute = cls.execute
@@ -137,14 +148,27 @@ def tool(name: str = None, description: str = None, is_deferred: bool = False):
         @classmethod
         def create_schema(cls_inner) -> MCPToolSchema:
             """Generate MCP schema from internal Pydantic model"""
+            output = (
+                cls_inner._output_schema.model_json_schema()
+                if cls_inner._output_schema
+                else {"type": "object", "additionalProperties": True}
+            )
             return MCPToolSchema(
                 name=cls_inner.tool_name,
                 description=cls_inner.tool_description,
                 inputSchema=cls_inner._input_schema.model_json_schema(),
-                outputSchema={"type": "object", "additionalProperties": True},
+                outputSchema=output,
             )
 
         cls.create_schema = create_schema
+
+        # 6. Add print_schema() for quick inspection
+        @classmethod
+        def print_schema(cls_inner) -> None:
+            """Print the MCP tool schema as formatted JSON."""
+            print(cls_inner.create_schema().model_dump_json(indent=2))
+
+        cls.print_schema = print_schema
 
         return cls
 

@@ -10,6 +10,7 @@ This documentation covers how to build, compose, and deploy agents using Obelix.
 
 - **[README](../README.md)** - Installation, quick start, and project overview
 - **[BaseAgent Guide](base_agent.md)** - Creating and using individual agents
+- **[Tools Guide](tools.md)** - Creating and registering tools with the @tool decorator
 - **[Agent Factory Guide](agent_factory.md)** - Composing agents and managing sub-agents
 - **[A2A Server Guide](a2a_server.md)** - Exposing agents as HTTP services
 - **[Hooks API](hooks.md)** - Intercepting and modifying agent behavior
@@ -23,6 +24,7 @@ This documentation covers how to build, compose, and deploy agents using Obelix.
 | Document | Description |
 |----------|-------------|
 | [BaseAgent Guide](base_agent.md) | Complete guide to `BaseAgent`: constructors, execution, tools, sub-agents, and hooks |
+| [Tools Guide](tools.md) | Creating tools with `@tool` decorator, registering tools, normal vs deferred tools, built-in tools |
 | [Agent Factory Guide](agent_factory.md) | How to register agents and compose them into orchestrators with optional shared memory |
 | [A2A Server Guide](a2a_server.md) | Exposing agents as A2A-compliant HTTP services with JSON-RPC 2.0 |
 | [A2A Compliance](a2a_compliance.md) | Gap analysis vs [A2A spec RC v1.0](https://a2a-protocol.org/latest/specification/) and implementation roadmap |
@@ -30,9 +32,9 @@ This documentation covers how to build, compose, and deploy agents using Obelix.
 
 ### Key Features
 
-**Tools**: Define custom tools that agents can invoke using the `@tool` decorator. See [BaseAgent Guide - Registering Tools](base_agent.md#registering-tools).
+**Tools**: Define custom tools that agents can invoke using the `@tool` decorator. Normal tools execute on the server; deferred tools delegate to the client. See [Tools Guide](tools.md).
 
-**Sub-Agents**: Register other agents as tools for hierarchical composition. See [BaseAgent Guide - Registering Sub-Agents](base_agent.md#registering-sub-agents).
+**Sub-Agents**: Register other agents as tools for hierarchical composition. See [Tools Guide - SubAgentWrapper](tools.md#subagent-wrapper) and [BaseAgent Guide - Registering Sub-Agents](base_agent.md#registering-sub-agents).
 
 **Hooks**: Intercept agent lifecycle events for cross-cutting concerns. See [Hooks API](hooks.md).
 
@@ -103,7 +105,7 @@ class CalculatorTool:
 agent = BaseAgent(system_message="...", tools=[CalculatorTool])
 ```
 
-See [BaseAgent Guide - Creating a Tool](base_agent.md#creating-a-tool) and [README - Quick Start](../README.md#creating-a-tool).
+See [Tools Guide](tools.md#creating-tools-with-tool-decorator) and [README - Quick Start](../README.md#creating-a-tool).
 
 ### Compose Agents (Orchestrator)
 

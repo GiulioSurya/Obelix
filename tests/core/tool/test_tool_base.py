@@ -8,6 +8,7 @@ Covers:
 """
 
 import pytest
+from pydantic import BaseModel, Field
 
 from obelix.core.model.tool_message import (
     MCPToolSchema,
@@ -16,6 +17,7 @@ from obelix.core.model.tool_message import (
     ToolStatus,
 )
 from obelix.core.tool.tool_base import Tool
+from obelix.core.tool.tool_decorator import tool
 
 # ---------------------------------------------------------------------------
 # Helpers: classes that do/don't satisfy the Tool protocol
@@ -154,3 +156,60 @@ class TestValidToolBehavior:
 
     def test_tool_description_accessible(self, valid_tool):
         assert valid_tool.tool_description == "A valid tool"
+
+
+# ---------------------------------------------------------------------------
+# OutputSchema detection via @tool decorator
+# ---------------------------------------------------------------------------
+
+
+@tool(name="with_output", description="Tool with OutputSchema")
+class _ToolWithOutputSchema:
+    query: str = Field(..., description="Input query")
+
+    class OutputSchema(BaseModel):
+        answer: str = Field(default="", description="The answer")
+        confidence: float = Field(default=0.0, description="Confidence score")
+
+    def execute(self) -> dict:
+        return {"answer": self.query, "confidence": 1.0}
+
+
+@tool(name="without_output", description="Tool without OutputSchema")
+class _ToolWithoutOutputSchema:
+    query: str = Field(..., description="Input query")
+
+    def execute(self) -> dict:
+        return {"result": self.query}
+
+
+class TestOutputSchemaDetection:
+    """Tests for _output_schema detection in the @tool decorator."""
+
+    def test_tool_with_output_schema_has_output_schema_set(self):
+        """A tool with an inner OutputSchema(BaseModel) should have _output_schema set."""
+        assert _ToolWithOutputSchema._output_schema is not None
+        assert (
+            _ToolWithOutputSchema._output_schema is _ToolWithOutputSchema.OutputSchema
+        )
+
+    def test_tool_with_output_schema_creates_correct_output_in_mcp(self):
+        """create_schema().outputSchema should use OutputSchema.model_json_schema()."""
+        schema = _ToolWithOutputSchema.create_schema()
+        expected = _ToolWithOutputSchema.OutputSchema.model_json_schema()
+        assert schema.outputSchema == expected
+
+    def test_tool_with_output_schema_has_properties(self):
+        schema = _ToolWithOutputSchema.create_schema()
+        props = schema.outputSchema["properties"]
+        assert "answer" in props
+        assert "confidence" in props
+
+    def test_tool_without_output_schema_has_none(self):
+        """A tool without an inner OutputSchema should have _output_schema = None."""
+        assert _ToolWithoutOutputSchema._output_schema is None
+
+    def test_tool_without_output_schema_uses_generic_default(self):
+        """create_schema().outputSchema should be the generic dict when no OutputSchema."""
+        schema = _ToolWithoutOutputSchema.create_schema()
+        assert schema.outputSchema == {"type": "object", "additionalProperties": True}

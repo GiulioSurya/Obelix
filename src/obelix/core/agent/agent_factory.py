@@ -486,7 +486,7 @@ class AgentFactory:
         # Factory callable: creates a fresh agent per A2A request
         # with RequestUserInputTool auto-registered for input-required flow
         def agent_factory() -> "BaseAgent":
-            from obelix.adapters.inbound.a2a.request_user_input_tool import (
+            from obelix.plugins.builtin.request_user_input_tool import (
                 RequestUserInputTool,
             )
 
