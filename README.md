@@ -173,38 +173,19 @@ Obelix implements the [A2A protocol](https://a2a-protocol.org/) (Agent-to-Agent,
 
 ### Key Features
 
-**Multimodal messages** — Attach images, PDFs, and files from the CLI with `@path`. The A2A protocol carries them as `FilePart` (base64), and the provider converts to native format (Anthropic vision blocks, OCI `ImageContent`/`DocumentContent`, OpenAI `image_url`, etc.):
+| Feature | Description |
+|---------|-------------|
+| **Multimodal** | Attach images, PDFs, files with `@path` from the CLI |
+| **Deferred tools** | Agent delegates tool execution to the client (`bash [Y/n]`, user input) |
+| **Streaming** | Token-by-token SSE streaming |
+| **Multi-agent** | Connect to multiple servers, switch with `/switch <n>` |
+| **Structured transport** | `DataPart` preserves types end-to-end (no string serialization) |
 
 ```
-[bash_agent] > describe this screenshot @screenshot.png
-[bash_agent] > analyze @report.pdf and @data.csv
-[bash_agent] > compare @"C:\Users\me\photo 1.jpg" and @photo2.jpg
+[agent] > describe this @screenshot.png
+[agent] > analyze @report.pdf and @data.csv
+[agent] > compare @"C:\path with spaces\photo.jpg" and @photo2.jpg
 ```
-
-**Deferred tool execution** — Tools marked `is_deferred=True` pause the agent loop and delegate execution to the client. The CLI handles them with interactive prompts:
-
-```
-[bash_agent] > list files in the current directory
-
-  ╭──────────── bash ────────────╮
-  │  List directory contents     │
-  │                              │
-  │    $ ls -la                  │
-  │                              │
-  │    timeout: 120s             │
-  ╰──────────────────────────────╯
-  Execute? [Y/n]
-```
-
-The full cycle: Agent emits `input_required` with `DataPart` → client executes locally → sends result back as `DataPart` → agent resumes with the tool output.
-
-**Streaming SSE** — Token-by-token streaming over Server-Sent Events. Intermediate tokens arrive as `TaskArtifactUpdateEvent`, the final response includes structured `DataPart` for tool results.
-
-**Multi-agent switching** — Connect to multiple A2A servers simultaneously and switch between them with `/switch <n>`.
-
-**Structured data transport** — Tool results, deferred tool calls, and client responses use `DataPart` (structured JSON) instead of plain text. This preserves types end-to-end: the LLM receives the actual dict, not a serialized string.
-
-> Full compliance analysis: [A2A Compliance](docs/a2a_compliance.md)
 
 ---
 
@@ -271,7 +252,6 @@ LiteLLM routes to Azure, Bedrock, Vertex AI, Groq, Mistral, Together AI, DeepSee
 | [BashTool](docs/bash_tool.md) | Shell execution modes, security, permission policies, LocalShellExecutor |
 | [A2A Server](docs/a2a_server.md) | HTTP deployment, JSON-RPC, streaming SSE, input-required flow |
 | [Hooks](docs/hooks.md) | Lifecycle events, conditions, decisions, effects |
-| [A2A Compliance](docs/a2a_compliance.md) | Gap analysis vs A2A spec v1.0 |
 
 ---
 
