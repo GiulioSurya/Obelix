@@ -3,464 +3,233 @@
 ![Python](https://img.shields.io/badge/python-3.13+-blue.svg)
 ![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)
 
-A multi-provider LLM agent framework with tool support, hooks system, and seamless integration with major AI providers.
+**Agent Development Kit** for building, composing, and deploying LLM agents.
+Create agents with tools and hooks, orchestrate them with shared memory, deploy as [A2A](https://a2a-protocol.org/) services, and interact through a Rich CLI client.
 
-## Features
+```
+     ___  _          _ _
+    / _ \| |__   ___| (_)_  __
+   | | | | '_ \ / _ \ | \ \/ /
+   | |_| | |_) |  __/ | |>  <
+    \___/|_.__/ \___|_|_/_/\_\
+    A2A Agent CLI
 
-- **Multi-Provider Support**: OpenAI, Anthropic, Oracle Cloud (OCI), IBM Watson, Ollama, vLLM, and **100+ providers via LiteLLM**
-- **Tool System**: Declarative tool creation with automatic validation using Pydantic
-- **Sub-Agent Orchestration**: Compose hierarchical agent workflows with the Agent Factory, shared memory graph, and automatic dependency-aware coordination
-- **Planning Mode**: Built-in planning protocol that instructs agents to analyze, decompose, and plan before acting
-- **A2A Protocol Support**: Expose agents as HTTP services using the [A2A (Agent-to-Agent)](https://a2a-protocol.org/) standard — streaming SSE, input-required flow, context isolation
-- **Parallel Tool Calls**: Execute multiple tools concurrently for improved performance
-- **Hooks System**: Intercept and modify agent behavior at runtime (validation, error recovery, context injection)
-- **Token Streaming**: Real-time token streaming across all providers via `execute_query_stream()`
-- **Async-First Architecture**: All providers use async `invoke()` - native async clients (Anthropic, OpenAI, Ollama, OCI) or `asyncio.to_thread()` for sync SDKs (IBM, vLLM)
-- **Thread-Safe Execution**: Parallel agent and tool calls don't share mutable state
-- **Loguru Logging**: Structured logging with rotation and color output
-- **Built on Pydantic**: Type safety, validation, and automatic schema generation throughout
+  OK bash_agent (http://localhost:8002)
+  OK coordinator (http://localhost:8001)
+
+                         Connected Agents
+  ┏━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┓
+  ┃   # ┃ Agent       ┃ Description     ┃ Skills        ┃ URL                     ┃
+  ┡━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━┩
+  │ 1 * │ bash_agent  │ Shell command   │ bash          │ http://localhost:8002   │
+  │     │             │ execution       │               │                         │
+  │   2 │ coordinator │ Math coordi-    │ math_agent,   │ http://localhost:8001   │
+  │     │             │ nator with      │ report_agent  │                         │
+  │     │             │ sub-agents      │               │                         │
+  └─────┴─────────────┴─────────────────┴───────────────┴─────────────────────────┘
+
+  ╭──────────────────────── Commands ─────────────────────────╮
+  │   /agents        List connected agents                    │
+  │   /switch <n>    Switch to agent n                        │
+  │   /clear         Clear conversation context               │
+  │   /quit          Exit                                     │
+  ╰───────────────────────────────────────────────────────────╯
+
+  [bash_agent] >
+```
 
 ---
 
-## Requirements
+## What Obelix Does
 
-- **Python 3.13+**
-- One or more LLM provider credentials
+- **Build agents** with tools, hooks, streaming, and planning mode
+- **Compose** multi-agent systems with the Agent Factory and shared memory graphs
+- **Deploy** agents as HTTP services via the [A2A protocol](https://a2a-protocol.org/)
+- **Interact** via the built-in Rich CLI client with permission-controlled tool execution
+- **Connect** to 100+ LLM providers: Anthropic, OpenAI, OCI, IBM, Ollama, vLLM, and LiteLLM
+
+---
 
 ## Installation
 
-### Using uv (Recommended)
+Requires **Python 3.13+** and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-# Clone the repository
 git clone https://github.com/GiulioSurya/Obelix.git
 cd Obelix
-
-# Sync dependencies (uses uv)
-uv sync
-
-# Or install in editable mode with all development tools
-uv sync --all-extras --group dev
+uv sync                            # core only
+uv sync --extra litellm            # + LiteLLM (100+ providers)
+uv sync --extra serve              # + A2A server (FastAPI, Uvicorn)
+uv sync --all-extras --group dev   # everything + dev tools
 ```
 
-### Using pip
+Available extras: `anthropic`, `openai`, `oci`, `ibm`, `ollama`, `vllm`, `litellm`, `mcp`, `serve`, `all-llm`, `all`.
 
-```bash
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install core dependencies only
-pip install .
-
-# Install with specific provider(s)
-pip install ".[openai]"             # OpenAI GPT models
-pip install ".[anthropic]"          # Anthropic Claude
-pip install ".[oci]"                # Oracle Cloud Infrastructure
-pip install ".[ibm]"                # IBM Watson X
-pip install ".[ollama]"             # Ollama (local models)
-pip install ".[vllm]"               # vLLM (self-hosted inference)
-pip install ".[litellm]"            # LiteLLM (100+ providers via unified API)
-
-# Install with MCP support
-pip install ".[mcp]"
-
-# Install multiple providers
-pip install ".[anthropic,oci]"
-
-# Install all LLM providers
-pip install ".[all-llm]"
-
-# Install everything (all providers + MCP)
-pip install ".[all]"
-
-# Install with development tools
-pip install ".[dev]"
-```
-
-### Available Extras
-
-| Extra | Description |
-|-------|-------------|
-| `anthropic` | Anthropic Claude provider (native SDK) |
-| `openai` | OpenAI GPT models |
-| `oci` | Oracle Cloud Infrastructure Generative AI |
-| `ibm` | IBM Watson X AI |
-| `ollama` | Ollama local models |
-| `vllm` | vLLM self-hosted inference |
-| `litellm` | LiteLLM universal adapter (100+ providers) |
-| `mcp` | Model Context Protocol support |
-| `serve` | A2A server support (FastAPI, Uvicorn) |
-| `all-llm` | All LLM providers |
-| `all` | All providers + MCP |
-| `dev` | Development tools (pytest, ruff, coverage) |
+pip is also supported: `pip install ".[litellm,serve]"`.
 
 ---
 
-## Quick Start
+## Quick Tour
 
-### Minimal Agent
-
-```python
-from obelix.core.agent import BaseAgent
-from obelix.infrastructure.logging import setup_logging
-
-setup_logging()
-
-agent = BaseAgent(system_message="You are a helpful assistant.")
-response = agent.execute_query("Hello, how can you help me?")
-print(response.content)
-```
-
-### Creating a Tool
-
-Tools are created using the `@tool` decorator with Pydantic fields for automatic validation:
-
-```python
-from obelix.core.tool.tool_decorator import tool
-from obelix.core.model.tool_message import ToolCall, ToolResult
-from pydantic import Field
-
-
-@tool(name="calculator", description="Performs basic arithmetic")
-class CalculatorTool:
-    operation: str = Field(..., description="add, subtract, multiply, divide")
-    a: float = Field(..., description="First operand")
-    b: float = Field(..., description="Second operand")
-
-    async def execute(self) -> dict:
-        operations = {
-            "add": lambda x, y: x + y,
-            "subtract": lambda x, y: x - y,
-            "multiply": lambda x, y: x * y,
-            "divide": lambda x, y: x / y if y != 0 else None,
-        }
-        if self.operation not in operations:
-            raise ValueError(f"Unknown operation: {self.operation}")
-        result = operations[self.operation](self.a, self.b)
-        return {"result": result, "operation": self.operation}
-
-
-# Register the tool with an agent
-agent = BaseAgent(
-    system_message="You are a helpful math assistant.",
-    tools=[CalculatorTool],
-)
-
-response = agent.execute_query("What is 15 * 7?")
-print(response.content)
-```
-
-### Creating an Agent
-
-```python
-from obelix.core.agent import BaseAgent
-
-
-class MyAgent(BaseAgent):
-    def __init__(self):
-        super().__init__(
-            system_message="You are a specialized assistant for data analysis."
-        )
-        self.register_tool(CalculatorTool())
-
-
-agent = MyAgent()
-response = agent.execute_query("Analyze this data")
-print(response.content)
-```
-
-### Sub-Agent Orchestration
-
-Agents can coordinate with other agents via the Agent Factory:
-
-```python
-from obelix.core.agent import BaseAgent
-from obelix.core.agent.agent_factory import AgentFactory
-
-
-class SQLAnalyzerAgent(BaseAgent):
-    def __init__(self):
-        super().__init__(system_message="You are a SQL expert.")
-
-
-class CoordinatorAgent(BaseAgent):
-    def __init__(self):
-        super().__init__(system_message="You coordinate database tasks.")
-
-
-factory = AgentFactory()
-factory.register(
-    "sql_analyzer",
-    SQLAnalyzerAgent,
-    subagent_description="Analyzes SQL errors and suggests fixes",
-)
-factory.register("coordinator", CoordinatorAgent)
-
-coordinator = factory.create("coordinator", subagents=["sql_analyzer"])
-response = coordinator.execute_query("Why is this query failing?")
-print(response.content)
-```
-
-### Planning Mode
-
-Enable the planning protocol to instruct agents to analyze and decompose requests before acting:
-
-```python
-agent = BaseAgent(
-    system_message="You are a data analyst.",
-    provider=provider,
-    planning=True,  # Agent will plan before using tools
-)
-```
-
-When `planning=True`, the agent's system prompt is augmented with a structured protocol: ANALYZE → DECOMPOSE → EXECUTE → REVISE → RESPOND. For best results, set `reasoning_effort='high'` (or `thinking_mode=True` for Anthropic) on the provider.
-
-### Exposing Agents via A2A
-
-Agents can be exposed as HTTP services using the [A2A (Agent-to-Agent)](https://a2a-protocol.org/) protocol. This enables discovery and orchestration by other systems.
-
-```bash
-# Install A2A dependencies
-uv sync --extra serve
-```
-
-```python
-from obelix.core.agent.agent_factory import AgentFactory
-
-factory = AgentFactory()
-factory.register("my_agent", MyAgent, subagent_description="Does work")
-
-# Start A2A server on port 8000
-factory.a2a_serve(
-    "my_agent",
-    host="0.0.0.0",
-    port=8000,
-    description="My awesome agent",
-)
-```
-
-The server exposes:
-- `GET /.well-known/agent.json` — Agent Card (capabilities, skills)
-- `POST /` — JSON-RPC 2.0 (`message/send`, `message/stream`)
-
-Features: streaming SSE, input-required flow (via `RequestUserInputTool`), per-context isolation, multi-turn conversations.
-
-A working example is available in `demo_factory.py` (server) and `test_a2a_client.py` (client).
-
----
-
-## Supported LLM Providers
-
-| Provider | Status | Import |
-|----------|--------|--------|
-| OpenAI | Supported | `from obelix.adapters.outbound.openai.provider import OpenAIProvider` |
-| Anthropic | Supported | `from obelix.adapters.outbound.anthropic.provider import AnthropicProvider` |
-| Oracle Cloud (OCI) | Supported | `from obelix.adapters.outbound.oci.provider import OCILLm` |
-| IBM Watson | Supported | `from obelix.adapters.outbound.ibm.provider import IBMProvider` |
-| Ollama | Supported | `from obelix.adapters.outbound.ollama.provider import OllamaProvider` |
-| vLLM | Supported | `from obelix.adapters.outbound.vllm.provider import VLLMProvider` |
-| **LiteLLM** | Supported | `from obelix.adapters.outbound.litellm import LiteLLMProvider` |
-
-> **LiteLLM** is a universal adapter that routes to 100+ providers (Azure, Bedrock, Vertex AI, Groq, Mistral, Together AI, DeepSeek, and many more) through a single interface. Use it when you need a provider not listed above, or when you want to switch providers without changing code.
-
----
-
-## Using Providers
-
-### Basic Provider Usage
-
-```python
-from obelix.adapters.outbound.anthropic.connection import AnthropicConnection
-from obelix.adapters.outbound.anthropic.provider import AnthropicProvider
-from obelix.core.agent import BaseAgent
-
-# 1. Create connection (reads ANTHROPIC_API_KEY from env)
-connection = AnthropicConnection()
-
-# 2. Create provider
-provider = AnthropicProvider(
-    connection=connection,
-    model_id="claude-sonnet-4-20250514",
-    max_tokens=4000,
-    temperature=0.2,
-)
-
-# 3. Pass to agent
-agent = BaseAgent(
-    system_message="You are a helpful assistant.",
-    provider=provider,
-)
-
-response = agent.execute_query("Hello!")
-print(response.content)
-```
-
-### LiteLLM Provider (Universal Adapter)
-
-Use LiteLLM when you want to access any provider through a single interface.
-The model string controls routing — no connection object needed.
+### 1. Create an Agent
 
 ```python
 from obelix.adapters.outbound.litellm import LiteLLMProvider
 from obelix.core.agent import BaseAgent
 
-# Anthropic via LiteLLM
-provider = LiteLLMProvider(
-    model_id="anthropic/claude-haiku-4-5-20251001",
-    api_key="sk-ant-...",
+provider = LiteLLMProvider(model_id="anthropic/claude-haiku-4-5-20251001")
+
+agent = BaseAgent(
+    system_message="You are a helpful assistant.",
+    provider=provider,
 )
-
-# OpenAI via LiteLLM
-provider = LiteLLMProvider(model_id="openai/gpt-4o")  # reads OPENAI_API_KEY from env
-
-# Ollama via LiteLLM
-provider = LiteLLMProvider(
-    model_id="ollama/llama3",
-    base_url="http://localhost:11434",
-)
-
-# Azure via LiteLLM
-provider = LiteLLMProvider(
-    model_id="azure/my-deployment",
-    base_url="https://my-resource.openai.azure.com",
-    api_key="...",
-    api_version="2024-02-01",
-)
-
-agent = BaseAgent(system_message="You are a helpful assistant.", provider=provider)
 response = agent.execute_query("Hello!")
+print(response.content)
 ```
 
+> Full constructor reference: [BaseAgent Guide](docs/base_agent.md)
 
-## Tooling
+### 2. Add a Tool
 
-### uv (Package Manager)
+```python
+from obelix.core.tool.tool_decorator import tool
+from pydantic import Field
 
-The project uses **uv** for dependency management. Common commands:
+@tool(name="calculator", description="Performs arithmetic")
+class CalculatorTool:
+    a: float = Field(..., description="First number")
+    b: float = Field(..., description="Second number")
+
+    async def execute(self) -> dict:
+        return {"result": self.a + self.b}
+
+agent = BaseAgent(
+    system_message="You are a math assistant.",
+    provider=provider,
+    tools=[CalculatorTool],
+)
+```
+
+> Tools, OutputSchema, deferred tools, system_prompt_fragment: [Tools Guide](docs/tools.md)
+
+### 3. Compose with Sub-Agents
+
+```python
+from obelix.core.agent.agent_factory import AgentFactory
+
+factory = AgentFactory()
+factory.register("math", MathAgent, subagent_description="Does calculations")
+factory.register("report", ReportAgent, subagent_description="Writes reports")
+factory.register("coordinator", CoordinatorAgent)
+
+coordinator = factory.create("coordinator", subagents=["math", "report"])
+response = coordinator.execute_query("Calculate 123 * 456 and summarize")
+```
+
+> Shared memory, PropagationPolicy, tracer: [Agent Factory Guide](docs/agent_factory.md)
+
+### 4. Deploy as A2A Server
+
+```python
+factory.a2a_serve("coordinator", port=8000, description="My agent")
+```
+
+The server exposes `GET /.well-known/agent.json` (Agent Card) and `POST /` (JSON-RPC 2.0).
+
+> Streaming, input-required, deferred tools over A2A: [A2A Server Guide](docs/a2a_server.md)
+
+### 5. Connect with the CLI Client
 
 ```bash
-# Sync dependencies
-uv sync
-
-# Install with specific extras
-uv sync --extra oci
-uv sync --all-extras
-
-# Install development tools
-uv sync --group dev
-
-# Run commands in virtual environment
-uv run pytest
-uv run ruff check .
-uv run ruff format .
+uv run python examples/cli_client.py http://localhost:8000
 ```
 
-### ruff (Linter & Formatter)
+The CLI auto-discovers agents via their Agent Card, handles deferred tool execution (bash commands with `[Y/n]` confirmation, user input) and supports multi-agent switching.
 
-All code must pass ruff checks:
+> Permission policies, custom handlers: [BashTool Guide](docs/bash_tool.md)
+
+---
+
+## Running the Examples
+
+The `examples/` folder contains ready-to-run demos. All require an LLM API key:
 
 ```bash
-# Check for issues
-uv run ruff check .
-
-# Auto-fix issues
-uv run ruff check . --fix
-
-# Format code
-uv run ruff format .
-
-# Check formatting without modifying
-uv run ruff format --check .
+uv sync --extra litellm --extra serve
 ```
 
-### pytest (Testing)
-
-Run tests with pytest:
+### Start two A2A servers (in separate terminals)
 
 ```bash
-# Run all tests
-uv run pytest
+# Terminal 1 — bash agent (shell command execution)
+API_KEY=sk-... uv run python examples/bash_server.py
+# Listening on http://localhost:8002
 
-# Verbose output
-uv run pytest -v
-
-# With coverage
-uv run pytest --cov=obelix
+# Terminal 2 — coordinator with math + report sub-agents
+API_KEY=sk-... uv run python examples/factory_server.py
+# Listening on http://localhost:8001
 ```
+
+### Connect with the CLI client
+
+```bash
+# Terminal 3
+uv run python examples/cli_client.py http://localhost:8002 http://localhost:8001
+```
+
+The client resolves both Agent Cards, shows the table above, and you can chat with either agent. Use `/switch 2` to talk to the coordinator, `/switch 1` to go back to bash_agent.
+
+| Example | What it does | Port |
+|---------|-------------|------|
+| `examples/bash_server.py` | Single agent with BashTool (deferred or local mode) | 8002 |
+| `examples/factory_server.py` | Coordinator + math_agent + report_agent with shared memory | 8001 |
+| `examples/cli_client.py` | Rich CLI client — connects to one or more A2A servers | — |
+
+---
+
+## Supported Providers
+
+| Provider | Extra | Import |
+|----------|-------|--------|
+| **LiteLLM** (100+) | `litellm` | `from obelix.adapters.outbound.litellm import LiteLLMProvider` |
+| Anthropic | `anthropic` | `from obelix.adapters.outbound.anthropic.provider import AnthropicProvider` |
+| OpenAI | `openai` | `from obelix.adapters.outbound.openai.provider import OpenAIProvider` |
+| Oracle Cloud (OCI) | `oci` | `from obelix.adapters.outbound.oci.provider import OCILLm` |
+| IBM Watson | `ibm` | `from obelix.adapters.outbound.ibm.provider import IBMProvider` |
+| Ollama | `ollama` | `from obelix.adapters.outbound.ollama.provider import OllamaProvider` |
+| vLLM | `vllm` | `from obelix.adapters.outbound.vllm.provider import VLLMProvider` |
+
+LiteLLM routes to Azure, Bedrock, Vertex AI, Groq, Mistral, Together AI, DeepSeek, and many more through a single interface.
 
 ---
 
 ## Documentation
 
-Full documentation is available in the `docs/` directory:
-
-- **[User Guides](docs/)** - How to use Obelix
-  - [Creating and Using Agents](docs/base_agent.md)
-  - [Agent Factory & Orchestration](docs/agent_factory.md)
-  - [A2A Server & HTTP Deployment](docs/a2a_server.md)
-  - [Hooks System](docs/hooks.md)
-
-For detailed API reference and examples, see [docs/index.md](docs/index.md).
+| Guide | Description |
+|-------|-------------|
+| [BaseAgent](docs/base_agent.md) | Agent creation, execution, streaming, hooks, planning, deferred tools |
+| [Tools](docs/tools.md) | `@tool` decorator, OutputSchema, system_prompt_fragment, built-in tools |
+| [Agent Factory](docs/agent_factory.md) | Registration, composition, shared memory, tracer, A2A serve |
+| [BashTool](docs/bash_tool.md) | Shell execution modes, security, permission policies, LocalShellExecutor |
+| [A2A Server](docs/a2a_server.md) | HTTP deployment, JSON-RPC, streaming SSE, input-required flow |
+| [Hooks](docs/hooks.md) | Lifecycle events, conditions, decisions, effects |
+| [A2A Compliance](docs/a2a_compliance.md) | Gap analysis vs A2A spec v1.0 |
 
 ---
 
-## How to Contribute
+## Contributing
 
-1. **Clone the repository**:
-   ```bash
-   git clone https://github.com/GiulioSurya/Obelix.git
-   cd Obelix
-   ```
+```bash
+git clone https://github.com/GiulioSurya/Obelix.git && cd Obelix
+make setup  # or: uv sync --all-extras --group dev && uv run pre-commit install
+```
 
-2. **Set up the development environment**:
+Pre-commit hooks run `ruff check` + `ruff format`. Pre-push runs `pytest`.
 
-   With `make` (recommended):
-   ```bash
-   make setup
-   ```
-
-   Without `make`:
-   ```bash
-   uv sync --all-extras --group dev
-   uv run pre-commit install --hook-type pre-commit --hook-type pre-push
-   ```
-
-   This installs all dependencies and configures the Git hooks:
-   - **pre-commit**: runs `ruff check` and `ruff format` on staged files
-   - **pre-push**: runs `pytest` before pushing
-
-3. **Make your changes**:
-   - Follow the hexagonal architecture patterns in `src/obelix/`
-   - Use Pydantic for all data models
-   - Write type hints using Python 3.13+ builtins (`dict`, `list`, `X | None`)
-   - Add/update tests in `tests/`
-
-4. **Commit and push**:
-   - The pre-commit hooks will automatically lint and format your code
-   - Tests run automatically before each push
-   - You can also run them manually: `make lint`, `make format`, `make test`
-
-### Architecture Principles
-
-- **Hexagonal Architecture**: Core logic in `core/`, abstract interfaces in `ports/`, implementations in `adapters/`
-- **No Backward Compatibility Re-exports**: All imports point to final locations
-- **Self-Contained Providers**: Each provider converts messages and tools inline, no shared registry
-- **Structural Typing for Tools**: Tools are Protocols, not base classes (flexibility without inheritance)
-- **Type Safety**: All code must pass type checking with Python 3.13+ syntax
+Architecture: hexagonal (`core/` | `ports/` | `adapters/`), Pydantic models, structural typing for tools, Python 3.13+ type hints.
 
 ---
 
 ## License
 
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
-
-```
-Copyright 2024 Obelix Contributors
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-```
+Apache License 2.0 — see [LICENSE](LICENSE).

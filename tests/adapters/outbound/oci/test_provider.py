@@ -67,7 +67,11 @@ class TestOCILLmConstructor:
     def test_default_parameters(self, mock_connection):
         from obelix.adapters.outbound.oci.provider import OCILLm
 
-        provider = OCILLm(connection=mock_connection, model_id="meta.llama-3.3-70b")
+        provider = OCILLm(
+            connection=mock_connection,
+            compartment_id="ocid1.test",
+            model_id="meta.llama-3.3-70b",
+        )
         assert provider.model_id == "meta.llama-3.3-70b"
         assert provider.max_tokens == 3500
         assert provider.temperature == 0.1
@@ -83,6 +87,7 @@ class TestOCILLmConstructor:
 
         provider = OCILLm(
             connection=mock_connection,
+            compartment_id="ocid1.test",
             model_id="meta.llama-3.3-70b",
             max_tokens=2000,
             temperature=0.7,
@@ -107,6 +112,7 @@ class TestOCILLmConstructor:
 
         provider = OCILLm(
             connection=mock_connection,
+            compartment_id="ocid1.test",
             model_id="meta.llama-3.3-70b",
             reasoning_effort="HIGH",
         )
@@ -118,6 +124,7 @@ class TestOCILLmConstructor:
         strategy = CohereRequestStrategy()
         provider = OCILLm(
             connection=mock_connection,
+            compartment_id="ocid1.test",
             model_id="custom.model",
             strategy=strategy,
         )
@@ -126,7 +133,11 @@ class TestOCILLmConstructor:
     def test_connection_stored(self, mock_connection):
         from obelix.adapters.outbound.oci.provider import OCILLm
 
-        provider = OCILLm(connection=mock_connection, model_id="meta.llama-3.3-70b")
+        provider = OCILLm(
+            connection=mock_connection,
+            compartment_id="ocid1.test",
+            model_id="meta.llama-3.3-70b",
+        )
         assert provider.connection is mock_connection
 
 
@@ -192,7 +203,11 @@ class TestProviderType:
     def test_returns_oci_generative_ai(self, mock_connection):
         from obelix.adapters.outbound.oci.provider import OCILLm
 
-        provider = OCILLm(connection=mock_connection, model_id="meta.llama-3.3-70b")
+        provider = OCILLm(
+            connection=mock_connection,
+            compartment_id="ocid1.test",
+            model_id="meta.llama-3.3-70b",
+        )
         assert provider.provider_type == Providers.OCI_GENERATIVE_AI
 
 
@@ -208,7 +223,11 @@ class TestConvertResponseToAssistantMessage:
     def provider(self, mock_connection):
         from obelix.adapters.outbound.oci.provider import OCILLm
 
-        return OCILLm(connection=mock_connection, model_id="meta.llama-3.3-70b")
+        return OCILLm(
+            connection=mock_connection,
+            compartment_id="ocid1.test",
+            model_id="meta.llama-3.3-70b",
+        )
 
     def test_text_response(self, provider):
         response = OCIResponse(
@@ -311,7 +330,11 @@ class TestExtractContent:
     def provider(self, mock_connection):
         from obelix.adapters.outbound.oci.provider import OCILLm
 
-        return OCILLm(connection=mock_connection, model_id="meta.llama-3.3-70b")
+        return OCILLm(
+            connection=mock_connection,
+            compartment_id="ocid1.test",
+            model_id="meta.llama-3.3-70b",
+        )
 
     def test_generic_format_text(self, provider):
         response = OCIResponse(
@@ -387,7 +410,11 @@ class TestExtractUsage:
     def provider(self, mock_connection):
         from obelix.adapters.outbound.oci.provider import OCILLm
 
-        return OCILLm(connection=mock_connection, model_id="meta.llama-3.3-70b")
+        return OCILLm(
+            connection=mock_connection,
+            compartment_id="ocid1.test",
+            model_id="meta.llama-3.3-70b",
+        )
 
     def test_usage_present(self, provider):
         response = OCIResponse(
@@ -432,6 +459,7 @@ class TestOCILLmInvoke:
 
         provider = OCILLm(
             connection=mock_connection,
+            compartment_id="ocid1.test",
             model_id="meta.llama-3.3-70b",
         )
 
