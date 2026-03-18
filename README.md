@@ -115,7 +115,25 @@ agent = BaseAgent(
 
 > Tools, OutputSchema, deferred tools, system_prompt_fragment: [Tools Guide](docs/tools.md)
 
-### 3. Compose with Sub-Agents
+### 3. Give it a Shell (BashTool)
+
+The built-in `BashTool` gives an agent the ability to run **any shell command** — install packages, manage files, query databases, call APIs, parse logs, deploy code. The agent reasons about what to do, then proposes commands that the human approves before execution:
+
+```python
+from obelix.plugins.builtin.bash_tool import BashTool
+
+agent = BaseAgent(
+    system_message="You are a DevOps assistant.",
+    provider=provider,
+    tools=[BashTool],  # deferred: client executes with [Y/n] approval
+)
+```
+
+When deployed as an A2A server, the agent proposes commands and the CLI client handles execution locally with permission control. The agent sees the full output (stdout, stderr, exit code) and can chain multiple commands to complete complex tasks — debug a failing service, set up a dev environment, analyze data with CLI tools, or automate any workflow.
+
+> Execution modes, permission policies, LocalShellExecutor: [BashTool Guide](docs/bash_tool.md)
+
+### 4. Compose with Sub-Agents
 
 ```python
 from obelix.core.agent.agent_factory import AgentFactory
@@ -158,17 +176,18 @@ The CLI auto-discovers agents via their Agent Card, handles deferred tool execut
 Obelix implements the [A2A protocol](https://a2a-protocol.org/) (Agent-to-Agent, Linux Foundation) for inter-agent communication over HTTP. Any Obelix agent can be deployed as a standalone A2A service and consumed by any A2A-compatible client.
 
 ```
-                         A2A (JSON-RPC 2.0 over HTTP)
- ┌──────────────┐            ┌─────────────────────────────────────────┐
- │  CLI Client   │───────────│  A2A Server                             │
- │  (or any A2A  │  TextPart │  ┌─────────────────┐   ┌────────────┐  │
- │   client)     │  FilePart │  │ ObelixAgent      │──▶│  Provider  │  │
- │               │  DataPart │  │ Executor         │   │  (LiteLLM, │  │
- │  @image.png ──│──────────▶│  │                  │   │   OCI ...) │  │
- │               │           │  │  tools + hooks   │   └────────────┘  │
- │  bash [Y/n] ◀─│◀──────────│  │  deferred tools  │                   │
- │               │           │  └─────────────────┘                    │
- └──────────────┘            └─────────────────────────────────────────┘
+                    A2A (JSON-RPC 2.0 over HTTP)
+
+┌─────────────────┐               ┌──────────────────────────────────────┐
+│  CLI Client     │               │  A2A Server                          │
+│  (or any A2A    │               │                                       │
+│   client)       │    Text       │  ┌──────────────┐   ┌────────────┐   │
+│                 │    File       │  │ ObelixAgent  │──▶│  Provider  │   │
+│  @image.png ────│   ────────▶   │  │ Executor     │   │ (LiteLLM,  │   │
+│                 │    Data       │  │              │   │  OCI ...)  │   │
+│  bash [Y/n]  ◀──│   ◀────────   │  │ tools, hooks │   └────────────┘   │
+│                 │               │  └──────────────┘                    │
+└─────────────────┘               └──────────────────────────────────────┘
 ```
 
 ### Key Features
