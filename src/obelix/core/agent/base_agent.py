@@ -224,7 +224,7 @@ class BaseAgent:
     # ─── Public API ───────────────────────────────────────────────────────────
 
     async def execute_query_async(
-        self, query: str | list[StandardMessage]
+        self, query: str | HumanMessage | list[StandardMessage]
     ) -> AssistantResponse:
         """
         Execute query asynchronously (for FastAPI).
@@ -236,14 +236,16 @@ class BaseAgent:
                     return event.assistant_response
         raise RuntimeError("Execution loop ended without a final event")
 
-    def execute_query(self, query: str | list[StandardMessage]) -> AssistantResponse:
+    def execute_query(
+        self, query: str | HumanMessage | list[StandardMessage]
+    ) -> AssistantResponse:
         """
         Execute query synchronously (for CLI).
         """
         return asyncio.run(self.execute_query_async(query))
 
     async def execute_query_stream(
-        self, query: str | list[StandardMessage]
+        self, query: str | HumanMessage | list[StandardMessage]
     ) -> AsyncIterator[StreamEvent]:
         """
         Execute query with streaming. Yields StreamEvent chunks.
@@ -284,7 +286,7 @@ class BaseAgent:
 
     async def _execute_loop(
         self,
-        query: str | list[StandardMessage] | None,
+        query: str | HumanMessage | list[StandardMessage] | None,
         *,
         stream: bool = False,
         resume: bool = False,
@@ -318,9 +320,10 @@ class BaseAgent:
         if resume:
             # Resume after deferred: history already has everything
             pass
+        elif isinstance(query, HumanMessage):
+            self.conversation_history.append(query)
         elif isinstance(query, str):
-            user_message = HumanMessage(content=query)
-            self.conversation_history.append(user_message)
+            self.conversation_history.append(HumanMessage(content=query))
         elif isinstance(query, list):
             human_messages = [msg for msg in query if isinstance(msg, HumanMessage)]
             if len(human_messages) != 1:
@@ -331,7 +334,7 @@ class BaseAgent:
             self.conversation_history.extend(query)
         else:
             raise TypeError(
-                f"query must be str or List[StandardMessage], "
+                f"query must be str, HumanMessage, or List[StandardMessage], "
                 f"received {type(query).__name__}"
             )
 
@@ -616,10 +619,14 @@ class BaseAgent:
 
     # ─── Input Validation ─────────────────────────────────────────────────────
 
-    def _validate_query_input(self, query: str | list[StandardMessage]) -> None:
+    def _validate_query_input(
+        self, query: str | HumanMessage | list[StandardMessage]
+    ) -> None:
         """
         Validates the query input.
         """
+        if isinstance(query, (str, HumanMessage)):
+            return
         if isinstance(query, list):
             human_messages = [msg for msg in query if isinstance(msg, HumanMessage)]
             if len(human_messages) != 1:
@@ -627,11 +634,11 @@ class BaseAgent:
                     f"Message list must contain exactly 1 HumanMessage, "
                     f"found {len(human_messages)}"
                 )
-        elif not isinstance(query, str):
-            raise TypeError(
-                f"query must be str or List[StandardMessage], "
-                f"received {type(query).__name__}"
-            )
+            return
+        raise TypeError(
+            f"query must be str, HumanMessage, or List[StandardMessage], "
+            f"received {type(query).__name__}"
+        )
 
     # ─── Tool Dispatch ────────────────────────────────────────────────────────
 

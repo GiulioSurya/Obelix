@@ -7,14 +7,20 @@ terminal UI with intelligent handling of deferred tool calls
 
 from __future__ import annotations
 
+import base64
+import mimetypes
+import re
 import sys
 import uuid
+from pathlib import Path
 from typing import Any
 
 import httpx
 from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
 from a2a.types import (
     DataPart,
+    FilePart,
+    FileWithBytes,
     Message,
     Part,
     Role,
@@ -102,6 +108,53 @@ def _make_data_message(data: dict[str, Any], context_id: str | None = None) -> M
         parts=[Part(root=DataPart(data=data))],
         context_id=context_id,
     )
+
+
+# Regex: @<path> where path can be quoted ("@/path with spaces/f.pdf")
+# or unquoted (@/simple/path.png).  Supports forward and back slashes.
+_ATTACH_RE = re.compile(r'@"([^"]+)"|@(\S+)')
+
+
+def _parse_attachments(text: str) -> tuple[str, list[Part]]:
+    """Extract @path references from user input.
+
+    Returns:
+        (clean_text, file_parts) — text with @refs removed,
+        and a list of FilePart wrapped in Part for each valid file.
+    """
+    file_parts: list[Part] = []
+    matches = list(_ATTACH_RE.finditer(text))
+    if not matches:
+        return text, []
+
+    for m in matches:
+        raw_path = m.group(1) or m.group(2)
+        path = Path(raw_path).expanduser()
+        if not path.is_file():
+            continue
+
+        mime, _ = mimetypes.guess_type(str(path))
+        if not mime:
+            mime = "application/octet-stream"
+
+        data = base64.b64encode(path.read_bytes()).decode("ascii")
+        file_parts.append(
+            Part(
+                root=FilePart(
+                    file=FileWithBytes(
+                        bytes=data,
+                        mime_type=mime,
+                        name=path.name,
+                    )
+                )
+            )
+        )
+
+    # Remove @refs from the text
+    clean = _ATTACH_RE.sub("", text).strip()
+    # Collapse multiple spaces
+    clean = re.sub(r"  +", " ", clean)
+    return clean, file_parts
 
 
 def _extract_text(task) -> str:
@@ -206,6 +259,9 @@ class CLIClient:
         help_table.add_row("/clear", "Clear conversation context")
         help_table.add_row("/help", "Show this help")
         help_table.add_row("/quit", "Exit")
+        help_table.add_row("", "")
+        help_table.add_row("@<path>", "Attach a file (image, PDF, ...)")
+        help_table.add_row('@"path with spaces"', "Attach a file with spaces in path")
         self.console.print(Panel(help_table, title="Commands", border_style="dim"))
 
     def show_agent_response(self, agent_name: str, text: str) -> None:
@@ -267,7 +323,22 @@ class CLIClient:
         session: PromptSession,
     ) -> None:
         """Send a message and handle the response, including input-required."""
-        msg = _make_message(text, context_id=agent.context_id)
+        # Parse @path attachments from the input
+        clean_text, file_parts = _parse_attachments(text)
+        if file_parts:
+            self.show_info(f"Attached {len(file_parts)} file(s)")
+            parts = []
+            if clean_text:
+                parts.append(Part(root=TextPart(text=clean_text)))
+            parts.extend(file_parts)
+            msg = Message(
+                message_id=str(uuid.uuid4()),
+                role=Role.user,
+                parts=parts,
+                context_id=agent.context_id,
+            )
+        else:
+            msg = _make_message(clean_text or text, context_id=agent.context_id)
 
         with self.console.status("[info]Thinking...[/info]"):
             task = await _collect_task(agent.client.send_message(msg))

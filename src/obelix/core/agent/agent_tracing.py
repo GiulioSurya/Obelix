@@ -42,7 +42,9 @@ async def start_agent_trace(
     await tracer.start_span(
         SpanType.agent,
         agent_class_name,
-        input=query if isinstance(query, str) else f"{len(query)} messages",
+        input=query
+        if isinstance(query, str)
+        else (query.content if hasattr(query, "content") else f"{len(query)} messages"),
         metadata={},
     )
     return is_root

@@ -29,10 +29,13 @@ Create agents with tools and hooks, orchestrate them with shared memory, deploy 
   └─────┴─────────────┴─────────────────┴───────────────┴─────────────────────────┘
 
   ╭──────────────────────── Commands ─────────────────────────╮
-  │   /agents        List connected agents                    │
-  │   /switch <n>    Switch to agent n                        │
-  │   /clear         Clear conversation context               │
-  │   /quit          Exit                                     │
+  │   /agents              List connected agents              │
+  │   /switch <n>          Switch to agent n                  │
+  │   /clear               Clear conversation context         │
+  │   /quit                Exit                               │
+  │                                                           │
+  │   @<path>              Attach a file (image, PDF, ...)    │
+  │   @"path with spaces"  Attach a file with spaces in path  │
   ╰───────────────────────────────────────────────────────────╯
 
   [bash_agent] >
@@ -45,7 +48,7 @@ Create agents with tools and hooks, orchestrate them with shared memory, deploy 
 - **Build agents** with tools, hooks, streaming, and planning mode
 - **Compose** multi-agent systems with the Agent Factory and shared memory graphs
 - **Deploy** agents as HTTP services via the [A2A protocol](https://a2a-protocol.org/)
-- **Interact** via the built-in Rich CLI client with permission-controlled tool execution
+- **Interact** via the built-in Rich CLI client with multimodal attachments and permission-controlled tool execution
 - **Connect** to 100+ LLM providers: Anthropic, OpenAI, OCI, IBM, Ollama, vLLM, and LiteLLM
 
 ---
@@ -150,6 +153,61 @@ The CLI auto-discovers agents via their Agent Card, handles deferred tool execut
 
 ---
 
+## A2A Protocol
+
+Obelix implements the [A2A protocol](https://a2a-protocol.org/) (Agent-to-Agent, Linux Foundation) for inter-agent communication over HTTP. Any Obelix agent can be deployed as a standalone A2A service and consumed by any A2A-compatible client.
+
+```
+                         A2A (JSON-RPC 2.0 over HTTP)
+ ┌──────────────┐            ┌─────────────────────────────────────────┐
+ │  CLI Client   │───────────│  A2A Server                             │
+ │  (or any A2A  │  TextPart │  ┌─────────────────┐   ┌────────────┐  │
+ │   client)     │  FilePart │  │ ObelixAgent      │──▶│  Provider  │  │
+ │               │  DataPart │  │ Executor         │   │  (LiteLLM, │  │
+ │  @image.png ──│──────────▶│  │                  │   │   OCI ...) │  │
+ │               │           │  │  tools + hooks   │   └────────────┘  │
+ │  bash [Y/n] ◀─│◀──────────│  │  deferred tools  │                   │
+ │               │           │  └─────────────────┘                    │
+ └──────────────┘            └─────────────────────────────────────────┘
+```
+
+### Key Features
+
+**Multimodal messages** — Attach images, PDFs, and files from the CLI with `@path`. The A2A protocol carries them as `FilePart` (base64), and the provider converts to native format (Anthropic vision blocks, OCI `ImageContent`/`DocumentContent`, OpenAI `image_url`, etc.):
+
+```
+[bash_agent] > describe this screenshot @screenshot.png
+[bash_agent] > analyze @report.pdf and @data.csv
+[bash_agent] > compare @"C:\Users\me\photo 1.jpg" and @photo2.jpg
+```
+
+**Deferred tool execution** — Tools marked `is_deferred=True` pause the agent loop and delegate execution to the client. The CLI handles them with interactive prompts:
+
+```
+[bash_agent] > list files in the current directory
+
+  ╭──────────── bash ────────────╮
+  │  List directory contents     │
+  │                              │
+  │    $ ls -la                  │
+  │                              │
+  │    timeout: 120s             │
+  ╰──────────────────────────────╯
+  Execute? [Y/n]
+```
+
+The full cycle: Agent emits `input_required` with `DataPart` → client executes locally → sends result back as `DataPart` → agent resumes with the tool output.
+
+**Streaming SSE** — Token-by-token streaming over Server-Sent Events. Intermediate tokens arrive as `TaskArtifactUpdateEvent`, the final response includes structured `DataPart` for tool results.
+
+**Multi-agent switching** — Connect to multiple A2A servers simultaneously and switch between them with `/switch <n>`.
+
+**Structured data transport** — Tool results, deferred tool calls, and client responses use `DataPart` (structured JSON) instead of plain text. This preserves types end-to-end: the LLM receives the actual dict, not a serialized string.
+
+> Full compliance analysis: [A2A Compliance](docs/a2a_compliance.md)
+
+---
+
 ## Running the Examples
 
 The `examples/` folder contains ready-to-run demos. All require an LLM API key:
@@ -183,7 +241,7 @@ The client resolves both Agent Cards, shows the table above, and you can chat wi
 |---------|-------------|------|
 | `examples/bash_server.py` | Single agent with BashTool (deferred or local mode) | 8002 |
 | `examples/factory_server.py` | Coordinator + math_agent + report_agent with shared memory | 8001 |
-| `examples/cli_client.py` | Rich CLI client — connects to one or more A2A servers | — |
+| `examples/cli_client.py` | Rich CLI client — multimodal, deferred tools, multi-agent | — |
 
 ---
 

@@ -39,6 +39,7 @@ from obelix.core.model import (
     SystemMessage,
     ToolMessage,
 )
+from obelix.core.model.content import DataContent, FileContent
 from obelix.core.model.tool_message import ToolCall
 from obelix.core.model.usage import Usage
 from obelix.core.tool.tool_base import Tool
@@ -551,7 +552,22 @@ class LiteLLMProvider(AbstractLLMProvider):
                 converted.append({"role": "system", "content": msg.content})
 
             elif isinstance(msg, HumanMessage):
-                converted.append({"role": "user", "content": msg.content})
+                if not msg.attachments:
+                    converted.append({"role": "user", "content": msg.content})
+                else:
+                    content_blocks: list[dict[str, Any]] = []
+                    if msg.content:
+                        content_blocks.append({"type": "text", "text": msg.content})
+                    for att in msg.attachments:
+                        if isinstance(att, FileContent):
+                            content_blocks.extend(self._convert_file_attachment(att))
+                        elif isinstance(att, DataContent):
+                            content_blocks.append(
+                                {"type": "text", "text": json.dumps(att.data)}
+                            )
+                    if not content_blocks:
+                        content_blocks.append({"type": "text", "text": ""})
+                    converted.append({"role": "user", "content": content_blocks})
 
             elif isinstance(msg, AssistantMessage):
                 assistant_msg: dict[str, Any] = {"role": "assistant"}
@@ -594,6 +610,32 @@ class LiteLLMProvider(AbstractLLMProvider):
             f"input={len(messages)} output={len(converted)}"
         )
         return converted
+
+    # ========== FILE ATTACHMENT CONVERSION ==========
+
+    def _convert_file_attachment(self, att: FileContent) -> list[dict[str, Any]]:
+        """Convert a FileContent attachment to OpenAI-compatible content blocks.
+
+        LiteLLM translates OpenAI format to provider-specific formats
+        (Anthropic, Gemini, etc.) internally.
+
+        - image/* -> image_url block
+        - other -> text description fallback
+        """
+        mime = att.mime_type
+        data_url = att.data if att.is_url else f"data:{mime};base64,{att.data}"
+
+        if mime.startswith("image/"):
+            return [{"type": "image_url", "image_url": {"url": data_url}}]
+
+        # For non-image files, fallback to text description
+        # (LiteLLM doesn't have a universal document block across all providers)
+        logger.warning(
+            f"[LiteLLMProvider] Non-image attachment ({mime}) — "
+            f"injecting as text description"
+        )
+        desc = f"[File: {att.filename or 'unnamed'}, type: {mime}]"
+        return [{"type": "text", "text": desc}]
 
     # ========== TOOL CONVERSION ==========
 
