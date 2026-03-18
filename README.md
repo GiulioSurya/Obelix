@@ -3,40 +3,45 @@
 ![Python](https://img.shields.io/badge/python-3.13+-blue.svg)
 ![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)
 
-**Agent Development Kit** for building, composing, and deploying LLM agents.
-Create agents with tools and hooks, orchestrate them with shared memory, deploy as [A2A](https://a2a-protocol.org/) services, and interact through a Rich CLI client.
+**Multi-Agent LLM Framework** for building, composing, and deploying AI agents.
+Create agents with tools and hooks, orchestrate them with shared memory, deploy as [A2A](https://a2a-protocol.org/) services. Includes a Rich CLI harness compatible with any A2A-compliant agent.
 
 ```
-     ___  _          _ _
-    / _ \| |__   ___| (_)_  __
-   | | | | '_ \ / _ \ | \ \/ /
-   | |_| | |_) |  __/ | |>  <
-    \___/|_.__/ \___|_|_/_/\_\
-    A2A Agent CLI
+        ██████╗ ██████╗ ███████╗██╗     ██╗██╗  ██╗
+       ██╔═══██╗██╔══██╗██╔════╝██║     ██║╚██╗██╔╝
+       ██║   ██║██████╔╝█████╗  ██║     ██║ ╚███╔╝
+       ██║   ██║██╔══██╗██╔══╝  ██║     ██║ ██╔██╗
+       ╚██████╔╝██████╔╝███████╗███████╗██║██╔╝ ██╗
+        ╚═════╝ ╚═════╝ ╚══════╝╚══════╝╚═╝╚═╝  ╚═╝
+
+          ⚡ Multi-Agent LLM Framework ⚡
+               A2A Protocol CLI
 
   OK bash_agent (http://localhost:8002)
   OK coordinator (http://localhost:8001)
 
-                         Connected Agents
-  ┏━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┓
-  ┃   # ┃ Agent       ┃ Description     ┃ Skills        ┃ URL                     ┃
-  ┡━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━┩
-  │ 1 * │ bash_agent  │ Shell command   │ bash          │ http://localhost:8002   │
-  │     │             │ execution       │               │                         │
-  │   2 │ coordinator │ Math coordi-    │ math_agent,   │ http://localhost:8001   │
-  │     │             │ nator with      │ report_agent  │                         │
-  │     │             │ sub-agents      │               │                         │
-  └─────┴─────────────┴─────────────────┴───────────────┴─────────────────────────┘
+                                   Connected Agents
+┏━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┓
+┃   # ┃ Agent       ┃ Description         ┃ Skills              ┃ URL                 ┃
+┡━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━┩
+│ 1 * │ bash_agent  │ Agent with shell    │ bash                │ http://localhost:8… │
+│     │             │ command execution   │                     │                     │
+│     │             │ via BashTool        │                     │                     │
+│   2 │ coordinator │ Math coordinator    │ math_agent,         │ http://localhost:8… │
+│     │             │ with calculator and │ report_agent        │                     │
+│     │             │ report sub-ag...    │                     │                     │
+└─────┴─────────────┴─────────────────────┴─────────────────────┴─────────────────────┘
 
-  ╭──────────────────────── Commands ─────────────────────────╮
-  │   /agents              List connected agents              │
-  │   /switch <n>          Switch to agent n                  │
-  │   /clear               Clear conversation context         │
-  │   /quit                Exit                               │
-  │                                                           │
-  │   @<path>              Attach a file (image, PDF, ...)    │
-  │   @"path with spaces"  Attach a file with spaces in path  │
-  ╰───────────────────────────────────────────────────────────╯
+╭───────────────────────────────────── Commands ──────────────────────────────────────╮
+│   /agents                List connected agents                                      │
+│   /switch <n>            Switch to agent n                                          │
+│   /clear                 Clear conversation context                                 │
+│   /help                  Show this help                                             │
+│   /quit                  Exit                                                       │
+│                                                                                     │
+│   @<path>                Attach a file (image, PDF, ...)                            │
+│   @"path with spaces"    Attach a file with spaces in path                          │
+╰─────────────────────────────────────────────────────────────────────────────────────╯
 
   [bash_agent] >
 ```
