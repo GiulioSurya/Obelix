@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from obelix.core.model.content import ContentPart
 from obelix.core.model.roles import MessageRole
 
 
@@ -12,6 +13,10 @@ class HumanMessage(BaseModel):
 
     role: MessageRole = Field(default=MessageRole.HUMAN)
     content: str = Field(default="", description="Textual content of the message")
+    attachments: list[ContentPart] = Field(
+        default_factory=list,
+        description="Additional content: images, files, structured data",
+    )
     timestamp: datetime = Field(
         default_factory=datetime.now, description="Creation timestamp"
     )

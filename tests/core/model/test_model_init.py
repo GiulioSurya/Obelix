@@ -26,5 +26,9 @@ class TestModelPackageExports:
             "StandardMessage",
             "Usage",
             "AgentUsage",
+            "TextContent",
+            "FileContent",
+            "DataContent",
+            "ContentPart",
         }
         assert set(model_pkg.__all__) == expected

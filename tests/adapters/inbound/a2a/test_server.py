@@ -11,8 +11,9 @@ Covers:
 - Successful execution event sequence (working -> artifact -> completed)
 - Failed execution (agent raises)
 - Cancel method
-- Deferred tool (input-required) flow
-- Resume after deferred
+- Deferred tool (input-required) flow with DataPart
+- Resume after deferred with DataPart
+- Multi-part inbound (attachments)
 """
 
 from __future__ import annotations
@@ -28,9 +29,8 @@ from pydantic import BaseModel
 from obelix.adapters.inbound.a2a.server import (
     DEFAULT_MAX_CONTEXTS,
     ObelixAgentExecutor,
-    _build_deferred_message,
+    _agent_message,
     _ContextEntry,
-    _error_message,
     _parse_deferred_result,
 )
 from obelix.core.model.tool_message import ToolCall
@@ -47,8 +47,43 @@ class FakeRequestContext:
     task_id: str = "task-001"
     context_id: str | None = "ctx-001"
 
+    def __post_init__(self):
+        from a2a.types import Message, Part, Role, TextPart
+
+        self.message = Message(
+            role=Role.user,
+            parts=[Part(root=TextPart(text="Hello agent"))],
+            message_id="msg-001",
+        )
+
     def get_user_input(self) -> str | None:
         return "Hello agent"
+
+
+def _make_context_with_text(text: str, **kwargs) -> FakeRequestContext:
+    """Create a FakeRequestContext with a specific text message."""
+    from a2a.types import Message, Part, Role, TextPart
+
+    ctx = FakeRequestContext(**kwargs)
+    ctx.message = Message(
+        role=Role.user,
+        parts=[Part(root=TextPart(text=text))],
+        message_id="msg-001",
+    )
+    return ctx
+
+
+def _make_empty_context(**kwargs) -> FakeRequestContext:
+    """Create a FakeRequestContext with empty parts."""
+    from a2a.types import Message, Role
+
+    ctx = FakeRequestContext(**kwargs)
+    ctx.message = Message(
+        role=Role.user,
+        parts=[],
+        message_id="msg-001",
+    )
+    return ctx
 
 
 class FakeEventQueue:
@@ -87,11 +122,7 @@ def _make_mock_agent(response_content: str = "Agent response") -> MagicMock:
 def _make_factory(
     response_content: str = "Agent response",
 ) -> tuple[Callable[[], MagicMock], list[MagicMock]]:
-    """Return (factory_callable, list_of_created_agents).
-
-    The list accumulates every agent the factory creates, so tests can
-    inspect how many agents were created and their state.
-    """
+    """Return (factory_callable, list_of_created_agents)."""
     created: list[MagicMock] = []
 
     def factory() -> MagicMock:
@@ -114,22 +145,22 @@ def _assert_error_message(status, expected_text: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# _error_message helper
+# _agent_message helper
 # ---------------------------------------------------------------------------
 
 
-class TestErrorMessage:
+class TestAgentMessage:
     def test_returns_message_with_agent_role(self):
         from a2a.types import Message, Role
 
-        msg = _error_message("some error")
+        msg = _agent_message("some error")
         assert isinstance(msg, Message)
         assert msg.role == Role.agent
 
     def test_has_single_text_part_with_given_text(self):
         from a2a.types import TextPart
 
-        msg = _error_message("specific error text")
+        msg = _agent_message("specific error text")
         assert len(msg.parts) == 1
         assert isinstance(msg.parts[0].root, TextPart)
         assert msg.parts[0].root.text == "specific error text"
@@ -137,8 +168,7 @@ class TestErrorMessage:
     def test_message_id_is_valid_uuid(self):
         import uuid
 
-        msg = _error_message("test")
-        # Should not raise
+        msg = _agent_message("test")
         parsed = uuid.UUID(msg.message_id)
         assert str(parsed) == msg.message_id
 
@@ -302,7 +332,7 @@ class TestExecuteSuccess:
         assert isinstance(queue.events[0], TaskStatusUpdateEvent)
         assert queue.events[0].status.state == TaskState.working
         assert queue.events[0].final is False
-        # Event 2: artifact (non-streaming fallback: append=False, last_chunk=True)
+        # Event 2: artifact (non-streaming: append=False, last_chunk=True)
         assert isinstance(queue.events[1], TaskArtifactUpdateEvent)
         assert queue.events[1].artifact.parts[0].root.text == "Agent response"
         assert queue.events[1].append is False
@@ -383,8 +413,6 @@ class TestMultiTurnHistory:
         await executor.execute(ctx, queue)
 
         agent = created[0]
-        # conversation_history should NOT have been reassigned (history was empty)
-        # The mock's default conversation_history is [system_message]
         assert agent.conversation_history == [agent.system_message]
 
     @pytest.mark.asyncio
@@ -400,14 +428,15 @@ class TestMultiTurnHistory:
             call_count += 1
             agent = _make_mock_agent(f"Response {call_count}")
 
-            # Simulate the agent populating conversation_history during execution
             sys_msg = agent.system_message
             current_count = call_count
 
             async def fake_stream(query):
                 agent.conversation_history = [
                     sys_msg,
-                    HumanMessage(content=query),
+                    HumanMessage(
+                        content=query if isinstance(query, str) else query.content
+                    ),
                     MagicMock(content=f"Response {current_count}"),
                 ]
                 yield StreamEvent(
@@ -428,14 +457,12 @@ class TestMultiTurnHistory:
         await executor.execute(ctx, queue)
 
         # Second request — new agent should get history injected
-        ctx2 = FakeRequestContext(context_id="ctx-mt")
-        ctx2.get_user_input = lambda: "Follow-up question"
+        ctx2 = _make_context_with_text("Follow-up question", context_id="ctx-mt")
         queue2 = FakeEventQueue()
         await executor.execute(ctx2, queue2)
 
-        # The context should now have history from both turns
         entry = executor._contexts["ctx-mt"]
-        assert len(entry.history) >= 2  # At least the messages from both turns
+        assert len(entry.history) >= 2
 
     @pytest.mark.asyncio
     async def test_different_contexts_have_independent_history(self):
@@ -450,7 +477,9 @@ class TestMultiTurnHistory:
             async def fake_stream(query):
                 agent.conversation_history = [
                     sys_msg,
-                    HumanMessage(content=query),
+                    HumanMessage(
+                        content=query if isinstance(query, str) else query.content
+                    ),
                     MagicMock(content="reply"),
                 ]
                 yield StreamEvent(
@@ -465,11 +494,9 @@ class TestMultiTurnHistory:
 
         executor = ObelixAgentExecutor(factory)
 
-        # Execute on ctx-A
         ctx_a = FakeRequestContext(context_id="ctx-A")
         await executor.execute(ctx_a, FakeEventQueue())
 
-        # Execute on ctx-B
         ctx_b = FakeRequestContext(context_id="ctx-B")
         await executor.execute(ctx_b, FakeEventQueue())
 
@@ -491,8 +518,7 @@ class TestEmptyInput:
 
         factory, created = _make_factory()
         executor = ObelixAgentExecutor(factory)
-        ctx = FakeRequestContext()
-        ctx.get_user_input = lambda: ""  # Empty input
+        ctx = _make_context_with_text("")
         queue = FakeEventQueue()
 
         await executor.execute(ctx, queue)
@@ -505,13 +531,12 @@ class TestEmptyInput:
         _assert_error_message(event.status, "No user input provided")
 
     @pytest.mark.asyncio
-    async def test_none_input_emits_failed_state(self):
+    async def test_empty_parts_emits_failed_state(self):
         from a2a.types import TaskState
 
         factory, created = _make_factory()
         executor = ObelixAgentExecutor(factory)
-        ctx = FakeRequestContext()
-        ctx.get_user_input = lambda: None
+        ctx = _make_empty_context()
         queue = FakeEventQueue()
 
         await executor.execute(ctx, queue)
@@ -524,8 +549,7 @@ class TestEmptyInput:
     async def test_empty_input_does_not_create_agent(self):
         factory, created = _make_factory()
         executor = ObelixAgentExecutor(factory)
-        ctx = FakeRequestContext()
-        ctx.get_user_input = lambda: ""
+        ctx = _make_context_with_text("")
         queue = FakeEventQueue()
 
         await executor.execute(ctx, queue)
@@ -659,21 +683,16 @@ class TestPerContextLocking:
 
         executor = ObelixAgentExecutor(factory)
 
-        ctx1 = FakeRequestContext(context_id="same-ctx")
-        ctx1.get_user_input = lambda: "request-1"
-        ctx2 = FakeRequestContext(context_id="same-ctx")
-        ctx2.get_user_input = lambda: "request-2"
+        ctx1 = _make_context_with_text("request-1", context_id="same-ctx")
+        ctx2 = _make_context_with_text("request-2", context_id="same-ctx")
 
         await asyncio.gather(
             executor.execute(ctx1, FakeEventQueue()),
             executor.execute(ctx2, FakeEventQueue()),
         )
 
-        # With serialization: start-1, end-1, start-2, end-2
-        # Without serialization: start-1, start-2, end-1, end-2
         starts = [i for i, (action, _) in enumerate(execution_log) if action == "start"]
         ends = [i for i, (action, _) in enumerate(execution_log) if action == "end"]
-        # First end must come before second start (serialized)
         assert ends[0] < starts[1]
 
     @pytest.mark.asyncio
@@ -703,18 +722,14 @@ class TestPerContextLocking:
 
         executor = ObelixAgentExecutor(factory)
 
-        ctx1 = FakeRequestContext(context_id="ctx-A")
-        ctx1.get_user_input = lambda: "request-A"
-        ctx2 = FakeRequestContext(context_id="ctx-B")
-        ctx2.get_user_input = lambda: "request-B"
+        ctx1 = _make_context_with_text("request-A", context_id="ctx-A")
+        ctx2 = _make_context_with_text("request-B", context_id="ctx-B")
 
         await asyncio.gather(
             executor.execute(ctx1, FakeEventQueue()),
             executor.execute(ctx2, FakeEventQueue()),
         )
 
-        # With parallel execution: start-A, start-B, end-A, end-B (interleaved)
-        # Both starts should happen before both ends
         start_indices = [
             i for i, (action, _) in enumerate(execution_log) if action == "start"
         ]
@@ -769,7 +784,9 @@ class TestLRUEvictionIntegration:
             async def fake_stream(query):
                 agent.conversation_history = [
                     sys_msg,
-                    HumanMessage(content=query),
+                    HumanMessage(
+                        content=query if isinstance(query, str) else query.content
+                    ),
                     MagicMock(content="reply"),
                 ]
                 yield StreamEvent(
@@ -795,17 +812,12 @@ class TestLRUEvictionIntegration:
 
 
 # ---------------------------------------------------------------------------
-# Deferred tool (input-required) flow
+# Deferred tool (input-required) flow — now with DataPart
 # ---------------------------------------------------------------------------
 
 
 def _make_deferred_factory():
-    """Create a factory whose agent yields deferred_tool_calls, then on resume completes.
-
-    Simulates:
-    1. First call: agent yields StreamEvent with deferred_tool_calls
-    2. Resume: agent (via resume_after_deferred) yields final response with the answer
-    """
+    """Create a factory whose agent yields deferred_tool_calls, then on resume completes."""
     from obelix.core.model.assistant_message import AssistantResponse, StreamEvent
     from obelix.core.model.system_message import SystemMessage
     from obelix.core.model.tool_message import ToolCall
@@ -821,7 +833,7 @@ def _make_deferred_factory():
         call_count = len(created)
 
         if call_count == 0:
-            # First agent: yield deferred tool calls
+
             async def first_stream(query):
                 yield StreamEvent(
                     deferred_tool_calls=[
@@ -836,7 +848,7 @@ def _make_deferred_factory():
 
             agent.execute_query_stream = MagicMock(side_effect=first_stream)
         else:
-            # Resume agent: yield final response including the injected answer
+
             async def resume_stream():
                 yield StreamEvent(
                     is_final=True,
@@ -856,9 +868,9 @@ def _make_deferred_factory():
 
 class TestDeferredInputRequired:
     @pytest.mark.asyncio
-    async def test_emits_input_required_state(self):
-        """When agent yields deferred_tool_calls, executor emits input-required."""
-        from a2a.types import TaskState
+    async def test_emits_input_required_with_data_part(self):
+        """When agent yields deferred_tool_calls, executor emits input-required with DataPart."""
+        from a2a.types import DataPart, TaskState
 
         factory, _ = _make_deferred_factory()
         executor = ObelixAgentExecutor(factory)
@@ -867,17 +879,25 @@ class TestDeferredInputRequired:
 
         await executor.execute(ctx, queue)
 
-        # Events: working → input-required
+        # Events: working -> input-required
         assert len(queue.events) == 2
         assert queue.events[0].status.state == TaskState.working
         assert queue.events[1].status.state == TaskState.input_required
         assert queue.events[1].final is True
-        # The message should contain the question
-        assert "Which currency?" in queue.events[1].status.message.parts[0].root.text
+
+        # The message contains a DataPart with deferred_tool_calls
+        msg = queue.events[1].status.message
+        assert len(msg.parts) == 1
+        part_root = msg.parts[0].root
+        assert isinstance(part_root, DataPart)
+        assert "deferred_tool_calls" in part_root.data
+        calls = part_root.data["deferred_tool_calls"]
+        assert len(calls) == 1
+        assert calls[0]["tool_name"] == "request_user_input"
+        assert calls[0]["arguments"]["question"] == "Which currency?"
 
     @pytest.mark.asyncio
     async def test_deferred_calls_saved_in_context(self):
-        """After input-required, deferred_tool_calls are saved in the context entry."""
         factory, _ = _make_deferred_factory()
         executor = ObelixAgentExecutor(factory)
         ctx = FakeRequestContext(context_id="ctx-saved")
@@ -892,7 +912,6 @@ class TestDeferredInputRequired:
 
     @pytest.mark.asyncio
     async def test_context_becomes_idle_after_input_required(self):
-        """After emitting input-required, the context is idle (stateless approach)."""
         factory, _ = _make_deferred_factory()
         executor = ObelixAgentExecutor(factory)
         ctx = FakeRequestContext(context_id="ctx-idle")
@@ -909,6 +928,10 @@ class TestResumeAfterDeferred:
     async def test_resume_completes_with_answer(self):
         """After input-required, second message resumes and completes."""
         from a2a.types import (
+            DataPart,
+            Message,
+            Part,
+            Role,
             TaskArtifactUpdateEvent,
             TaskState,
             TaskStatusUpdateEvent,
@@ -917,20 +940,24 @@ class TestResumeAfterDeferred:
         factory, _ = _make_deferred_factory()
         executor = ObelixAgentExecutor(factory)
 
-        # First request → input-required
+        # First request -> input-required
         ctx1 = FakeRequestContext(task_id="t-1", context_id="ctx-resume")
         queue1 = FakeEventQueue()
         await executor.execute(ctx1, queue1)
 
         assert queue1.events[-1].status.state == TaskState.input_required
 
-        # Second request → delivers the answer
+        # Second request -> delivers the answer as DataPart
         ctx2 = FakeRequestContext(task_id="t-2", context_id="ctx-resume")
-        ctx2.get_user_input = lambda: "EUR"
+        ctx2.message = Message(
+            role=Role.user,
+            parts=[Part(root=DataPart(data={"answer": "EUR"}))],
+            message_id="msg-resume",
+        )
         queue2 = FakeEventQueue()
         await executor.execute(ctx2, queue2)
 
-        # Events on queue2: working → artifact → completed
+        # Events on queue2: working -> artifact -> completed
         states = [
             e.status.state
             for e in queue2.events
@@ -941,23 +968,27 @@ class TestResumeAfterDeferred:
 
         artifacts = [e for e in queue2.events if isinstance(e, TaskArtifactUpdateEvent)]
         assert len(artifacts) >= 1
-        # The artifact should contain the answer
         artifact_text = artifacts[0].artifact.parts[0].root.text
         assert "EUR" in artifact_text
 
     @pytest.mark.asyncio
     async def test_deferred_calls_cleared_after_resume(self):
-        """After resume completes, deferred_tool_calls is cleared."""
+        from a2a.types import DataPart, Message, Part, Role
+
         factory, _ = _make_deferred_factory()
         executor = ObelixAgentExecutor(factory)
 
-        # First request → input-required
+        # First request -> input-required
         ctx1 = FakeRequestContext(context_id="ctx-clear")
         await executor.execute(ctx1, FakeEventQueue())
 
-        # Second request → resume
+        # Second request -> resume
         ctx2 = FakeRequestContext(context_id="ctx-clear")
-        ctx2.get_user_input = lambda: "answer"
+        ctx2.message = Message(
+            role=Role.user,
+            parts=[Part(root=DataPart(data={"answer": "answer"}))],
+            message_id="msg-resume",
+        )
         await executor.execute(ctx2, FakeEventQueue())
 
         entry = executor._contexts["ctx-clear"]
@@ -966,20 +997,24 @@ class TestResumeAfterDeferred:
 
     @pytest.mark.asyncio
     async def test_tool_message_injected_on_resume(self):
-        """On resume, the client's response is injected as ToolMessage in history."""
+        from a2a.types import DataPart, Message, Part, Role
+
         factory, created = _make_deferred_factory()
         executor = ObelixAgentExecutor(factory)
 
-        # First request → input-required
+        # First request -> input-required
         ctx1 = FakeRequestContext(context_id="ctx-inject")
         await executor.execute(ctx1, FakeEventQueue())
 
-        # Second request → resume
+        # Second request -> resume with DataPart
         ctx2 = FakeRequestContext(context_id="ctx-inject")
-        ctx2.get_user_input = lambda: "USD"
+        ctx2.message = Message(
+            role=Role.user,
+            parts=[Part(root=DataPart(data={"answer": "USD"}))],
+            message_id="msg-resume",
+        )
         await executor.execute(ctx2, FakeEventQueue())
 
-        # The resume agent should have been called with resume_after_deferred
         resume_agent = created[1]
         resume_agent.resume_after_deferred.assert_called_once()
 
@@ -987,7 +1022,6 @@ class TestResumeAfterDeferred:
 class TestNormalFlowUnchanged:
     @pytest.mark.asyncio
     async def test_normal_execution_without_deferred_tool(self):
-        """Normal execution (no deferred tool) works exactly as before."""
         from a2a.types import TaskState
 
         factory, _ = _make_factory()
@@ -997,7 +1031,7 @@ class TestNormalFlowUnchanged:
 
         await executor.execute(ctx, queue)
 
-        assert len(queue.events) == 3  # working → artifact → completed
+        assert len(queue.events) == 3  # working -> artifact -> completed
         assert queue.events[0].status.state == TaskState.working
         assert queue.events[2].status.state == TaskState.completed
 
@@ -1007,49 +1041,7 @@ class TestNormalFlowUnchanged:
 
 
 # ---------------------------------------------------------------------------
-# _build_deferred_message
-# ---------------------------------------------------------------------------
-
-
-class TestBuildDeferredMessage:
-    def test_serializes_json_with_tool_name_and_arguments(self):
-        """Given a list with one ToolCall, produces valid JSON with tool_name and arguments."""
-        calls = [
-            ToolCall(id="tc-1", name="bash", arguments={"cmd": "ls -la"}),
-        ]
-        result = _build_deferred_message(calls)
-
-        import json
-
-        parsed = json.loads(result)
-        assert isinstance(parsed, list)
-        assert len(parsed) == 1
-        assert parsed[0]["tool_name"] == "bash"
-        assert parsed[0]["arguments"] == {"cmd": "ls -la"}
-
-    def test_multiple_calls_all_serialized(self):
-        """Given multiple deferred calls, the JSON array contains all of them."""
-        calls = [
-            ToolCall(id="tc-1", name="bash", arguments={"cmd": "echo hi"}),
-            ToolCall(
-                id="tc-2",
-                name="request_user_input",
-                arguments={"question": "Which env?"},
-            ),
-        ]
-        result = _build_deferred_message(calls)
-
-        import json
-
-        parsed = json.loads(result)
-        assert len(parsed) == 2
-        assert parsed[0]["tool_name"] == "bash"
-        assert parsed[1]["tool_name"] == "request_user_input"
-        assert parsed[1]["arguments"] == {"question": "Which env?"}
-
-
-# ---------------------------------------------------------------------------
-# _parse_deferred_result
+# _parse_deferred_result (now takes dict, not str)
 # ---------------------------------------------------------------------------
 
 
@@ -1075,46 +1067,135 @@ class _MockSimpleTool:
 
 
 class TestParseDeferredResult:
-    def test_with_output_schema_valid_json(self):
-        """Tool has _output_schema, client sends valid JSON matching schema -> validated dict."""
+    def test_with_output_schema_valid_data(self):
+        """Tool has _output_schema, client sends valid dict -> validated dict."""
         call = ToolCall(id="tc-1", name="bash", arguments={})
         tools = [_MockBashTool(), _MockSimpleTool()]
-        raw_input = '{"stdout": "hello world", "exit_code": 0}'
+        data = {"stdout": "hello world", "exit_code": 0}
 
-        result = _parse_deferred_result(call, tools, raw_input)
+        result = _parse_deferred_result(call, tools, data)
 
         assert result["stdout"] == "hello world"
         assert result["exit_code"] == 0
         assert result["stderr"] == ""  # default filled in by schema
 
-    def test_with_output_schema_raw_text_fallback(self):
-        """Tool has _output_schema, client sends plain text -> fallback populates first string field."""
+    def test_with_output_schema_extra_fields_ignored(self):
+        """Tool has _output_schema, extra fields in data -> validated with defaults."""
         call = ToolCall(id="tc-1", name="bash", arguments={})
         tools = [_MockBashTool()]
-        raw_input = "some raw output from user"
+        data = {"unexpected_field": "value"}
 
-        result = _parse_deferred_result(call, tools, raw_input)
+        result = _parse_deferred_result(call, tools, data)
 
-        # First string field in _MockOutputSchema is 'stdout'
-        assert result["stdout"] == "some raw output from user"
+        # Pydantic ignores extra fields and fills defaults
+        assert result["stdout"] == ""
         assert result["stderr"] == ""
         assert result["exit_code"] == 0
 
     def test_without_output_schema(self):
-        """Tool has no _output_schema -> returns {"answer": raw_text}."""
+        """Tool has no _output_schema -> returns data dict directly."""
         call = ToolCall(id="tc-1", name="request_user_input", arguments={})
         tools = [_MockSimpleTool()]
-        raw_input = "EUR"
+        data = {"answer": "EUR"}
 
-        result = _parse_deferred_result(call, tools, raw_input)
+        result = _parse_deferred_result(call, tools, data)
 
         assert result == {"answer": "EUR"}
 
     def test_no_tools_provided(self):
-        """Tools list is None -> returns {"answer": raw_text}."""
+        """Tools list is None -> returns data dict directly."""
         call = ToolCall(id="tc-1", name="bash", arguments={})
-        raw_input = "some answer"
+        data = {"answer": "some answer"}
 
-        result = _parse_deferred_result(call, None, raw_input)
+        result = _parse_deferred_result(call, None, data)
 
         assert result == {"answer": "some answer"}
+
+
+# ---------------------------------------------------------------------------
+# Multi-part inbound (attachments)
+# ---------------------------------------------------------------------------
+
+
+class TestMultiPartInbound:
+    @pytest.mark.asyncio
+    async def test_file_part_creates_human_message_with_attachments(self):
+        """A FilePart in the message creates a HumanMessage with attachments."""
+        from a2a.types import FilePart, FileWithBytes, Message, Part, Role, TextPart
+
+        factory, created = _make_factory()
+        executor = ObelixAgentExecutor(factory)
+
+        ctx = FakeRequestContext()
+        ctx.message = Message(
+            role=Role.user,
+            parts=[
+                Part(root=TextPart(text="Describe this image")),
+                Part(
+                    root=FilePart(
+                        file=FileWithBytes(
+                            bytes="aGVsbG8=",  # base64 "hello"
+                            mime_type="image/png",
+                            name="test.png",
+                        )
+                    )
+                ),
+            ],
+            message_id="msg-mp",
+        )
+        queue = FakeEventQueue()
+
+        await executor.execute(ctx, queue)
+
+        # Agent should receive a HumanMessage (not a string)
+        from obelix.core.model.human_message import HumanMessage
+
+        call_args = created[0].execute_query_stream.call_args[0][0]
+        assert isinstance(call_args, HumanMessage)
+        assert call_args.content == "Describe this image"
+        assert len(call_args.attachments) == 1
+        assert call_args.attachments[0].mime_type == "image/png"
+
+    @pytest.mark.asyncio
+    async def test_data_part_creates_human_message_with_attachments(self):
+        """A DataPart in the message creates a HumanMessage with DataContent attachment."""
+        from a2a.types import DataPart, Message, Part, Role, TextPart
+
+        factory, created = _make_factory()
+        executor = ObelixAgentExecutor(factory)
+
+        ctx = FakeRequestContext()
+        ctx.message = Message(
+            role=Role.user,
+            parts=[
+                Part(root=TextPart(text="Analyze this")),
+                Part(root=DataPart(data={"key": "value"})),
+            ],
+            message_id="msg-dp",
+        )
+        queue = FakeEventQueue()
+
+        await executor.execute(ctx, queue)
+
+        from obelix.core.model.content import DataContent
+        from obelix.core.model.human_message import HumanMessage
+
+        call_args = created[0].execute_query_stream.call_args[0][0]
+        assert isinstance(call_args, HumanMessage)
+        assert call_args.content == "Analyze this"
+        assert len(call_args.attachments) == 1
+        assert isinstance(call_args.attachments[0], DataContent)
+        assert call_args.attachments[0].data == {"key": "value"}
+
+    @pytest.mark.asyncio
+    async def test_text_only_message_passes_string(self):
+        """A text-only message passes a plain string to the agent (no HumanMessage)."""
+        factory, created = _make_factory()
+        executor = ObelixAgentExecutor(factory)
+
+        ctx = FakeRequestContext()
+        queue = FakeEventQueue()
+
+        await executor.execute(ctx, queue)
+
+        created[0].execute_query_stream.assert_called_once_with("Hello agent")

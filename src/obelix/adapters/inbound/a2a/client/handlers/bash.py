@@ -2,12 +2,10 @@
 
 Renders the command for review, asks for confirmation (respecting the
 permission policy), executes locally via ``LocalShellExecutor``, and
-returns a JSON string matching ``BashTool.OutputSchema``.
+returns a dict matching ``BashTool.OutputSchema``.
 """
 
 from __future__ import annotations
-
-import json
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
@@ -20,9 +18,7 @@ from obelix.adapters.inbound.a2a.client.handlers.base import (
     PermissionPolicy,
 )
 
-_DENIED_RESPONSE = json.dumps(
-    {"stdout": "", "stderr": "Execution denied by user", "exit_code": -1}
-)
+_DENIED_RESPONSE = {"stdout": "", "stderr": "Execution denied by user", "exit_code": -1}
 
 
 class BashHandler(BaseDeferredHandler):
@@ -72,7 +68,7 @@ class BashHandler(BaseDeferredHandler):
             )
         )
 
-    async def prompt_response(self, args: dict, session: PromptSession) -> str:
+    async def prompt_response(self, args: dict, session: PromptSession) -> dict:
         # Check permission policy
         if self.permission == PermissionPolicy.ALWAYS_DENY:
             return _DENIED_RESPONSE
@@ -86,9 +82,8 @@ class BashHandler(BaseDeferredHandler):
 
         # Execute
         executor = await self._get_executor()
-        result = await executor.execute(
+        return await executor.execute(
             command=args.get("command", ""),
             timeout=args.get("timeout", 120),
             working_directory=args.get("working_directory"),
         )
-        return json.dumps(result)

@@ -53,16 +53,22 @@ class BaseDeferredHandler:
             )
         )
 
-    async def prompt_response(self, args: dict, session: PromptSession) -> str:
-        """Collect the user's response.  Override for custom interaction."""
-        answer = await session.prompt_async(HTML("<b>> </b>"))
-        return answer.strip() or "proceed"
+    async def prompt_response(self, args: dict, session: PromptSession) -> dict:
+        """Collect the user's response as a dict for DataPart transport.
 
-    async def handle(self, args: dict, console: Console, session: PromptSession) -> str:
-        """Render the tool call, then collect and return the response string.
+        Override for custom interaction.  The returned dict is sent to
+        the server as a DataPart and validated against OutputSchema.
+        """
+        answer = await session.prompt_async(HTML("<b>> </b>"))
+        return {"answer": answer.strip() or "proceed"}
+
+    async def handle(
+        self, args: dict, console: Console, session: PromptSession
+    ) -> dict:
+        """Render the tool call, then collect and return the response dict.
 
         This is the main entry point used by the client's input-required
-        loop.  The returned string is sent back to the A2A server as-is.
+        loop.  The returned dict is wrapped in a DataPart by the caller.
         """
         self.render(args, console)
         return await self.prompt_response(args, session)

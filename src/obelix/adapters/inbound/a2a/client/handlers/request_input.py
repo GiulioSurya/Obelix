@@ -47,7 +47,7 @@ class RequestInputHandler(BaseDeferredHandler):
             )
         )
 
-    async def prompt_response(self, args: dict, session: PromptSession) -> str:
+    async def prompt_response(self, args: dict, session: PromptSession) -> dict:
         options: list[dict] = args.get("options", [])
 
         console_hint = ""
@@ -62,12 +62,12 @@ class RequestInputHandler(BaseDeferredHandler):
         answer = answer.strip()
 
         if not answer:
-            return "proceed"
+            return {"answer": "proceed"}
 
         # Number selection -> return the label
         if options and answer.isdigit():
             idx = int(answer) - 1
             if 0 <= idx < len(options):
-                return options[idx].get("label", answer)
+                return {"answer": options[idx].get("label", answer)}
 
-        return answer
+        return {"answer": answer}

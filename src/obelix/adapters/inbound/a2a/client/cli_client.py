@@ -7,13 +7,14 @@ terminal UI with intelligent handling of deferred tool calls
 
 from __future__ import annotations
 
-import json
 import sys
 import uuid
+from typing import Any
 
 import httpx
 from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
 from a2a.types import (
+    DataPart,
     Message,
     Part,
     Role,
@@ -93,6 +94,16 @@ def _make_message(text: str, context_id: str | None = None) -> Message:
     )
 
 
+def _make_data_message(data: dict[str, Any], context_id: str | None = None) -> Message:
+    """Build a user message with a DataPart payload (for deferred tool responses)."""
+    return Message(
+        message_id=str(uuid.uuid4()),
+        role=Role.user,
+        parts=[Part(root=DataPart(data=data))],
+        context_id=context_id,
+    )
+
+
 def _extract_text(task) -> str:
     if not hasattr(task, "artifacts") or not task.artifacts:
         return ""
@@ -104,7 +115,18 @@ def _extract_text(task) -> str:
     return "".join(parts)
 
 
-def _extract_status_message(task) -> str:
+def _extract_status_data(task) -> dict | None:
+    """Extract DataPart data from task status message, or None."""
+    if not task.status or not task.status.message:
+        return None
+    for part in task.status.message.parts:
+        if isinstance(part.root, DataPart):
+            return part.root.data
+    return None
+
+
+def _extract_status_text(task) -> str:
+    """Extract text from task status message."""
     if not task.status or not task.status.message:
         return ""
     parts = []
@@ -262,10 +284,10 @@ class CLIClient:
 
         # Handle input-required loop (deferred tools)
         while task.status.state == TaskState.input_required:
-            status_msg = _extract_status_message(task)
-            answer = await self._handle_deferred(status_msg, session)
+            data = _extract_status_data(task)
+            result = await self._handle_deferred(data, session)
 
-            msg = _make_message(answer, context_id=agent.context_id)
+            msg = _make_data_message(result, context_id=agent.context_id)
             with self.console.status("[info]Thinking...[/info]"):
                 task = await _collect_task(agent.client.send_message(msg))
 
@@ -281,32 +303,30 @@ class CLIClient:
             else:
                 self.show_info(f"{agent.name}: completed (no content)")
         elif task.status.state == TaskState.failed:
-            msg_text = _extract_status_message(task)
+            msg_text = _extract_status_text(task)
             self.show_error(f"{agent.name}: {msg_text}")
         else:
             self.show_info(f"{agent.name}: state={task.status.state}")
 
-    async def _handle_deferred(self, status_msg: str, session: PromptSession) -> str:
-        """Parse deferred tool calls and dispatch to the appropriate handler."""
-        try:
-            deferred_calls = json.loads(status_msg)
-        except (json.JSONDecodeError, TypeError):
-            # Not valid JSON — show raw and ask for input
+    async def _handle_deferred(self, data: dict | None, session: PromptSession) -> dict:
+        """Dispatch deferred tool calls from DataPart to the appropriate handler."""
+        if not data or "deferred_tool_calls" not in data:
             self.console.print(
                 Panel(
-                    status_msg,
+                    str(data),
                     title="[status.wait]Input Required[/status.wait]",
                     border_style="yellow",
                 )
             )
             self.console.print()
             answer = await session.prompt_async(HTML("<b>> </b>"))
-            return answer.strip() or "proceed"
+            return {"answer": answer.strip() or "proceed"}
 
+        deferred_calls = data["deferred_tool_calls"]
         if not isinstance(deferred_calls, list) or not deferred_calls:
             self.console.print()
             answer = await session.prompt_async(HTML("<b>> </b>"))
-            return answer.strip() or "proceed"
+            return {"answer": answer.strip() or "proceed"}
 
         # Dispatch first call to the matching handler
         call = deferred_calls[0]

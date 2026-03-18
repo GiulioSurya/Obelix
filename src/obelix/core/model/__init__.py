@@ -7,6 +7,7 @@ from obelix.core.model.assistant_message import (
     AssistantResponse,
     StreamEvent,
 )
+from obelix.core.model.content import ContentPart, DataContent, FileContent, TextContent
 from obelix.core.model.human_message import HumanMessage
 from obelix.core.model.roles import MessageRole
 from obelix.core.model.standard_message import StandardMessage
@@ -35,4 +36,8 @@ __all__ = [
     "Usage",
     "AgentUsage",
     "StreamEvent",
+    "TextContent",
+    "FileContent",
+    "DataContent",
+    "ContentPart",
 ]

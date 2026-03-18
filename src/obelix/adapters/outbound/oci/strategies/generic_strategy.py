@@ -30,6 +30,7 @@ from pydantic import ValidationError
 
 from obelix.adapters.outbound.oci.strategies.base_strategy import OCIRequestStrategy
 from obelix.core.model.assistant_message import AssistantMessage
+from obelix.core.model.content import DataContent, FileContent
 from obelix.core.model.human_message import HumanMessage
 from obelix.core.model.standard_message import StandardMessage
 from obelix.core.model.system_message import SystemMessage
@@ -100,9 +101,17 @@ class GenericRequestStrategy(OCIRequestStrategy):
             logger.trace(f"msg[{i}] {format_message_for_trace(message)}")
 
             if isinstance(message, HumanMessage):
-                converted_messages.append(
-                    UserMessage(content=[TextContent(text=message.content)])
-                )
+                content_blocks = []
+                if message.content:
+                    content_blocks.append(TextContent(text=message.content))
+                for att in message.attachments:
+                    if isinstance(att, FileContent):
+                        content_blocks.extend(self._convert_file_attachment(att))
+                    elif isinstance(att, DataContent):
+                        content_blocks.append(TextContent(text=json.dumps(att.data)))
+                if not content_blocks:
+                    content_blocks.append(TextContent(text=""))
+                converted_messages.append(UserMessage(content=content_blocks))
 
             elif isinstance(message, SystemMessage):
                 converted_messages.append(
@@ -147,6 +156,75 @@ class GenericRequestStrategy(OCIRequestStrategy):
             )
             for result in msg.tool_results
         ]
+
+    # ========== FILE ATTACHMENT CONVERSION ==========
+
+    def _convert_file_attachment(self, att: FileContent) -> list:
+        """Convert a FileContent attachment to OCI content block(s).
+
+        Maps MIME type families to the corresponding OCI SDK content types:
+        image/* -> ImageContent, application/pdf -> DocumentContent,
+        audio/* -> AudioContent, video/* -> VideoContent.
+        """
+        from oci.generative_ai_inference.models import (
+            ImageContent,
+            ImageUrl,
+        )
+
+        mime = att.mime_type
+        data_url = att.data if att.is_url else f"data:{mime};base64,{att.data}"
+
+        if mime.startswith("image/"):
+            return [ImageContent(image_url=ImageUrl(url=data_url))]
+
+        # For document types, try DocumentContent
+        if mime in (
+            "application/pdf",
+            "application/msword",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "text/plain",
+            "text/html",
+            "text/csv",
+        ):
+            try:
+                from oci.generative_ai_inference.models import (
+                    DocumentContent,
+                    DocumentUrl,
+                )
+
+                return [DocumentContent(document_url=DocumentUrl(url=data_url))]
+            except ImportError:
+                pass
+
+        if mime.startswith("audio/"):
+            try:
+                from oci.generative_ai_inference.models import (
+                    AudioContent,
+                    AudioUrl,
+                )
+
+                return [AudioContent(audio_url=AudioUrl(url=data_url))]
+            except ImportError:
+                pass
+
+        if mime.startswith("video/"):
+            try:
+                from oci.generative_ai_inference.models import (
+                    VideoContent,
+                    VideoUrl,
+                )
+
+                return [VideoContent(video_url=VideoUrl(url=data_url))]
+            except ImportError:
+                pass
+
+        # Fallback: describe the file as text
+        logger.warning(
+            f"Unsupported MIME type for OCI Generic: {mime}, "
+            f"injecting as text description"
+        )
+        desc = f"[File: {att.filename or 'unnamed'}, type: {mime}]"
+        return [TextContent(text=desc)]
 
     # ========== TOOL CONVERSION ==========
 

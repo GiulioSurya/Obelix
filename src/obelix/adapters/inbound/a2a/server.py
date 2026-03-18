@@ -10,15 +10,14 @@ via a per-context asyncio.Event (idle gate).
 Input-required flow (deferred tools): when the agent encounters a
 tool with is_deferred=True that returns None, the loop stops and
 yields a StreamEvent with deferred_tool_calls. The executor emits
-TaskState.input_required. On the next message/send for the same
-contextId, the executor injects the client's response as a ToolMessage
-and restarts the agent loop — no Futures, no suspended tasks.
+TaskState.input_required with DataPart. On the next message/send for
+the same contextId, the executor extracts the DataPart response,
+injects it as a ToolMessage, and restarts the agent loop.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable
@@ -28,6 +27,7 @@ from a2a.server.agent_execution.agent_executor import AgentExecutor
 from a2a.server.events.event_queue import EventQueue
 from a2a.types import (
     Artifact,
+    DataPart,
     Message,
     Part,
     Role,
@@ -38,6 +38,12 @@ from a2a.types import (
     TextPart,
 )
 
+from obelix.adapters.inbound.a2a.part_converter import (
+    a2a_parts_to_obelix,
+    deferred_calls_to_a2a_parts,
+    obelix_response_to_a2a_parts,
+)
+from obelix.core.model.human_message import HumanMessage
 from obelix.core.model.tool_message import ToolMessage, ToolResult, ToolStatus
 from obelix.core.tracer.context import (
     get_current_span,
@@ -66,10 +72,6 @@ def _agent_message(text: str) -> Message:
         parts=[Part(root=TextPart(text=text))],
         message_id=str(uuid.uuid4()),
     )
-
-
-# Keep the old name as alias for backward compat in tests
-_error_message = _agent_message
 
 
 class _ContextEntry:
@@ -140,16 +142,18 @@ class ObelixAgentExecutor(AgentExecutor):
         task_id = context.task_id
         context_id = context.context_id or "default"
 
-        # Extract user text from the incoming message
-        user_text = context.get_user_input()
-        if not user_text:
+        # Extract content from the incoming message (multi-part)
+        message = context.message
+        user_text, attachments = a2a_parts_to_obelix(message.parts)
+
+        if not user_text and not attachments:
             await event_queue.enqueue_event(
                 TaskStatusUpdateEvent(
                     task_id=task_id,
                     context_id=context_id,
                     status=TaskStatus(
                         state=TaskState.failed,
-                        message=_error_message("No user input provided"),
+                        message=_agent_message("No user input provided"),
                     ),
                     final=True,
                 )
@@ -167,28 +171,41 @@ class ObelixAgentExecutor(AgentExecutor):
         try:
             # RESUME PATH: if we have deferred tool calls, inject response
             if entry.deferred_tool_calls:
-                self._inject_deferred_response(entry, user_text)
+                self._inject_deferred_response(entry, message)
 
             await self._run_agent(
                 task_id=task_id,
                 context_id=context_id,
                 user_text=user_text,
+                attachments=attachments,
                 entry=entry,
                 event_queue=event_queue,
             )
         finally:
             entry.idle.set()
 
-    def _inject_deferred_response(self, entry: _ContextEntry, user_text: str) -> None:
+    def _inject_deferred_response(
+        self,
+        entry: _ContextEntry,
+        message: Message,
+    ) -> None:
         """Inject the client's response as ToolMessage for deferred tools.
 
-        Uses the tool's OutputSchema (if declared) to validate and parse
-        the client's response. Falls back to ``{"answer": raw_text}`` for
-        tools without an OutputSchema (e.g. RequestUserInputTool).
+        Extracts structured data from the DataPart in the message and
+        validates it against the tool's OutputSchema if present.
         """
+        # Extract structured data from DataPart
+        structured_data: dict | None = None
+        for part in message.parts:
+            if isinstance(part.root, DataPart):
+                structured_data = part.root.data
+                break
+
         tool_results = []
         for call in entry.deferred_tool_calls:
-            result_data = _parse_deferred_result(call, entry.deferred_tools, user_text)
+            result_data = _parse_deferred_result(
+                call, entry.deferred_tools, structured_data or {}
+            )
             tool_results.append(
                 ToolResult(
                     tool_name=call.name,
@@ -201,8 +218,7 @@ class ObelixAgentExecutor(AgentExecutor):
         entry.deferred_tool_calls = None
         entry.deferred_tools = None
         logger.info(
-            f"[A2A] Injected deferred response | "
-            f"tool_count={len(tool_results)} input_len={len(user_text)}"
+            f"[A2A] Injected deferred response | tool_count={len(tool_results)}"
         )
 
     async def _run_agent(
@@ -211,6 +227,7 @@ class ObelixAgentExecutor(AgentExecutor):
         task_id: str,
         context_id: str,
         user_text: str,
+        attachments: list,
         entry: _ContextEntry,
         event_queue: EventQueue,
     ) -> None:
@@ -250,6 +267,10 @@ class ObelixAgentExecutor(AgentExecutor):
                     entry.trace_session = None
                     entry.trace_span = None
                 stream = agent.resume_after_deferred()
+            elif attachments:
+                # Pass as HumanMessage with attachments for multimodal
+                query = HumanMessage(content=user_text, attachments=attachments)
+                stream = agent.execute_query_stream(query)
             else:
                 stream = agent.execute_query_stream(user_text)
 
@@ -266,8 +287,10 @@ class ObelixAgentExecutor(AgentExecutor):
                     entry.trace_session = get_current_trace()
                     entry.trace_span = get_current_span()
 
-                    # Build message from deferred tool calls (generic)
-                    question = _build_deferred_message(event.deferred_tool_calls)
+                    # Build DataPart message from deferred tool calls
+                    deferred_parts = deferred_calls_to_a2a_parts(
+                        event.deferred_tool_calls
+                    )
 
                     await event_queue.enqueue_event(
                         TaskStatusUpdateEvent(
@@ -275,14 +298,19 @@ class ObelixAgentExecutor(AgentExecutor):
                             context_id=context_id,
                             status=TaskStatus(
                                 state=TaskState.input_required,
-                                message=_agent_message(question),
+                                message=Message(
+                                    role=Role.agent,
+                                    parts=deferred_parts,
+                                    message_id=str(uuid.uuid4()),
+                                ),
                             ),
                             final=True,
                         )
                     )
                     logger.info(
                         f"[A2A] Input required | task_id={task_id} "
-                        f"context_id={context_id} question_len={len(question)}"
+                        f"context_id={context_id} "
+                        f"deferred_count={len(event.deferred_tool_calls)}"
                     )
                     return
 
@@ -308,34 +336,50 @@ class ObelixAgentExecutor(AgentExecutor):
                     entry.history = agent.conversation_history[1:]
 
                     if first_chunk:
+                        # Non-streaming: emit full response with multi-part
+                        parts = (
+                            obelix_response_to_a2a_parts(response)
+                            if response
+                            else [Part(root=TextPart(text=""))]
+                        )
                         await event_queue.enqueue_event(
                             TaskArtifactUpdateEvent(
                                 task_id=task_id,
                                 context_id=context_id,
                                 artifact=Artifact(
                                     artifact_id=artifact_id,
-                                    parts=[
-                                        Part(
-                                            root=TextPart(
-                                                text=response.content
-                                                if response
-                                                else ""
-                                            )
-                                        )
-                                    ],
+                                    parts=parts,
                                 ),
                                 append=False,
                                 last_chunk=True,
                             )
                         )
                     else:
+                        # Streaming: text already sent, emit DataParts for tool results
+                        final_parts = []
+                        if response and response.tool_results:
+                            for result in response.tool_results:
+                                if isinstance(result.result, dict):
+                                    final_parts.append(
+                                        Part(
+                                            root=DataPart(
+                                                data=result.result,
+                                                metadata={
+                                                    "type": "tool_result",
+                                                    "tool_name": result.tool_name,
+                                                },
+                                            )
+                                        )
+                                    )
+                        if not final_parts:
+                            final_parts = [Part(root=TextPart(text=""))]
                         await event_queue.enqueue_event(
                             TaskArtifactUpdateEvent(
                                 task_id=task_id,
                                 context_id=context_id,
                                 artifact=Artifact(
                                     artifact_id=artifact_id,
-                                    parts=[Part(root=TextPart(text=""))],
+                                    parts=final_parts,
                                 ),
                                 append=True,
                                 last_chunk=True,
@@ -361,7 +405,7 @@ class ObelixAgentExecutor(AgentExecutor):
                     context_id=context_id,
                     status=TaskStatus(
                         state=TaskState.canceled,
-                        message=_error_message("Task canceled by client"),
+                        message=_agent_message("Task canceled by client"),
                     ),
                     final=True,
                 )
@@ -376,7 +420,7 @@ class ObelixAgentExecutor(AgentExecutor):
                     context_id=context_id,
                     status=TaskStatus(
                         state=TaskState.failed,
-                        message=_error_message(f"Execution failed: {e}"),
+                        message=_agent_message(f"Execution failed: {e}"),
                     ),
                     final=True,
                 )
@@ -394,7 +438,7 @@ class ObelixAgentExecutor(AgentExecutor):
                 context_id=context_id,
                 status=TaskStatus(
                     state=TaskState.canceled,
-                    message=_error_message("Task canceled by client"),
+                    message=_agent_message("Task canceled by client"),
                 ),
                 final=True,
             )
@@ -404,34 +448,15 @@ class ObelixAgentExecutor(AgentExecutor):
 # ── Module-level helpers for deferred tool protocol ─────────────────
 
 
-def _build_deferred_message(deferred_calls: list[ToolCall]) -> str:
-    """Build the input-required message from deferred tool calls.
-
-    Serialises each deferred call as JSON so any client (programmatic or
-    human) can identify the tool and its arguments without hardcoded
-    field sniffing.
-    """
-    payload = [
-        {"tool_name": call.name, "arguments": call.arguments} for call in deferred_calls
-    ]
-    return json.dumps(payload)
-
-
 def _parse_deferred_result(
     call: ToolCall,
     tools: list | None,
-    raw_input: str,
+    data: dict,
 ) -> dict:
-    """Parse a client response using the tool's OutputSchema if available.
+    """Parse a structured DataPart response for a deferred tool.
 
-    If the deferred tool declares an ``OutputSchema`` inner class (stored
-    as ``_output_schema`` by the ``@tool`` decorator), the raw client
-    response is parsed as JSON and validated against that schema.
-
-    Falls back to ``{"answer": raw_input}`` when:
-    - The tool has no OutputSchema (e.g. RequestUserInputTool)
-    - The client response is not valid JSON
-    - Validation against OutputSchema fails
+    If the tool has an OutputSchema, validates the data against it.
+    Otherwise returns the data dict directly.
     """
     output_schema = None
     for tool in tools or []:
@@ -441,16 +466,9 @@ def _parse_deferred_result(
 
     if output_schema:
         try:
-            parsed = json.loads(raw_input)
-            validated = output_schema(**parsed)
+            validated = output_schema(**data)
             return validated.model_dump()
         except Exception:
-            # Fallback: populate defaults, override first string field with raw text
-            defaults = output_schema().model_dump()
-            for field_name, field_info in output_schema.model_fields.items():
-                if field_info.annotation is str:
-                    defaults[field_name] = raw_input
-                    break
-            return defaults
+            return data
 
-    return {"answer": raw_input}
+    return data

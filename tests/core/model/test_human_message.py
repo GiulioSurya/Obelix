@@ -52,7 +52,13 @@ class TestHumanMessageSerialization:
 
     def test_dump_keys(self):
         data = HumanMessage(content="x").model_dump()
-        assert set(data.keys()) == {"role", "content", "timestamp", "metadata"}
+        assert set(data.keys()) == {
+            "role",
+            "content",
+            "attachments",
+            "timestamp",
+            "metadata",
+        }
 
 
 class TestHumanMessageEdgeCases:

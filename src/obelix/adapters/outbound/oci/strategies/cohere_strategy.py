@@ -12,6 +12,7 @@ Key difference: Cohere separates the last user message from chat_history:
 - chat_history: List[CohereMessage] (all PREVIOUS messages)
 """
 
+import json
 import uuid
 from typing import Any
 
@@ -81,7 +82,19 @@ class CohereRequestStrategy(OCIRequestStrategy):
             if isinstance(message, HumanMessage):
                 if last_user_message is not None:
                     chat_history.append(CohereUserMessage(message=last_user_message))
-                last_user_message = message.content
+                # Cohere: attachments as text fallback (no native multimodal)
+                parts = [message.content] if message.content else []
+                for att in message.attachments:
+                    if hasattr(att, "text"):
+                        parts.append(att.text)
+                    elif hasattr(att, "data") and isinstance(att.data, dict):
+                        parts.append(json.dumps(att.data))
+                    elif hasattr(att, "mime_type"):
+                        parts.append(
+                            f"[File: {getattr(att, 'filename', 'unnamed')}, "
+                            f"type: {att.mime_type}]"
+                        )
+                last_user_message = "\n".join(parts) if parts else ""
 
             elif isinstance(message, SystemMessage):
                 chat_history.append(CohereSystemMessage(message=message.content))
