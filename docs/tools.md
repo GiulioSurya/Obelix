@@ -1,34 +1,524 @@
 # Tools Guide
 
-Tools extend agents with custom capabilities. An agent can call tools to gather information, perform calculations, execute code, or request user input. This guide covers defining, registering, and executing tools in Obelix.
+Tools extend agents with custom capabilities — calculations, API calls, shell commands, user interaction, and more. This guide covers everything you need to create, register, and use tools in Obelix.
 
 ---
 
-## Overview
-
-Tools are a core part of the agent loop. When an LLM decides it needs to perform an action, it generates a tool call. The agent then executes the tool, collects the result, and feeds it back to the LLM for further reasoning.
-
-### What Are Tools?
-
-A tool is a callable component that performs a specific task. Tools have:
-- **Name and description**: For LLM discovery and understanding
-- **Input schema**: Parameters the LLM provides
-- **Output schema** (optional): Expected response format (mainly for deferred tools)
-- **execute()** method: The logic that runs when invoked
-- **is_deferred flag**: Whether execution happens on the server or the client
-
-### Tool Protocol
-
-All tools in Obelix follow the `Tool` Protocol (structural typing). This means you don't inherit from a base class; instead, you implement the required members:
+## Quick Start
 
 ```python
-from typing import Protocol, runtime_checkable
-from obelix.core.model.tool_message import MCPToolSchema, ToolCall, ToolResult
+from obelix.core.tool.tool_decorator import tool
+from pydantic import Field
 
+@tool(name="calculator", description="Add two numbers")
+class Calculator:
+    a: float = Field(..., description="First number")
+    b: float = Field(..., description="Second number")
+
+    async def execute(self) -> dict:
+        return {"result": self.a + self.b}
+```
+
+Register it on an agent:
+
+```python
+from obelix.core.agent import BaseAgent
+
+agent = BaseAgent(
+    system_message="You are a helpful assistant.",
+    provider=provider,
+    tools=[Calculator],
+)
+```
+
+---
+
+## The `@tool` Decorator
+
+The decorator is the primary way to create tools. It handles schema generation, input validation, error handling, and thread safety automatically.
+
+```python
+@tool(name="my_tool", description="What the tool does", is_deferred=False)
+class MyTool:
+    param: str = Field(..., description="Parameter description")
+
+    async def execute(self) -> dict:
+        return {"result": self.param.upper()}
+```
+
+### Decorator Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `name` | str | Required | Tool name the LLM uses to call it |
+| `description` | str | Required | What the tool does (shown to LLM) |
+| `is_deferred` | bool | `False` | If `True`, execution is delegated to the client |
+
+### Input Parameters
+
+Define inputs as Pydantic `Field()` annotations on the class. The decorator extracts them into a validation schema automatically.
+
+```python
+@tool(name="search", description="Search a database")
+class SearchTool:
+    query: str = Field(..., description="Search query")
+    limit: int = Field(default=10, ge=1, le=100, description="Max results")
+    include_metadata: bool = Field(default=False, description="Include metadata")
+
+    async def execute(self) -> dict:
+        # self.query, self.limit, self.include_metadata are already validated
+        results = await db.search(self.query, limit=self.limit)
+        return {"results": results}
+```
+
+Pydantic constraints (`ge`, `le`, `gt`, `max_length`, etc.) are enforced automatically. If the LLM provides invalid arguments, the decorator returns a `ToolResult` with status `ERROR` and the validation message — the LLM can then self-correct.
+
+### Sync vs Async Execute
+
+Both work. Sync methods run in a thread pool automatically:
+
+```python
+# Async (preferred for I/O-bound work)
+@tool(name="fetch", description="Fetch a URL")
+class FetchTool:
+    url: str = Field(...)
+
+    async def execute(self) -> dict:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(self.url)
+        return {"status": r.status_code, "body": r.text}
+
+# Sync (fine for CPU-bound or simple operations)
+@tool(name="hash", description="Compute SHA256 hash")
+class HashTool:
+    text: str = Field(...)
+
+    def execute(self) -> dict:  # runs in asyncio.to_thread()
+        import hashlib
+        return {"hash": hashlib.sha256(self.text.encode()).hexdigest()}
+```
+
+### Constructor Dependencies
+
+Tools can have `__init__` for dependency injection. Constructor parameters are **not** part of the input schema — only `Field()` annotations are.
+
+```python
+@tool(name="sql_query", description="Execute a SQL query")
+class SQLQueryTool:
+    query: str = Field(..., description="SQL query to execute")
+
+    def __init__(self, connection):
+        self._connection = connection
+
+    async def execute(self) -> dict:
+        rows = await self._connection.execute(self.query)
+        return {"rows": rows, "count": len(rows)}
+
+# Register with dependency
+agent = BaseAgent(
+    system_message="...",
+    provider=provider,
+    tools=[SQLQueryTool(db_connection)],
+)
+```
+
+### Thread Safety
+
+The decorator creates an isolated copy of the tool instance for each execution via `copy.copy()`. This means multiple parallel tool calls don't share mutable state — no locks needed.
+
+### Inspecting the Schema
+
+Every `@tool`-decorated class gets a `print_schema()` classmethod:
+
+```python
+Calculator.print_schema()
+```
+
+Output:
+```json
+{
+  "name": "calculator",
+  "description": "Add two numbers",
+  "inputSchema": {
+    "properties": {
+      "a": { "description": "First number", "type": "number" },
+      "b": { "description": "Second number", "type": "number" }
+    },
+    "required": ["a", "b"],
+    "type": "object"
+  },
+  "outputSchema": {
+    "type": "object",
+    "additionalProperties": true
+  }
+}
+```
+
+---
+
+## OutputSchema
+
+By default, a tool's `outputSchema` is a generic `{"type": "object", "additionalProperties": true}`. You can declare an explicit `OutputSchema` inner class to document the response contract.
+
+### Why Use It
+
+1. **For deferred tools**: the client needs to know what format to return. Without `OutputSchema`, the client has to guess. With it, the A2A executor validates the response automatically.
+
+2. **For documentation**: even on normal tools, `OutputSchema` makes the tool self-describing. `print_schema()` shows both input and output contracts, which is useful for debugging and for other systems that consume the schema.
+
+3. **For the LLM**: the output schema is included in the tool definition sent to the LLM, helping it understand what data it will get back.
+
+### How to Declare It
+
+Define a Pydantic `BaseModel` named `OutputSchema` as an inner class:
+
+```python
+from pydantic import BaseModel, Field
+
+@tool(name="geocode", description="Convert address to coordinates")
+class GeocodeTool:
+    address: str = Field(..., description="Address to geocode")
+
+    class OutputSchema(BaseModel):
+        latitude: float = Field(..., description="Latitude in decimal degrees")
+        longitude: float = Field(..., description="Longitude in decimal degrees")
+        confidence: float = Field(..., description="Confidence score 0-1")
+
+    async def execute(self) -> dict:
+        result = await geocoding_api.lookup(self.address)
+        return {
+            "latitude": result.lat,
+            "longitude": result.lng,
+            "confidence": result.score,
+        }
+```
+
+The decorator detects it automatically — no extra configuration needed.
+
+### OutputSchema on Deferred Tools
+
+For deferred tools, `OutputSchema` is essential. It tells the client exactly what to return:
+
+```python
+@tool(name="bash", description="Execute shell command", is_deferred=True)
+class BashTool:
+    command: str = Field(..., description="The command to run")
+
+    class OutputSchema(BaseModel):
+        stdout: str = Field(default="", description="Standard output")
+        stderr: str = Field(default="", description="Standard error")
+        exit_code: int = Field(default=0, description="Process exit code")
+
+    def execute(self) -> None:
+        return None  # deferred
+```
+
+When the A2A executor receives the client's response, it validates it against `OutputSchema`. If the client returns `{"stdout": "hello", "exit_code": 0}`, the executor accepts it. If the client returns something unexpected, it falls back to `{"answer": raw_text}`.
+
+### When to Skip It
+
+- Simple tools where the output is obvious (e.g., `{"result": 42}`)
+- Prototype/internal tools where no external consumer reads the schema
+- Tools where the output structure varies dynamically
+
+---
+
+## System Prompt Fragments
+
+A tool can contribute text to the agent's system message by defining a `system_prompt_fragment()` method. When the tool is registered, `BaseAgent.register_tool()` calls this method and appends the returned string to the system message.
+
+### Why Use It
+
+Some tools need the LLM to know about the execution environment — which shell is available, what database schema exists, which APIs are accessible. Instead of requiring the caller to manually build a system message with this context, the tool injects it automatically.
+
+### How It Works
+
+```python
+@tool(name="sql_query", description="Execute SQL")
+class SQLQueryTool:
+    query: str = Field(...)
+
+    def __init__(self, schema_info: str):
+        self._schema_info = schema_info
+
+    async def execute(self) -> dict:
+        ...
+
+    def system_prompt_fragment(self) -> str | None:
+        return (
+            "\n\n## Database Schema\n"
+            f"{self._schema_info}\n"
+            "Write standard SQL. Use double quotes for identifiers."
+        )
+```
+
+When registered:
+
+```python
+agent = BaseAgent(
+    system_message="You are a data analyst.",
+    provider=provider,
+    tools=[SQLQueryTool(schema_info="Tables: users(id, name, email), orders(id, user_id, total)")],
+)
+# agent.system_message.content now includes:
+# "You are a data analyst.\n\n## Database Schema\nTables: users(...), orders(...)\n..."
+```
+
+The LLM sees the schema as part of its instructions and generates better queries.
+
+### Rules
+
+- Return `str` to inject content, `None` to skip
+- Called once at registration time, not on every execution
+- The fragment is appended to the end of the existing system message
+- Keep fragments focused — don't repeat information already in the system message
+
+### Built-in Example: BashTool
+
+When `BashTool` has an executor, its `system_prompt_fragment()` injects:
+
+```
+## Shell Environment
+- Platform: Windows
+- OS Version: Windows 11 Enterprise 10.0.26200
+- Shell: bash (use Unix shell syntax, not Windows -- e.g., /dev/null not NUL, forward slashes in paths)
+- Working directory: /c/Users/GLoverde/Projects
+- Drive mounts: C: -> /c/, D: -> /d/
+- Use Unix-style paths with forward slashes (e.g. /c/Users/... not C:\Users\...)
+```
+
+This tells the LLM which shell it's working with, so it generates compatible commands. When `BashTool` is deferred (no executor), `system_prompt_fragment()` returns `None` — the client already knows its own environment.
+
+---
+
+## Normal Tools vs Deferred Tools
+
+### Normal Tools (`is_deferred=False`)
+
+Execute on the **server** where the agent runs. The agent loop continues seamlessly.
+
+```
+LLM → ToolCall → execute() runs on server → ToolResult → LLM continues
+```
+
+### Deferred Tools (`is_deferred=True`)
+
+Delegate execution to the **client**. The agent loop stops and waits for the client to provide the result.
+
+```
+LLM → ToolCall → execute() returns None → loop stops
+    → client executes → sends result back → loop resumes → LLM continues
+```
+
+### When to Use Each
+
+| Normal | Deferred |
+|--------|----------|
+| Calculations, transformations | Shell commands on client machine |
+| Database queries | File operations on client filesystem |
+| API calls to external services | User interaction (ask for clarification) |
+| Any server-side operation | Long-running client-side operations |
+
+### Dynamic `is_deferred`
+
+A tool can switch between modes at instance creation time. `BashTool` does this:
+
+```python
+@tool(name="bash", description="Execute shell command", is_deferred=True)
+class BashTool:
+    command: str = Field(...)
+
+    def __init__(self, executor=None):
+        self._executor = executor
+        self.is_deferred = executor is None  # override class-level default
+
+    async def execute(self) -> dict | None:
+        if self._executor is None:
+            return None  # deferred: client executes
+        return await self._executor.execute(self.command)  # normal: server executes
+```
+
+- `BashTool()` → deferred (client executes)
+- `BashTool(executor=LocalShellExecutor())` → normal (server executes)
+
+---
+
+## Tool Registration
+
+### At Construction
+
+```python
+agent = BaseAgent(
+    system_message="...",
+    provider=provider,
+    tools=[Calculator, SearchTool()],  # class or instance, both work
+)
+```
+
+Classes are auto-instantiated. Use instances when the tool needs constructor dependencies.
+
+### After Construction
+
+```python
+agent = BaseAgent(system_message="...", provider=provider)
+agent.register_tool(SQLQueryTool(connection=db))
+```
+
+### What `register_tool()` Does
+
+1. Adds the tool to `agent.registered_tools`
+2. Calls `system_prompt_fragment()` if the tool defines it
+3. Appends the fragment (if any) to `agent.system_message.content`
+
+---
+
+## Tool Execution Lifecycle
+
+When the LLM generates tool calls, the agent dispatches them:
+
+```
+1. BEFORE_TOOL_EXECUTION hook (per tool)
+2. Execute all tools in parallel (asyncio.gather)
+3. AFTER_TOOL_EXECUTION hook (per tool)
+4. ON_TOOL_ERROR hook (if any tool failed)
+5. If deferred tools detected → stop loop, yield deferred_tool_calls
+6. If exit_on_success matches → end loop
+7. Otherwise → feed results to LLM, continue loop
+```
+
+### Parallel Execution
+
+All tool calls in the same LLM response run in parallel. Each gets an isolated copy of the tool instance (via `copy.copy`), so no shared mutable state.
+
+### Error Handling
+
+The `@tool` decorator wraps `execute()` in a try/except:
+- **ValidationError** (bad arguments from LLM): returns `ToolResult(status=ERROR)` with formatted validation message
+- **Any exception**: returns `ToolResult(status=ERROR, error=str(e))`
+- Error messages are auto-truncated to 2000 characters
+
+The LLM sees the error and can self-correct in the next iteration.
+
+---
+
+## Built-in Tools
+
+### BashTool
+
+Shell command execution with pluggable backend.
+
+```python
+from obelix.plugins.builtin import BashTool
+```
+
+**Deferred mode** (default — client executes):
+
+```python
+agent = BaseAgent(system_message="...", provider=provider, tools=[BashTool()])
+```
+
+**Local mode** (server executes via `LocalShellExecutor`):
+
+```python
+from obelix.adapters.outbound.shell import LocalShellExecutor
+
+agent = BaseAgent(
+    system_message="...",
+    provider=provider,
+    tools=[BashTool(executor=LocalShellExecutor())],
+)
+```
+
+**Input fields**: `command` (str), `description` (str), `timeout` (1-600s), `working_directory` (optional)
+
+**OutputSchema**: `stdout`, `stderr`, `exit_code`
+
+**System prompt fragment**: in local mode, injects platform, shell, cwd, and drive mount info. In deferred mode, returns `None`.
+
+#### LocalShellExecutor
+
+Auto-detects the best shell: Git Bash > WSL bash > cmd.exe (Windows), bash > zsh > sh (Unix).
+
+```python
+from obelix.adapters.outbound.shell import LocalShellExecutor
+
+executor = LocalShellExecutor()          # auto-detect shell
+executor = LocalShellExecutor(shell="/bin/zsh")  # explicit shell
+
+# Direct usage (outside of BashTool)
+result = await executor.execute("ls -la", timeout=10, working_directory="/tmp")
+# {"stdout": "...", "stderr": "", "exit_code": 0}
+```
+
+Key features:
+- Uses `create_subprocess_exec(shell, "-c", command)` — not `create_subprocess_shell` (which uses cmd.exe on Windows)
+- Output truncated to 50K chars to avoid bloating LLM context
+- Timeout with process kill, returns `exit_code=-1`
+- `shell_info` property: platform, shell path, shell name, cwd, home, drive mounts
+
+#### Custom Executors
+
+Implement `AbstractShellExecutor` for Docker, SSH, cloud shells, etc.:
+
+```python
+from obelix.ports.outbound.shell_executor import AbstractShellExecutor
+
+class DockerExecutor(AbstractShellExecutor):
+    def __init__(self, container: str):
+        self._container = container
+
+    @property
+    def shell_info(self) -> dict:
+        return {"platform": "Docker", "shell": "/bin/bash", "shell_name": "bash"}
+
+    async def execute(self, command, timeout=120, working_directory=None):
+        # docker exec logic
+        return {"stdout": ..., "stderr": ..., "exit_code": ...}
+```
+
+### RequestUserInputTool
+
+A2A-specific deferred tool for requesting input from remote clients. Auto-registered by `AgentFactory.a2a_serve()`.
+
+```python
+from obelix.plugins.builtin.request_user_input_tool import RequestUserInputTool
+```
+
+**Input fields**: `question` (str), `options` (optional list of `QuestionOption` with `label` and `description`)
+
+**No OutputSchema** — the A2A executor falls back to `{"answer": text}`.
+
+When the LLM needs clarification, it calls this tool. The A2A server emits `input-required`, the client responds, and the agent resumes.
+
+---
+
+## SubAgentWrapper
+
+Wraps another `BaseAgent` as a callable tool for hierarchical composition. You don't create this directly — use `agent.register_agent()`:
+
+```python
+coordinator.register_agent(
+    analyzer_agent,
+    name="analyzer",
+    description="Analyzes data and generates insights",
+    stateless=True,
+)
+```
+
+- `stateless=True`: each call gets a fresh copy (parallel-safe, no shared history)
+- `stateless=False`: calls share conversation history (serialized with a lock)
+
+See [BaseAgent Guide — Registering Sub-Agents](base_agent.md#registering-sub-agents).
+
+---
+
+## Tool Protocol
+
+All tools satisfy the `Tool` Protocol (structural typing — no base class inheritance):
+
+```python
 @runtime_checkable
 class Tool(Protocol):
-    """Contract that all tools must satisfy."""
-
     tool_name: str
     tool_description: str
     is_deferred: bool
@@ -37,993 +527,59 @@ class Tool(Protocol):
     def create_schema(self) -> MCPToolSchema: ...
 ```
 
-Required members:
-- **`tool_name: str`** - Unique identifier for the tool
-- **`tool_description: str`** - Human-readable description of what the tool does
-- **`is_deferred: bool`** - If `True`, execution is delegated to the client; if `False`, execution happens on the server
-- **`async def execute(tool_call: ToolCall) -> ToolResult`** - Async method that executes the tool
-- **`def create_schema() -> MCPToolSchema`** - Returns the tool's input and output schema
+The `@tool` decorator, `SubAgentWrapper`, and `MCPTool` all satisfy this protocol. You can also implement it manually for advanced use cases.
 
 ---
 
-## Creating Tools with `@tool` Decorator
-
-The `@tool` decorator is the primary way to create tools. It automatically handles schema generation, validation, and execution wrapping.
-
-### Basic Syntax
-
-```python
-from obelix.core.tool.tool_decorator import tool
-from pydantic import Field
-
-@tool(name="tool_name", description="What the tool does", is_deferred=False)
-class MyTool:
-    param1: str = Field(..., description="Parameter description")
-    param2: int = Field(default=10, description="Optional parameter")
-
-    async def execute(self) -> dict:
-        # Your logic here
-        return {"result": f"Processed {self.param1}"}
-```
-
-### Decorator Parameters
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `name` | str | Yes | Tool name for LLM discovery |
-| `description` | str | Yes | Human-readable description |
-| `is_deferred` | bool | No | If `True`, execution is delegated to client (default: `False`) |
-
-### Input Parameters
-
-Input parameters are defined using Pydantic `Field()` annotations on class attributes:
-
-```python
-from pydantic import Field
-
-@tool(name="calculator", description="Basic arithmetic")
-class Calculator:
-    a: float = Field(..., description="First number")
-    b: float = Field(..., description="Second number")
-    operation: str = Field("add", description="Operation: add, subtract, multiply")
-
-    async def execute(self) -> dict:
-        if self.operation == "add":
-            return {"result": self.a + self.b}
-        elif self.operation == "subtract":
-            return {"result": self.a - self.b}
-        # ...
-```
-
-The decorator automatically extracts these fields and creates a Pydantic validation schema. When the LLM calls the tool, the decorator validates the provided arguments against this schema.
-
-### Sync vs Async Execution
-
-The decorator handles both sync and async `execute()` methods:
-
-```python
-# Sync execute
-@tool(name="cpu_bound", description="CPU-intensive work")
-class CPUBoundTool:
-    data: str = Field(...)
-
-    def execute(self) -> dict:  # Sync!
-        # This runs in a thread pool (asyncio.to_thread)
-        return {"processed": self.data.upper()}
-
-# Async execute
-@tool(name="network_bound", description="Network call")
-class NetworkBoundTool:
-    url: str = Field(...)
-
-    async def execute(self) -> dict:  # Async!
-        # This runs directly with await
-        async with httpx.AsyncClient() as client:
-            response = await client.get(self.url)
-        return {"status": response.status_code}
-```
-
-Sync methods are automatically executed in a thread to avoid blocking the async event loop.
-
-### Automatic Validation
-
-The decorator validates input arguments using Pydantic:
-
-```python
-@tool(name="divide", description="Divide two numbers")
-class DivideTool:
-    a: float = Field(..., description="Numerator")
-    b: float = Field(..., gt=0, description="Denominator (must be > 0)")
-
-    async def execute(self) -> dict:
-        return {"result": self.a / self.b}
-```
-
-If the LLM provides invalid arguments (e.g., `b=0`), the decorator automatically catches the validation error and returns a `ToolResult` with status `ERROR`.
-
-### Inspecting Schema
-
-Use `print_schema()` to quickly inspect the generated schema:
-
-```python
-@tool(name="my_tool", description="...")
-class MyTool:
-    param: str = Field(...)
-
-    async def execute(self) -> dict:
-        return {}
-
-# Print the schema
-MyTool.print_schema()
-
-# Output:
-# {
-#   "name": "my_tool",
-#   "description": "...",
-#   "inputSchema": { ... },
-#   "outputSchema": { ... }
-# }
-```
-
----
-
-## OutputSchema (Optional)
-
-For tools that return structured responses (especially deferred tools), you can declare an `OutputSchema` inner class:
-
-```python
-from pydantic import BaseModel
-
-@tool(name="bash", description="Execute shell command", is_deferred=True)
-class BashTool:
-    command: str = Field(..., description="The command to run")
-
-    class OutputSchema(BaseModel):
-        """Expected response format from the client."""
-        stdout: str = Field(default="", description="Standard output")
-        stderr: str = Field(default="", description="Standard error")
-        exit_code: int = Field(default=0, description="Process exit code")
-
-    def execute(self) -> None:
-        return None  # Deferred: client provides the output
-```
-
-The `OutputSchema`:
-- **Is optional**: Not all tools need one. If omitted, defaults to `{"type": "object", "additionalProperties": true}`
-- **Is detected automatically**: The decorator looks for an inner class named `OutputSchema` that inherits from `BaseModel`
-- **Appears in tool schema**: Used in the tool's `outputSchema` field for client understanding
-- **Is useful for deferred tools**: Tells the client/executor what format to return
-- **Can be used on any tool**: Even normal (non-deferred) tools can declare their response contract
-
-Example with OutputSchema used for documentation:
-
-```python
-@tool(name="get_user", description="Fetch user by ID")
-class GetUserTool:
-    user_id: int = Field(..., description="User ID")
-
-    class OutputSchema(BaseModel):
-        id: int
-        name: str
-        email: str
-        created_at: str
-
-    async def execute(self) -> dict:
-        # Server-side execution
-        user = await fetch_user(self.user_id)
-        return {
-            "id": user.id,
-            "name": user.name,
-            "email": user.email,
-            "created_at": user.created_at.isoformat(),
-        }
-```
-
----
-
-## Tool Registration
-
-Tools are registered on an agent instance or passed at construction time.
-
-### Register After Construction
-
-```python
-from obelix.core.agent import BaseAgent
-from obelix.core.tool.tool_decorator import tool
-
-@tool(name="calculator", description="Arithmetic")
-class Calculator:
-    a: float = Field(...)
-    b: float = Field(...)
-
-    async def execute(self) -> dict:
-        return {"sum": self.a + self.b}
-
-agent = BaseAgent(system_message="You are helpful")
-agent.register_tool(Calculator())
-```
-
-### Pass at Construction
-
-```python
-@tool(name="calculator", description="Arithmetic")
-class Calculator:
-    # ...
-
-# Pass class or instance
-agent = BaseAgent(
-    system_message="You are helpful",
-    tools=[Calculator]  # Class or instance, both work
-)
-```
-
-### Multiple Tools
-
-```python
-agent = BaseAgent(
-    system_message="You are helpful",
-    tools=[CalculatorTool, StringTool, NetworkTool]
-)
-```
-
-### Access Registered Tools
-
-```python
-for tool in agent.registered_tools:
-    print(tool.tool_name, tool.tool_description)
-```
-
----
-
-## Tool Execution Lifecycle
-
-When an agent executes a query with tools, the following happens:
-
-```
-LLM generates tool calls
-        ↓
-BaseAgent detects tool calls
-        ↓
-BEFORE_TOOL_EXECUTION hook
-        ↓
-Find tool by name
-        ↓
-Tool.execute(tool_call) — runs in parallel for multiple tools
-        ↓
-AFTER_TOOL_EXECUTION hook
-        ↓
-Tool returns ToolResult
-        ↓
-[If deferred] Stop loop, yield to caller
-[If normal] Continue loop, feed ToolResult back to LLM
-        ↓
-ON_TOOL_ERROR hook (if error occurred)
-```
-
-### Parallel Execution
-
-All tools in the same iteration run in parallel using `asyncio.gather()`:
-
-```python
-# LLM calls: calculator, get_user, search_api (all at once)
-# BaseAgent runs all three in parallel
-# Results fed back together
-```
-
-### Hook Integration
-
-You can intercept tool execution with hooks:
-
-```python
-from obelix.core.agent.hooks import AgentEvent, HookDecision
-
-agent.on(AgentEvent.BEFORE_TOOL_EXECUTION).when(
-    lambda s: s.tool_call.name == "dangerous_tool"
-).handle(
-    decision=HookDecision.RETRY,  # Skip the tool
-    effects=[lambda s: print("Blocked dangerous_tool")]
-)
-
-agent.on(AgentEvent.ON_TOOL_ERROR).when(
-    lambda s: "timeout" in s.error.lower()
-).handle(
-    decision=HookDecision.RETRY,  # Retry the whole iteration
-)
-```
-
-See [Hooks API](hooks.md) for complete hook documentation.
-
-### Tool Policy
-
-Enforce tool call requirements using `ToolRequirement`:
-
-```python
-from obelix.core.model.tool_message import ToolRequirement
-
-tool_policy = [
-    ToolRequirement(
-        tool_name="search",
-        min_calls=1,
-        require_success=True,
-        error_message="Must call search_api at least once successfully"
-    )
-]
-
-agent = BaseAgent(
-    system_message="...",
-    tool_policy=tool_policy,
-)
-```
-
----
-
-## Normal Tools vs Deferred Tools
-
-This is the key distinction in Obelix's tool system.
-
-### Normal Tools (is_deferred=False)
-
-Normal tools execute on the **server** (where the agent runs):
-
-```python
-@tool(name="calculator", description="Add two numbers", is_deferred=False)
-class Calculator:
-    a: float = Field(...)
-    b: float = Field(...)
-
-    async def execute(self) -> dict:
-        return {"result": self.a + self.b}
-```
-
-**Flow**:
-```
-LLM generates ToolCall(name="calculator", arguments={"a": 5, "b": 3})
-    ↓
-Agent finds tool, calls execute()
-    ↓
-execute() runs on server, returns {"result": 8}
-    ↓
-Agent injects ToolResult into history
-    ↓
-LLM continues reasoning with the result
-```
-
-**Characteristics**:
-- `execute()` returns a dict or object
-- The dict becomes `ToolResult.result`
-- `inputSchema` describes what the LLM must provide
-- `outputSchema` is informational (describes the response format)
-- Execution is synchronous from the LLM's perspective
-
-### Deferred Tools (is_deferred=True)
-
-Deferred tools delegate execution to a **client** (e.g., A2A client, CLI runner, human):
-
-```python
-@tool(name="bash", description="Execute shell command", is_deferred=True)
-class BashTool:
-    command: str = Field(..., description="The command to run")
-
-    class OutputSchema(BaseModel):
-        stdout: str = Field(default="", description="Standard output")
-        stderr: str = Field(default="", description="Standard error")
-        exit_code: int = Field(default=0, description="Process exit code")
-
-    def execute(self) -> None:
-        return None  # Always return None for deferred tools
-```
-
-**Flow**:
-```
-LLM generates ToolCall(name="bash", arguments={"command": "ls -la"})
-    ↓
-Agent finds tool, calls execute()
-    ↓
-execute() returns None (deferred signature)
-    ↓
-Agent detects is_deferred=True + None result
-    ↓
-Agent stops loop and yields StreamEvent(deferred_tool_calls=[...])
-    ↓
-Caller/Consumer receives the tool call
-    ↓
-Consumer executes action (locally, remotely, or manually)
-    ↓
-Consumer sends result back to agent
-    ↓
-Agent validates result against OutputSchema
-    ↓
-Agent injects ToolMessage with result
-    ↓
-Agent resumes loop with resume_after_deferred()
-    ↓
-LLM continues reasoning with the result
-```
-
-**Characteristics**:
-- `execute()` always returns `None`
-- The agent loop **stops** when a deferred tool is called
-- `inputSchema` describes what the LLM sends
-- `OutputSchema` (required) describes what the client must send back
-- Execution is asynchronous from the LLM's perspective (waits for client response)
-
-### Comparison Table
-
-| Aspect | Normal | Deferred |
-|--------|--------|----------|
-| `is_deferred` | `False` | `True` |
-| `execute()` return | dict/object | `None` |
-| Execution location | Server | Client |
-| Blocking? | Server blocks briefly | LLM waits for client |
-| `OutputSchema` | Optional | Recommended |
-| Use cases | Calculate, search, filter | Shell, file I/O, user input |
-
-### When to Use Each
-
-**Use normal tools for**:
-- Calculations, transformations
-- Database queries
-- API calls to external services
-- Any operation the server can perform synchronously
-
-**Use deferred tools for**:
-- Shell command execution (delegate to client environment)
-- File system operations (client may have different paths)
-- User interaction (ask the client/user for input)
-- Long-running operations (don't block the LLM)
-
----
-
-## Built-in Tools
-
-Obelix provides several built-in tools for common use cases.
-
-### BashTool
-
-Deferred tool for shell command execution. The client receives the command and executes it locally.
-
-**Import**:
-```python
-from obelix.plugins.builtin import BashTool
-```
-
-**Usage**:
-```python
-agent = BaseAgent(system_message="You are helpful", tools=[BashTool])
-
-# LLM can call: bash -c "git status"
-# Agent stops, yields deferred_tool_calls
-# Client executes locally, returns { stdout: "...", stderr: "...", exit_code: 0 }
-# Agent resumes
-```
-
-**Schema**:
-- **Input**: `command` (str), `description` (str), `timeout` (int, 1-600s), `working_directory` (optional str)
-- **Output**: `stdout`, `stderr`, `exit_code`
-
-### AskUserQuestionTool
-
-Interactive tool for asking users questions with structured options. Blocks on stdin.
-
-**Import**:
-```python
-from obelix.plugins.builtin.ask_user_question_tool import AskUserQuestionTool
-```
-
-**Usage**:
-```python
-agent = BaseAgent(system_message="...", tools=[AskUserQuestionTool])
-
-# LLM calls the tool:
-# {
-#   "questions": [
-#     {
-#       "question": "Which library?",
-#       "header": "Library",
-#       "options": [
-#         {"label": "React", "description": "UI library"},
-#         {"label": "Vue", "description": "Framework"}
-#       ],
-#       "multi_select": false
-#     }
-#   ]
-# }
-
-# Tool displays options, blocks on input(), returns user choice
-```
-
-**Schema**:
-- **Input**: `questions` (list of Question objects with options)
-- **Output**: dict with `answers` mapping question text to chosen option(s)
-
-### RequestUserInputTool
-
-A2A-specific deferred tool for requesting input from remote clients (when using A2A server).
-
-**Import**:
-```python
-from obelix.plugins.builtin.request_user_input_tool import RequestUserInputTool
-```
-
-**Usage**: Automatically registered when using `AgentFactory.a2a_serve()`. The LLM calls it when input is needed:
-
-```python
-# LLM calls:
-# {
-#   "question": "Which format?",
-#   "options": [
-#     {"label": "JSON", "description": "JSON format"},
-#     {"label": "CSV", "description": "CSV format"}
-#   ]
-# }
-
-# A2A executor emits input-required event
-# Client responds with chosen option
-# Agent resumes
-```
-
-**Schema**:
-- **Input**: `question` (str), `options` (optional list of QuestionOption)
-- **Output**: User's choice as string or None
-
----
-
-## Other Tool Implementations
-
-### SubAgentWrapper
-
-Wraps another `BaseAgent` as a tool, enabling hierarchical agent composition.
-
-**Usage**:
-```python
-from obelix.core.agent.subagent_wrapper import SubAgentWrapper
-from obelix.core.agent.agent_factory import AgentFactory
-
-# Create sub-agent
-analyzer_agent = AnalyzerAgent(system_message="Analyze data")
-
-# Wrap it as a tool
-analyzer_wrapper = SubAgentWrapper(
-    agent=analyzer_agent,
-    name="analyzer",
-    description="Analyzes data and extracts insights",
-    stateless=True  # Each call gets a fresh copy
-)
-
-# Register on orchestrator
-orchestrator = BaseAgent(system_message="...", tools=[analyzer_wrapper])
-```
-
-**Options**:
-- `stateless=True`: Each invocation gets a copy of the agent (parallel-safe, no shared history)
-- `stateless=False`: All invocations share the agent's conversation history (serialized with a lock)
-
-**Schema**: Input schema is automatically generated from fields on the wrapped agent class.
-
-### MCPTool
-
-Wraps tools from MCP servers. Requires MCP plugin.
-
-**Import**:
-```python
-from obelix.plugins.mcp.mcp_tool import MCPTool
-```
-
-See [Obelix documentation on MCP](../README.md#model-context-protocol-mcp-support) for details.
-
----
-
-## Tool Message Types
+## Message Types Reference
 
 ### ToolCall
 
-Represents a tool call made by the LLM:
-
-```python
-from obelix.core.model.tool_message import ToolCall
-
-call = ToolCall(
-    id="call_123abc",
-    name="calculator",
-    arguments={"a": 5, "b": 3}
-)
-```
+What the LLM generates when it wants to use a tool:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | str | Unique ID for this tool call |
-| `name` | str | Name of the tool to invoke |
-| `arguments` | dict | Arguments provided by the LLM |
+| `id` | str | Unique ID for this call |
+| `name` | str | Tool name |
+| `arguments` | dict | Arguments from the LLM |
 
 ### ToolResult
 
-Result of a single tool execution:
-
-```python
-from obelix.core.model.tool_message import ToolResult, ToolStatus
-
-result = ToolResult(
-    tool_name="calculator",
-    tool_call_id="call_123abc",
-    result={"sum": 8},
-    status=ToolStatus.SUCCESS,
-    execution_time=0.015
-)
-```
+What `execute()` produces:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `tool_name` | str | Name of the tool |
-| `tool_call_id` | str | ID of the corresponding ToolCall |
-| `result` | Any | The return value from execute() |
-| `status` | ToolStatus | SUCCESS, ERROR, or TIMEOUT |
-| `error` | str \| None | Error message if status is ERROR |
-| `execution_time` | float \| None | Time spent executing (seconds) |
-
-### ToolStatus
-
-Enum for tool execution status:
-
-```python
-from obelix.core.model.tool_message import ToolStatus
-
-ToolStatus.SUCCESS  # Tool executed successfully
-ToolStatus.ERROR    # Tool execution failed
-ToolStatus.TIMEOUT  # Tool execution timed out
-```
+| `tool_name` | str | Tool name |
+| `tool_call_id` | str | Matching ToolCall ID |
+| `result` | Any | Return value from execute() |
+| `status` | ToolStatus | `SUCCESS`, `ERROR`, or `TIMEOUT` |
+| `error` | str \| None | Error message (auto-truncated to 2000 chars) |
+| `execution_time` | float \| None | Seconds |
 
 ### ToolMessage
 
-Message containing a batch of tool results, added to conversation history:
+Batch of results added to conversation history after tool execution:
 
 ```python
-from obelix.core.model.tool_message import ToolMessage
-
-tool_results = [result1, result2]
-message = ToolMessage(tool_results=tool_results)
-
-# Automatically added to agent.conversation_history
+ToolMessage(tool_results=[result1, result2])
 ```
 
 ### MCPToolSchema
 
-Schema describing a tool's interface (generated automatically):
-
-```python
-from obelix.core.model.tool_message import MCPToolSchema
-
-schema = MCPToolSchema(
-    name="calculator",
-    description="Add two numbers",
-    inputSchema={
-        "type": "object",
-        "properties": {
-            "a": {"type": "number"},
-            "b": {"type": "number"}
-        },
-        "required": ["a", "b"]
-    },
-    outputSchema={
-        "type": "object",
-        "properties": {
-            "result": {"type": "number"}
-        }
-    }
-)
-```
+Schema describing a tool's interface (generated by `create_schema()`):
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | str | Tool identifier |
 | `description` | str | Human-readable description |
 | `inputSchema` | dict | JSON Schema for input parameters |
-| `outputSchema` | dict \| None | JSON Schema for response |
-| `title` | str \| None | Friendly name for UI |
-| `annotations` | dict \| None | Behavioral hints |
-
----
-
-## Building a Deferred Tool (Step-by-Step)
-
-Here's a complete walkthrough of creating a deferred tool that requests file upload from the client:
-
-### Step 1: Define the Tool Class
-
-```python
-from obelix.core.tool.tool_decorator import tool
-from pydantic import BaseModel, Field
-
-@tool(
-    name="request_file_upload",
-    description=(
-        "Request the user to upload a file. The client will handle the file "
-        "selection and upload, then return the file path or content."
-    ),
-    is_deferred=True
-)
-class RequestFileUploadTool:
-    file_type: str = Field(
-        ...,
-        description="Type of file requested (e.g., 'CSV', 'JSON', 'PDF')"
-    )
-    description: str = Field(
-        ...,
-        description="User-friendly description of what file is needed"
-    )
-```
-
-### Step 2: Declare OutputSchema
-
-```python
-    class OutputSchema(BaseModel):
-        """Expected response from client after file upload."""
-
-        file_path: str = Field(..., description="Path to the uploaded file")
-        file_size: int = Field(..., description="Size in bytes")
-        file_name: str = Field(..., description="Original filename")
-```
-
-### Step 3: Implement execute()
-
-```python
-    def execute(self) -> None:
-        """
-        Return None to signal deferred execution.
-
-        The BaseAgent detects is_deferred=True + None result
-        and stops the loop, yielding the tool call to the caller.
-        """
-        return None
-```
-
-### Step 4: Register on Agent
-
-```python
-agent = BaseAgent(
-    system_message="You are a data analyst",
-    tools=[RequestFileUploadTool]
-)
-```
-
-### Step 5: What the Consumer Does
-
-When the agent stops with `deferred_tool_calls`, the consumer receives:
-
-```python
-ToolCall(
-    id="call_abc123",
-    name="request_file_upload",
-    arguments={
-        "file_type": "CSV",
-        "description": "Sales data for Q4"
-    }
-)
-```
-
-The consumer:
-1. Presents a file upload dialog to the user
-2. Validates the uploaded file
-3. Creates a `ToolResult` matching the `OutputSchema`:
-
-```python
-result = ToolResult(
-    tool_name="request_file_upload",
-    tool_call_id="call_abc123",
-    result={
-        "file_path": "/tmp/sales_q4.csv",
-        "file_size": 45280,
-        "file_name": "sales_q4.csv"
-    },
-    status=ToolStatus.SUCCESS
-)
-```
-
-4. Injects the result into the agent's history:
-
-```python
-agent.conversation_history.append(ToolMessage(tool_results=[result]))
-```
-
-5. Resumes the agent loop:
-
-```python
-async for event in agent.resume_after_deferred():
-    if event.is_final:
-        print(event.assistant_response.content)
-```
-
-### Full Example
-
-```python
-from obelix.core.tool.tool_decorator import tool
-from obelix.core.agent import BaseAgent
-from obelix.core.model.tool_message import ToolMessage, ToolResult, ToolStatus
-from pydantic import BaseModel, Field
-
-@tool(
-    name="request_file_upload",
-    description="Request user to upload a file",
-    is_deferred=True
-)
-class RequestFileUploadTool:
-    file_type: str = Field(...)
-    description: str = Field(...)
-
-    class OutputSchema(BaseModel):
-        file_path: str
-        file_size: int
-        file_name: str
-
-    def execute(self) -> None:
-        return None
-
-# Create and use
-agent = BaseAgent(system_message="You are helpful", tools=[RequestFileUploadTool])
-
-# Agent queries
-response = agent.execute_query("I need to analyze sales data. Can you request a CSV file from the user?")
-
-# Check if deferred
-for event in agent.execute_query_stream("..."):
-    if event.deferred_tool_calls:
-        print(f"Deferred: {event.deferred_tool_calls}")
-
-        # Consumer handles the tool call
-        result = ToolResult(
-            tool_name="request_file_upload",
-            tool_call_id=event.deferred_tool_calls[0].id,
-            result={
-                "file_path": "/data/sales.csv",
-                "file_size": 10240,
-                "file_name": "sales.csv"
-            },
-            status=ToolStatus.SUCCESS
-        )
-
-        # Inject and resume
-        agent.conversation_history.append(ToolMessage(tool_results=[result]))
-        async for resume_event in agent.resume_after_deferred():
-            if resume_event.is_final:
-                print(f"Final: {resume_event.assistant_response.content}")
-```
-
----
-
-## Common Patterns
-
-### Tool with Constructor Dependencies
-
-Tools can have `__init__` for dependency injection:
-
-```python
-@tool(name="database_query", description="Query the database")
-class DatabaseQueryTool:
-    connection: DatabaseConnection  # Set in __init__
-
-    query: str = Field(..., description="SQL query")
-
-    def __init__(self, connection: DatabaseConnection):
-        self.connection = connection
-
-    async def execute(self) -> dict:
-        result = await self.connection.execute(self.query)
-        return {"rows": result}
-
-# Usage
-db_conn = DatabaseConnection("postgresql://...")
-agent = BaseAgent(system_message="...", tools=[DatabaseQueryTool(db_conn)])
-```
-
-### Tool with Validation
-
-Use Pydantic's validation to enforce constraints:
-
-```python
-from pydantic import Field, field_validator
-
-@tool(name="safe_divide", description="Divide two numbers safely")
-class SafeDivideTool:
-    a: float = Field(...)
-    b: float = Field(
-        ...,
-        gt=0,  # Must be > 0
-        description="Divisor (must not be zero)"
-    )
-
-    async def execute(self) -> dict:
-        return {"result": self.a / self.b}
-```
-
-### Tool with Rich Error Handling
-
-The decorator captures exceptions automatically, but you can add extra context:
-
-```python
-@tool(name="api_call", description="Call external API")
-class APICallTool:
-    endpoint: str = Field(...)
-
-    async def execute(self) -> dict:
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(self.endpoint, timeout=5)
-                response.raise_for_status()
-                return {"data": response.json()}
-        except httpx.TimeoutException:
-            raise RuntimeError(f"API request timed out after 5s to {self.endpoint}")
-        except httpx.HTTPError as e:
-            raise RuntimeError(f"API error: {e.response.status_code} {e.response.text}")
-```
-
----
-
-## Troubleshooting
-
-### "Tool validation failed"
-
-**Symptom**: `ToolResult` has status=ERROR with validation error message.
-
-**Fix**: Ensure all tool parameters have `Field()` definitions with descriptions:
-
-```python
-# ❌ Wrong
-@tool(name="bad", description="...")
-class BadTool:
-    param: str
-
-# ✅ Correct
-@tool(name="good", description="...")
-class GoodTool:
-    param: str = Field(..., description="Parameter description")
-```
-
-### "Tool not found"
-
-**Symptom**: `ToolResult` error says "Tool not found or not executable".
-
-**Fix**: Register the tool before executing a query:
-
-```python
-# ❌ Wrong
-agent = BaseAgent(system_message="...")
-response = agent.execute_query("Use my_tool")
-
-# ✅ Correct
-agent = BaseAgent(system_message="...", tools=[MyTool])
-response = agent.execute_query("Use my_tool")
-```
-
-### "Deferred tool always stops the loop"
-
-**Symptom**: Agent stops even when you want it to continue after the deferred tool.
-
-**Expected behavior**: Deferred tools **always** stop the loop. The consumer must manually resume with `resume_after_deferred()` after injecting the result. This is by design.
-
-### "Deferred tool execute() not returning None"
-
-**Symptom**: Deferred tool's `execute()` returns a dict instead of None, causing agent to not stop.
-
-**Fix**: Deferred tools must always return `None`:
-
-```python
-# ❌ Wrong
-@tool(name="bash", is_deferred=True)
-class BashTool:
-    def execute(self) -> None:
-        return {"stdout": ""}  # Returns dict, not None!
-
-# ✅ Correct
-@tool(name="bash", is_deferred=True)
-class BashTool:
-    def execute(self) -> None:
-        return None  # Always None
-```
+| `outputSchema` | dict \| None | JSON Schema for response (from `OutputSchema` or generic default) |
 
 ---
 
 ## See Also
 
-- [BaseAgent Guide](base_agent.md#registering-tools) - Tool registration and execution
-- [Agent Factory Guide](agent_factory.md#registering-sub-agents) - Creating sub-agents as tools
-- [Hooks API](hooks.md) - Intercepting tool execution with hooks
-- [A2A Server Guide](a2a_server.md) - Exposing agents with tools over HTTP
+- [BaseAgent Guide](base_agent.md) — tool registration, execution flow, deferred tools
+- [Agent Factory](agent_factory.md) — composing agents as sub-agent tools
+- [Hooks Guide](hooks.md) — intercepting tool execution
+- [A2A Server](a2a_server.md) — how deferred tools work in the A2A protocol

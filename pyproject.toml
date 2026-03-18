@@ -77,6 +77,8 @@ dev = [
     "pytest-asyncio>=1.0.0",
     "pytest-cov>=7.0.0",
     "pre-commit>=4.0.0",
+    "rich>=14.3.2",
+    "prompt-toolkit>=3.0.52",
 ]
 
 [tool.ruff]

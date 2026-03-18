@@ -141,6 +141,16 @@ class BaseAgent:
                 f"[{self.__class__.__name__}] Tool registered | tool={tool_name}"
             )
 
+            # Auto-inject system prompt fragment if the tool provides one
+            fragment_fn = getattr(tool, "system_prompt_fragment", None)
+            if callable(fragment_fn):
+                fragment = fragment_fn()
+                if fragment:
+                    self.system_message.content += fragment
+                    logger.info(
+                        f"[{self.__class__.__name__}] System prompt enriched by tool={tool_name}"
+                    )
+
     def on(self, event: AgentEvent) -> Hook:
         """
         Fluent API for registering hooks.

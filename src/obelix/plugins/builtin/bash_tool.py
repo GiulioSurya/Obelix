@@ -78,6 +78,55 @@ class BashTool:
         # Override the class-level is_deferred based on executor presence
         self.is_deferred = executor is None
 
+    def system_prompt_fragment(self) -> str | None:
+        """Build shell environment block for the agent's system prompt.
+
+        Returns None when deferred (no executor) — the client already
+        knows its own environment.  The executor probes the shell
+        environment automatically at construction time.
+        """
+        if self._executor is None:
+            return None
+
+        info = self._executor.shell_info
+        shell_name = info.get("shell_name", "sh")
+        plat = info.get("platform", "Unknown")
+        os_ver = info.get("os_version", "")
+
+        lines = [
+            "\n## Shell Environment",
+            f"- Platform: {plat}",
+        ]
+
+        if os_ver:
+            lines.append(f"- OS Version: {os_ver}")
+
+        # Shell name + syntax hint
+        syntax_hint = (
+            " (use Unix shell syntax, not Windows "
+            "-- e.g., /dev/null not NUL, forward slashes in paths)"
+            if plat == "Windows"
+            else ""
+        )
+        lines.append(f"- Shell: {shell_name}{syntax_hint}")
+
+        if cwd := info.get("cwd"):
+            lines.append(f"- Working directory: {cwd}")
+
+        if mounts := info.get("mounts"):
+            mount_str = ", ".join(
+                f"{drive} -> {mp}" for drive, mp in sorted(mounts.items())
+            )
+            lines.append(f"- Drive mounts: {mount_str}")
+            # Derive path style hint from the first mount
+            first_mp = next(iter(mounts.values()))
+            lines.append(
+                f"- Use Unix-style paths with forward slashes "
+                f"(e.g. {first_mp}Users/... not C:\\Users\\...)"
+            )
+
+        return "\n".join(lines)
+
     async def execute(self) -> dict | None:
         """Execute the command or defer to client.
 

@@ -1,16 +1,20 @@
-# demo_factory.py - Demo of Agent Factory + Shared Memory
+# examples/factory_server.py -- A2A server with multi-agent orchestration
 """
-This demo shows how to use the AgentFactory with SharedMemoryGraph.
+A2A server with a coordinator agent that orchestrates a math agent
+and a report agent via shared memory.
 
 Flow:
-  math_agent  ──▶  report_agent
-      │                 │
-      └────────┬────────┘
+  math_agent  -->  report_agent
+      |                 |
+      +--------+--------+
           coordinator (orchestrator)
 
-The coordinator calls math_agent first, which publishes its result
-to the SharedMemoryGraph. When report_agent runs, it pulls the math
-result via shared memory and produces a formatted report.
+Requirements:
+    uv sync --extra litellm --extra serve
+
+Usage:
+    API_KEY=sk-... uv run python examples/factory_server.py
+    # Server starts on http://localhost:8001
 """
 
 import os
@@ -30,29 +34,27 @@ from obelix.core.tracer.exporters import ConsoleExporter
 from obelix.infrastructure.logging import setup_logging
 
 load_dotenv()
-
-tracer = Tracer(exporter=ConsoleExporter(verbosity=3))
-# tracer = Tracer(
-#     exporter=HTTPExporter(endpoint="http://localhost:8100/api/v1/ingest"),
-#     service_name="demo_factory",
-# )
-
-
 setup_logging(console_level="INFO")
-
 
 LITELLM_MODEL = "anthropic/claude-haiku-4-5-20251001"
 
+tracer = Tracer(exporter=ConsoleExporter(verbosity=3))
+
+
+# -- Provider ----------------------------------------------------------------
+
 
 def make_provider() -> LiteLLMProvider:
-    """Create a LiteLLM provider — api_key read from ANTHROPIC_API_KEY env var."""
     return LiteLLMProvider(
         model_id=LITELLM_MODEL,
-        api_key=os.getenv("ANTHROPIC_API_KEY"),
+        api_key=os.getenv("API_KEY"),
         max_tokens=8000,
         reasoning_effort="low",
         temperature=1,
     )
+
+
+# -- Tools -------------------------------------------------------------------
 
 
 @tool(name="calculator", description="Performs basic arithmetic operations")
@@ -74,8 +76,10 @@ class CalculatorTool(Tool):
             result = self.a / self.b if self.b != 0 else "Error: division by zero"
         else:
             result = f"Unknown operation: {self.operation}"
-
         return {"result": result}
+
+
+# -- Agents ------------------------------------------------------------------
 
 
 class MathAgent(BaseAgent):
@@ -103,11 +107,7 @@ class MathAgent(BaseAgent):
 
 
 class ReportAgent(BaseAgent):
-    """Report agent that formats math results into a structured summary.
-
-    Depends on math_agent via SharedMemoryGraph: it receives calculation
-    results as injected context and produces a formatted report.
-    """
+    """Report agent that formats math results into a structured summary."""
 
     def __init__(self, **kwargs):
         super().__init__(
@@ -145,7 +145,7 @@ class CoordinatorAgent(BaseAgent):
             ),
             provider=LiteLLMProvider(
                 model_id=LITELLM_MODEL,
-                api_key=os.getenv("ANTHROPIC_API_KEY"),
+                api_key=os.getenv("API_KEY"),
                 reasoning_effort="medium",
                 max_tokens=10_000,
                 temperature=1,
@@ -155,23 +155,18 @@ class CoordinatorAgent(BaseAgent):
         )
 
 
-def create_memory_graph() -> SharedMemoryGraph:
-    """Create the dependency graph: math_agent -> report_agent."""
-    graph = SharedMemoryGraph()
-    graph.add_agent("math_agent")
-    graph.add_agent("report_agent")
-    graph.add_edge(
-        "math_agent", "report_agent", policy=PropagationPolicy.FINAL_RESPONSE_ONLY
-    )
-    return graph
+# -- Factory -----------------------------------------------------------------
 
 
 def create_factory() -> AgentFactory:
-    """Create and configure the agent factory with shared memory."""
-    memory_graph = create_memory_graph()
+    memory_graph = SharedMemoryGraph()
+    memory_graph.add_agent("math_agent")
+    memory_graph.add_agent("report_agent")
+    memory_graph.add_edge(
+        "math_agent", "report_agent", policy=PropagationPolicy.FINAL_RESPONSE_ONLY
+    )
 
     factory = AgentFactory()
-
     factory.with_tracer(tracer)
     factory.with_memory_graph(memory_graph)
 
@@ -181,7 +176,6 @@ def create_factory() -> AgentFactory:
         subagent_description="A math expert that can perform calculations",
         stateless=True,
     )
-
     factory.register(
         name="report_agent",
         cls=ReportAgent,
@@ -191,39 +185,14 @@ def create_factory() -> AgentFactory:
         ),
         stateless=True,
     )
-
-    factory.register(
-        name="coordinator",
-        cls=CoordinatorAgent,
-    )
+    factory.register(name="coordinator", cls=CoordinatorAgent)
 
     return factory
 
 
-if __name__ == "__main__":
-    # factory = create_factory()
-    #
-    # # Create orchestrator with both subagents.
-    # # The factory injects the dependency awareness message so the coordinator
-    # # knows to call math_agent before report_agent.
-    # coordinator = factory.create(
-    #     "coordinator", subagents=["math_agent", "report_agent"]
-    # )
-    #
-    # # Execute query
-    # response = coordinator.execute_query(
-    #     "What is ((18 + 6) * (14 - 8)) and also solve ((48-5)+25/8*(35+9))? "
-    #     "After the calculations, generate a formatted report of the results."
-    # )
-    #
-    # # Print conversation history
-    # print("\n" + "=" * 50)
-    # print("CONVERSATION HISTORY")
-    # print("=" * 50)
-    # for element in coordinator.conversation_history:
-    #     print(element.model_dump_json(indent=4))
+# -- Serve -------------------------------------------------------------------
 
-    # ─── A2A serve (requires: uv sync --extra serve) ─────────────────────
+if __name__ == "__main__":
     factory = create_factory()
     factory.a2a_serve(
         "coordinator",

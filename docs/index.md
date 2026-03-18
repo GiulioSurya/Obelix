@@ -26,6 +26,7 @@ This documentation covers how to build, compose, and deploy agents using Obelix.
 | [BaseAgent Guide](base_agent.md) | Complete guide to `BaseAgent`: constructors, execution, tools, sub-agents, and hooks |
 | [Tools Guide](tools.md) | Creating tools with `@tool` decorator, registering tools, normal vs deferred tools, built-in tools |
 | [Agent Factory Guide](agent_factory.md) | How to register agents and compose them into orchestrators with optional shared memory |
+| [BashTool Guide](bash_tool.md) | Shell command execution: modes, security, permissions, LocalShellExecutor |
 | [A2A Server Guide](a2a_server.md) | Exposing agents as A2A-compliant HTTP services with JSON-RPC 2.0 |
 | [A2A Compliance](a2a_compliance.md) | Gap analysis vs [A2A spec RC v1.0](https://a2a-protocol.org/latest/specification/) and implementation roadmap |
 | [Hooks API](hooks.md) | Understanding and implementing hooks for agent customization (validation, error recovery, context injection) |

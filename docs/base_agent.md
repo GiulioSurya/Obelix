@@ -1,555 +1,544 @@
 # BaseAgent Guide
 
-BaseAgent is the core execution engine for all agents in Obelix. It manages conversation history, invokes LLM providers, executes tools, and coordinates hooks throughout the agent lifecycle.
+BaseAgent is the core execution engine for all agents in Obelix. It manages conversation history, invokes LLM providers, executes tools (in parallel when possible), coordinates hooks, and supports real-time token streaming.
 
 ---
 
-## What is BaseAgent?
+## Quick Start
 
-BaseAgent is the foundation of every agent in Obelix. It:
-- Maintains conversation history across multiple LLM calls
-- Invokes the LLM provider with appropriate messages and tools
-- Executes tool calls (potentially in parallel)
-- Coordinates hooks at every lifecycle phase
-- Builds the final response from the LLM output
-- Supports async execution natively
+```python
+from obelix.core.agent import BaseAgent
+from obelix.adapters.outbound.anthropic.connection import AnthropicConnection
+from obelix.adapters.outbound.anthropic.provider import AnthropicProvider
 
-You create specialized agents by subclassing BaseAgent and registering tools and hooks.
+connection = AnthropicConnection()  # reads ANTHROPIC_API_KEY from env
+provider = AnthropicProvider(connection=connection, model_id="claude-sonnet-4-20250514")
+
+agent = BaseAgent(
+    system_message="You are a helpful assistant.",
+    provider=provider,
+)
+
+response = agent.execute_query("Hello!")
+print(response.content)
+```
 
 ---
 
 ## Constructor Parameters
 
-### system_message (str) - Required
-
-The system prompt that defines the agent's identity, role, and behavior.
-
 ```python
-agent = BaseAgent(
-    system_message="You are a helpful data analysis assistant.",
+BaseAgent(
+    system_message: str,              # Required
+    provider: AbstractLLMProvider,     # Required
+    max_iterations: int = 15,
+    tools: Tool | list[Tool] | None = None,
+    tool_policy: list[ToolRequirement] | None = None,
+    exit_on_success: list[str] | None = None,
+    response_schema: type[BaseModel] | None = None,
+    tracer: Tracer | None = None,
+    planning: bool = False,
 )
 ```
 
-This message is inserted as the first message in `conversation_history` and remains throughout the agent's lifetime (unless explicitly cleared).
+### system_message (str) — Required
 
-### provider (AbstractLLMProvider | None)
-
-The LLM provider instance to use.
+The system prompt that defines the agent's identity, role, and behavior. Stored as the first entry in `conversation_history` and persists for the agent's lifetime.
 
 ```python
-from obelix.adapters.outbound.anthropic.provider import AnthropicProvider
-
-provider = AnthropicProvider(...)
 agent = BaseAgent(
-    system_message="...",
+    system_message="You are a data analyst. Always back up claims with numbers.",
     provider=provider,
 )
 ```
 
-### agent_comment (bool)
+> **Note**: Tools can enrich the system message automatically via `system_prompt_fragment()`. See [System Prompt Fragments](#system-prompt-fragments).
 
-Whether the agent should generate a textual response after tool execution. Default: `True`.
+### provider (AbstractLLMProvider) — Required
 
-- `True` (default): Agent always generates a text response, even after tool calls
-- `False`: Agent may skip generating text if tools return successfully
+The LLM provider instance to use. See [README — Using Providers](../README.md#using-providers) for all supported providers.
+
+```python
+from obelix.adapters.outbound.litellm import LiteLLMProvider
+
+provider = LiteLLMProvider(model_id="openai/gpt-4o")
+agent = BaseAgent(system_message="...", provider=provider)
+```
 
 ### max_iterations (int)
 
-Maximum number of LLM/tool loop iterations. Default: `15`.
-
-Prevents infinite loops caused by repeated tool calls or retries. If the limit is reached, the agent returns with an error.
+Maximum number of LLM/tool loop iterations. Default: `15`. Prevents infinite loops caused by repeated tool calls. When exceeded, the agent returns an error response.
 
 ```python
 agent = BaseAgent(
     system_message="...",
-    max_iterations=10,  # Lower for latency-critical applications
+    provider=provider,
+    max_iterations=5,  # stricter limit for latency-critical apps
 )
 ```
 
-### max_attempts (int)
+### tools
 
-Number of retries for fatal errors (provider failures, timeouts, etc.). Default: `3`.
-
-Wraps the entire query execution in a retry loop with exponential backoff.
+Tools to register at construction time. Accepts a single tool instance, a tool class (auto-instantiated), or a list of both.
 
 ```python
 agent = BaseAgent(
     system_message="...",
-    max_attempts=5,  # Higher for unstable networks
+    provider=provider,
+    tools=[CalculatorTool, WeatherTool()],  # class or instance
 )
 ```
 
-### tools (Tool | Tool class | List) - Optional
+See [Tools Guide](tools.md) for how to create tools with the `@tool` decorator.
 
-Tools to register automatically at construction. Can be:
-- A single tool instance: `CalculatorTool()`
-- A single tool class (auto-instantiated): `CalculatorTool`
-- A list of mixed instances and classes: `[CalculatorTool, WeatherTool()]`
+### tool_policy
 
-```python
-agent = BaseAgent(
-    system_message="...",
-    tools=[CalculatorTool, WeatherTool()],
-)
-```
-
-### tool_policy (List[ToolRequirement] | None)
-
-Rules enforcing that certain tools must be called before the agent can return a final response.
+Rules that force the agent to call specific tools before returning a final response. If violated, the agent injects guidance and retries.
 
 ```python
 from obelix.core.model.tool_message import ToolRequirement
 
 agent = BaseAgent(
     system_message="You are a SQL analyst.",
+    provider=provider,
     tool_policy=[
         ToolRequirement(
             tool_name="sql_executor",
             min_calls=1,
             require_success=True,
-            error_message="You must execute the SQL query before responding."
+            error_message="You must execute the SQL query before responding.",
         )
-    ]
+    ],
 )
 ```
 
-If a tool policy is violated, the agent injects guidance and retries, or fails if max iterations is reached.
+### exit_on_success
 
-### exit_on_success (List[str] | None)
-
-List of tool names that, when called successfully, immediately end the agent loop.
+List of tool names that, when all tools in an iteration are in this set and succeed, immediately end the agent loop without waiting for a text response.
 
 ```python
 agent = BaseAgent(
     system_message="...",
-    tools=[RetrieveTool, ProcessTool],
-    exit_on_success=["retrieve_tool"],  # Exit after retrieval succeeds
+    provider=provider,
+    tools=[RetrieveTool, StoreTool],
+    exit_on_success=["store_data"],  # exit as soon as store succeeds
 )
 ```
 
----
+### response_schema
 
-## Creating Custom Agents
-
-Subclass BaseAgent to create specialized agents:
+A Pydantic `BaseModel` subclass that constrains the LLM's final response to a specific JSON structure. The schema is passed to the provider (requires provider support for structured output).
 
 ```python
-from obelix.core.agent import BaseAgent
-from obelix.core.agent.hooks import AgentEvent, HookDecision
-from obelix.core.tool.tool_decorator import tool
-from pydantic import Field
+from pydantic import BaseModel, Field
 
+class AnalysisResult(BaseModel):
+    summary: str = Field(..., description="Brief summary")
+    confidence: float = Field(..., description="Confidence score 0-1")
+    sources: list[str] = Field(default_factory=list)
 
-@tool(name="calculator", description="Performs arithmetic")
-class CalculatorTool:
-    a: float = Field(..., description="First number")
-    b: float = Field(..., description="Second number")
-    operation: str = Field(..., description="Operation: add, subtract, multiply, divide")
+agent = BaseAgent(
+    system_message="You analyze documents.",
+    provider=provider,
+    response_schema=AnalysisResult,
+)
 
-    async def execute(self) -> dict:
-        ops = {
-            "add": lambda: self.a + self.b,
-            "subtract": lambda: self.a - self.b,
-            "multiply": lambda: self.a * self.b,
-            "divide": lambda: self.a / self.b if self.b != 0 else None,
-        }
-        return {"result": ops[self.operation]()}
-
-
-class MathAgent(BaseAgent):
-    def __init__(self):
-        super().__init__(
-            system_message="You are a helpful math assistant. Use the calculator tool for arithmetic.",
-            tools=[CalculatorTool],
-        )
-
-
-# Use the agent
-agent = MathAgent()
-response = agent.execute_query("What is 42 * 7?")
-print(response.content)
+response = agent.execute_query("Analyze this quarterly report...")
+# response.content is a JSON string matching AnalysisResult schema
 ```
 
----
+### tracer
 
-## Registering Tools
+Optional `Tracer` instance for observability. When set, the agent emits spans for every LLM call, tool execution, and query lifecycle event. Zero overhead when `None`.
 
-### Option 1: Constructor Parameter
+The simplest setup uses `ConsoleExporter`, which prints a colored trace to the terminal:
+
+```python
+from obelix.core.tracer import Tracer, ConsoleExporter
+
+tracer = Tracer(
+    exporter=ConsoleExporter(verbosity=2),  # 1=minimal, 2=standard, 3=debug
+    service_name="my-service",
+)
+
+agent = BaseAgent(system_message="...", provider=provider, tracer=tracer)
+```
+
+The console output shows the full agent lifecycle: LLM calls with token usage, tool executions with arguments/results, sub-agent invocations, and a summary footer with duration and stats.
+
+### planning
+
+When `True`, appends a structured planning protocol to the system message that instructs the agent to: **ANALYZE** the request, **DECOMPOSE** into steps, **EXECUTE** step by step, **REVISE** if needed, **RESPOND** with a synthesis.
 
 ```python
 agent = BaseAgent(
-    system_message="...",
-    tools=[CalculatorTool, WeatherTool()],
+    system_message="You are a research assistant.",
+    provider=provider,
+    planning=True,
 )
 ```
 
-### Option 2: register_tool() Method
-
-```python
-class MyAgent(BaseAgent):
-    def __init__(self):
-        super().__init__(system_message="...")
-        self.register_tool(CalculatorTool())
-        self.register_tool(WeatherTool())
-```
-
-### Option 3: Mixed Approach
-
-```python
-agent = BaseAgent(
-    system_message="...",
-    tools=[CalculatorTool],  # Auto-instantiated
-)
-agent.register_tool(WeatherTool())  # Manual instantiation with dependencies
-```
-
----
-
-## Registering Sub-Agents
-
-Any agent can register other agents as tools via `register_agent()`:
-
-```python
-class CoordinatorAgent(BaseAgent):
-    def __init__(self):
-        super().__init__(system_message="You coordinate specialized tasks.")
-
-
-class AnalyzerAgent(BaseAgent):
-    def __init__(self):
-        super().__init__(system_message="You analyze data.")
-
-
-# Register sub-agent
-coordinator = CoordinatorAgent()
-coordinator.register_agent(
-    AnalyzerAgent(),
-    name="analyzer",
-    description="Analyzes datasets and generates insights",
-    stateless=False,  # Preserve conversation history
-)
-
-response = coordinator.execute_query("Analyze the Q4 sales data")
-print(response.content)
-```
-
-### register_agent() Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `agent` | `BaseAgent` | Required | The sub-agent to register |
-| `name` | `str` | Required | Unique name for the sub-agent (used in tool calling) |
-| `description` | `str` | Required | Description of the sub-agent's capabilities |
-| `stateless` | `bool` | `False` | If `True`, each execution gets a fresh copy. If `False`, history persists. |
-
----
-
-## Using the Hook System
-
-Hooks allow you to intercept and modify agent behavior at specific lifecycle moments.
-
-### Basic Hook Example
-
-```python
-from obelix.core.agent import BaseAgent
-from obelix.core.agent.hooks import AgentEvent, HookDecision
-from obelix.core.model.system_message import SystemMessage
-
-
-class ValidatingAgent(BaseAgent):
-    def __init__(self):
-        super().__init__(system_message="You are a helpful assistant.")
-
-        # Register a hook that validates the output format
-        self.on(AgentEvent.BEFORE_FINAL_RESPONSE).when(
-            self._missing_answer_tag
-        ).handle(
-            decision=HookDecision.RETRY,
-            effects=[self._inject_format_guidance],
-        )
-
-    def _missing_answer_tag(self, status) -> bool:
-        """Condition: check if response is missing required tag."""
-        content = status.assistant_message.content or ""
-        return "<answer>" not in content
-
-    def _inject_format_guidance(self, status) -> None:
-        """Effect: inject guidance to fix the format."""
-        status.agent.conversation_history.append(
-            SystemMessage(content="Your response must include <answer>...</answer> tags.")
-        )
-```
-
-When the agent's final response doesn't contain `<answer>` tags, the hook injects guidance and triggers a retry.
-
-### Available Events
-
-| Event | When It Fires | current_value | Retryable |
-|-------|---------------|---------------|-----------|
-| `BEFORE_LLM_CALL` | Before each LLM invocation | `None` | No |
-| `AFTER_LLM_CALL` | After LLM returns | `AssistantMessage` | Yes |
-| `BEFORE_TOOL_EXECUTION` | Before executing a tool | `ToolCall` | No |
-| `AFTER_TOOL_EXECUTION` | After tool completes | `ToolResult` | No |
-| `ON_TOOL_ERROR` | When a tool fails | `ToolResult` (error) | No |
-| `BEFORE_FINAL_RESPONSE` | Before building final response | `AssistantMessage` | Yes |
-| `QUERY_END` | After execution completes | `AssistantResponse` | No |
-
-### Hook Decisions
-
-| Decision | Effect |
-|----------|--------|
-| `CONTINUE` | Proceed normally (default) |
-| `RETRY` | Restart the current LLM phase (only for retryable events) |
-| `FAIL` | Stop immediately with error |
-| `STOP` | Return immediately with a provided value |
+For best results, pair with high reasoning effort on the provider:
+- Anthropic: `thinking_mode=True`
+- OpenAI/LiteLLM: `reasoning_effort="high"`
 
 ---
 
 ## Execution Methods
 
-### Synchronous Execution
+### Synchronous
 
-Use for CLI applications and scripts:
+For scripts and CLI applications:
 
 ```python
-response = agent.execute_query("Your question here")
+response = agent.execute_query("What is 42 * 7?")
 print(response.content)
 ```
 
-### Asynchronous Execution
+### Asynchronous
 
-Use in async contexts (FastAPI, asyncio, etc.):
+For async contexts (FastAPI, asyncio):
 
 ```python
-import asyncio
-
-async def main():
-    response = await agent.execute_query_async("Your question here")
-    print(response.content)
-
-asyncio.run(main())
+response = await agent.execute_query_async("What is 42 * 7?")
+print(response.content)
 ```
+
+### Streaming
+
+Yields tokens in real time as they arrive from the LLM. Intermediate iterations (tool calls) are handled internally — only the final response tokens are streamed to the consumer.
+
+```python
+async for event in agent.execute_query_stream("Explain quantum computing"):
+    if event.token:
+        print(event.token, end="", flush=True)
+    if event.is_final:
+        response = event.assistant_response
+        print()  # newline after streaming completes
+```
+
+If the provider does not support streaming, the agent falls back to `invoke()` automatically and emits the full response as a single token event.
+
+### Query Input Types
+
+All execution methods accept either a plain string or a message list:
+
+```python
+# String (most common)
+response = agent.execute_query("Hello!")
+
+# Message list (for injecting extra context alongside the user query)
+from obelix.core.model import HumanMessage, SystemMessage
+
+response = agent.execute_query([
+    SystemMessage(content="The user is a premium subscriber."),
+    HumanMessage(content="Help me with my account."),
+])
+```
+
+Message lists must contain exactly one `HumanMessage`.
 
 ### Response Object
 
-Both methods return an `AssistantResponse` with:
+All methods return an `AssistantResponse`:
 
 ```python
-response.content      # Text response from the LLM
-response.tool_results  # List of ToolResult objects (if any tools were called)
-response.error        # Error message if the query failed
+response.content        # str — final text from the LLM
+response.agent_name     # str — class name of the agent
+response.tool_results   # list[ToolResult] | None — all tool results collected
+response.error          # str | None — error description if something failed
+```
+
+### StreamEvent
+
+When using `execute_query_stream()`, each yielded event is a `StreamEvent`:
+
+```python
+event.token                 # str | None — a text chunk (None on non-text events)
+event.is_final              # bool — True on the last event
+event.assistant_message     # AssistantMessage | None — set on final event
+event.assistant_response    # AssistantResponse | None — set on final event
+event.deferred_tool_calls   # list[ToolCall] | None — set when deferred tools stop the loop
 ```
 
 ---
 
 ## Execution Flow
 
-The agent executes in a loop up to `max_iterations`:
+The agent runs in a loop (up to `max_iterations`):
 
 ```
-1. Start new iteration
-2. Run BEFORE_LLM_CALL hooks
-3. Invoke LLM with conversation history + registered tools
-4. Run AFTER_LLM_CALL hooks
-5. If LLM returns tool calls:
-   a. Run BEFORE_TOOL_EXECUTION hooks for each tool
-   b. Execute tools (potentially in parallel)
-   c. Run AFTER_TOOL_EXECUTION or ON_TOOL_ERROR hooks
-   d. Add ToolResult to conversation history
-   e. Return to step 2 (unless exit_on_success triggered)
-6. If LLM returns final response:
-   a. Run BEFORE_FINAL_RESPONSE hooks
-   b. Build AssistantResponse
-   c. Run QUERY_END hooks
-   d. Return response
+1. BEFORE_LLM_CALL hooks
+2. Invoke LLM (with conversation history + registered tools)
+3. AFTER_LLM_CALL hooks
+4. If tool calls:
+   a. BEFORE_TOOL_EXECUTION hook (per tool)
+   b. Execute tools in parallel
+   c. AFTER_TOOL_EXECUTION / ON_TOOL_ERROR hooks
+   d. If deferred tools detected → stop loop, yield deferred_tool_calls
+   e. If exit_on_success matches → go to step 6
+   f. Otherwise → back to step 1
+5. If text response:
+   a. BEFORE_FINAL_RESPONSE hooks (can trigger RETRY)
+6. Build AssistantResponse
+7. QUERY_END hooks
+8. Return
 ```
 
 ---
 
-## Tool Policy Enforcement
+## Registering Tools
 
-Tool policies guarantee that specific tools are called before the agent can return a final answer:
+### At Construction
 
 ```python
-from obelix.core.model.tool_message import ToolRequirement
-
 agent = BaseAgent(
-    system_message="You are a database consultant.",
-    tool_policy=[
-        ToolRequirement(
-            tool_name="query_executor",
-            min_calls=1,
-            require_success=True,
-            error_message="Always execute the SQL query before giving recommendations."
-        ),
-    ]
+    system_message="...",
+    provider=provider,
+    tools=[CalculatorTool, WeatherTool()],
 )
 ```
 
-If the policy is violated:
-1. The agent receives an injected system message explaining the requirement
-2. The agent retries (if iterations remain)
-3. If max iterations is exceeded, the agent fails with an error
-
----
-
-## Accessing Conversation History
-
-The `conversation_history` list contains all messages exchanged:
+### After Construction
 
 ```python
-# Access the current history
-print(agent.conversation_history)
-
-# Check the history after a query
-response = agent.execute_query("Tell me a joke")
-print(f"History has {len(agent.conversation_history)} messages")
-
-# Get a copy (safe from modifications)
-history_copy = agent.get_conversation_history()
-
-# Clear history (keeps system message)
-agent.clear_conversation_history()
+agent = BaseAgent(system_message="...", provider=provider)
+agent.register_tool(CalculatorTool())
+agent.register_tool(WeatherTool())
 ```
 
----
+### System Prompt Fragments
 
-## Common Patterns
-
-### Error Recovery with Hooks
+When a tool defines a `system_prompt_fragment()` method, `register_tool()` automatically appends the returned text to the agent's system message. This allows tools to inject environment context (shell info, DB schema, API docs) without the caller having to know about it.
 
 ```python
-class RobustAgent(BaseAgent):
-    def __init__(self):
-        super().__init__(system_message="You are a helpful assistant.")
+@tool(name="database_query", description="Executes SQL against the warehouse")
+class DatabaseQueryTool:
+    query: str = Field(..., description="SQL query")
 
-        self.on(AgentEvent.ON_TOOL_ERROR).when(
-            lambda status: "database" in (status.error or "").lower()
+    async def execute(self) -> dict:
+        ...
+
+    def system_prompt_fragment(self) -> str:
+        return (
+            "\n\n## Database Environment\n"
+            "- Engine: PostgreSQL 16\n"
+            "- Schema: public (tables: users, orders, products)\n"
+            "- Max result rows: 1000"
+        )
+```
+
+When this tool is registered, the agent's system message automatically gains the `## Database Environment` block. The LLM sees it as part of its instructions and can generate better queries.
+
+Built-in example: `BashTool` injects a `## Shell Environment` fragment with platform, shell path, working directory, and drive mounts. See [Tools Guide](tools.md) for details.
+
+---
+
+## Registering Sub-Agents
+
+Any agent can register other agents as callable tools via `register_agent()`:
+
+```python
+coordinator = BaseAgent(system_message="You coordinate tasks.", provider=provider)
+
+analyzer = BaseAgent(
+    system_message="You analyze datasets.",
+    provider=provider,
+    tools=[SQLTool],
+)
+
+coordinator.register_agent(
+    analyzer,
+    name="analyzer",
+    description="Analyzes datasets and generates insights",
+    stateless=False,
+)
+
+response = coordinator.execute_query("Analyze the Q4 sales data")
+```
+
+### register_agent() Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `agent` | `BaseAgent` | Required | The sub-agent instance |
+| `name` | `str` | Required | Tool name the LLM uses to call this sub-agent |
+| `description` | `str` | Required | What the sub-agent does (shown to LLM in tool list) |
+| `stateless` | `bool` | `False` | `True`: each call gets a fresh copy (parallel-safe). `False`: conversation history persists across calls. |
+
+For large multi-agent systems, consider using `AgentFactory` instead — it handles registration, shared memory, and dependency wiring. See [Agent Factory Guide](agent_factory.md).
+
+---
+
+## Deferred Tools and Resume
+
+Some tools are **deferred** — they don't execute on the server but delegate to the client (e.g., the client's terminal for `BashTool`, or a human for `RequestUserInputTool`).
+
+When the LLM calls a deferred tool:
+
+1. The agent loop **stops** and yields a `StreamEvent` with `deferred_tool_calls` set
+2. The caller (e.g., A2A executor or CLI runner) executes the tool client-side
+3. The caller injects the `ToolMessage` result into `conversation_history`
+4. The caller resumes the loop with `resume_after_deferred()`
+
+```python
+async for event in agent.execute_query_stream("List files in /tmp"):
+    if event.deferred_tool_calls:
+        # Client-side: execute the deferred tool
+        for call in event.deferred_tool_calls:
+            result = execute_locally(call)  # your logic
+            agent.conversation_history.append(
+                ToolMessage(tool_results=[result])
+            )
+
+        # Resume the agent loop
+        async for resumed_event in agent.resume_after_deferred():
+            if resumed_event.token:
+                print(resumed_event.token, end="")
+            if resumed_event.is_final:
+                response = resumed_event.assistant_response
+
+    elif event.token:
+        print(event.token, end="")
+
+    elif event.is_final:
+        response = event.assistant_response
+```
+
+See [Tools Guide — Deferred Tools](tools.md) for how to create deferred tools.
+
+---
+
+## Hooks
+
+Hooks intercept the agent lifecycle at specific events. Use them for validation, error recovery, context injection, and output transformation.
+
+### Quick Example
+
+```python
+from obelix.core.agent.hooks import AgentEvent, HookDecision
+from obelix.core.model.system_message import SystemMessage
+
+
+class ValidatingAgent(BaseAgent):
+    def __init__(self, provider):
+        super().__init__(system_message="You are a helpful assistant.", provider=provider)
+
+        self.on(AgentEvent.BEFORE_FINAL_RESPONSE).when(
+            lambda status: "<answer>" not in (status.assistant_message.content or "")
         ).handle(
-            decision=HookDecision.CONTINUE,
-            effects=[self._inject_db_help],
+            decision=HookDecision.RETRY,
+            effects=[self._inject_format_guidance],
         )
 
-    def _inject_db_help(self, status):
-        """Provide database schema when a tool fails."""
+    def _inject_format_guidance(self, status):
         status.agent.conversation_history.append(
-            SystemMessage(content="Here is the database schema...")
+            SystemMessage(content="Wrap your answer in <answer>...</answer> tags.")
         )
 ```
 
-### Context Injection Before LLM Calls
+### Available Events
+
+| Event | When | Retryable |
+|-------|------|-----------|
+| `BEFORE_LLM_CALL` | Before each LLM invocation | No |
+| `AFTER_LLM_CALL` | After LLM returns | Yes |
+| `BEFORE_TOOL_EXECUTION` | Before executing a tool | No |
+| `AFTER_TOOL_EXECUTION` | After tool completes | No |
+| `ON_TOOL_ERROR` | When a tool fails | No |
+| `BEFORE_FINAL_RESPONSE` | Before building final response | Yes |
+| `QUERY_END` | After execution completes | No |
+
+### Hook Decisions
+
+| Decision | Effect |
+|----------|--------|
+| `CONTINUE` | Proceed normally (default) |
+| `RETRY` | Restart the current LLM phase (only retryable events) |
+| `STOP` | Return immediately with a provided value |
+| `FAIL` | Stop with error |
+
+For the full hook API, conditions, effects, and advanced patterns, see [Hooks Guide](hooks.md).
+
+---
+
+## Conversation History
+
+The agent maintains a `conversation_history` list containing all messages exchanged (system, human, assistant, tool).
 
 ```python
-class ContextAwareAgent(BaseAgent):
-    def __init__(self):
-        super().__init__(system_message="...")
+# Access history
+print(len(agent.conversation_history))
 
-        self.on(AgentEvent.BEFORE_LLM_CALL).handle(
-            decision=HookDecision.CONTINUE,
-            effects=[self._inject_context],
-        )
+# Get a safe copy
+history = agent.get_conversation_history
 
-    async def _inject_context(self, status):
-        """Inject real-time context before each LLM call."""
-        context = await self._fetch_context()
-        status.agent.conversation_history.append(
-            SystemMessage(content=f"Current context: {context}")
-        )
+# Clear history (keeps system message by default)
+agent.clear_conversation_history()
 
-    async def _fetch_context(self):
-        # Fetch real-time data, query a database, etc.
-        return "Today is Monday, Q4 revenue is up 20%"
-```
-
-### Output Transformation
-
-```python
-class TransformingAgent(BaseAgent):
-    def __init__(self):
-        super().__init__(system_message="...")
-
-        self.on(AgentEvent.QUERY_END).handle(
-            decision=HookDecision.CONTINUE,
-            value=self._transform_response,
-        )
-
-    def _transform_response(self, status, response):
-        """Transform the final response."""
-        if response and response.content:
-            response.content = response.content.upper()
-        return response
+# Clear everything including system message
+agent.clear_conversation_history(keep_system_message=False)
 ```
 
 ---
 
-## Tips and Best Practices
+## Creating Custom Agents
 
-1. **Use Pydantic Fields for Tools**: Always define tool parameters with `Field()` for automatic schema generation and validation.
-
-2. **Prefer Async**: Write tool `execute()` methods as async when possible for better scalability.
-
-3. **Keep System Prompts Focused**: Be specific about the agent's role and constraints in the system message.
-
-4. **Use Hooks Sparingly**: Hooks are powerful but can make debugging harder. Use them for cross-cutting concerns, not business logic.
-
-5. **Stateless for Parallelism**: When registering sub-agents that may be called many times in parallel, use `stateless=True`.
-
-6. **Monitor Iterations**: If agents frequently hit `max_iterations`, your system prompt or tool definitions may need adjustment.
-
----
-
-## Full Example
+Subclass `BaseAgent` to create reusable specialized agents:
 
 ```python
 from obelix.core.agent import BaseAgent
 from obelix.core.agent.hooks import AgentEvent, HookDecision
-from obelix.core.tool.tool_decorator import tool
 from obelix.core.model.system_message import SystemMessage
+from obelix.core.tool.tool_decorator import tool
 from pydantic import Field
 
 
-@tool(name="database_query", description="Execute a SQL query")
-class DatabaseQueryTool:
+@tool(name="sql_query", description="Execute a SQL query")
+class SQLQueryTool:
     query: str = Field(..., description="SQL query to execute")
 
     async def execute(self) -> dict:
-        # Simulate database query
-        return {"result": "Query executed successfully"}
+        # Your database logic here
+        return {"rows": [...], "count": 42}
 
 
 class DataAnalystAgent(BaseAgent):
-    def __init__(self):
+    def __init__(self, provider):
         super().__init__(
-            system_message="You are a data analyst. Use the database_query tool to retrieve data.",
-            tools=[DatabaseQueryTool],
+            system_message=(
+                "You are a data analyst. Use the sql_query tool to retrieve data. "
+                "Always show the SQL you executed."
+            ),
+            provider=provider,
+            tools=[SQLQueryTool],
             max_iterations=10,
+            planning=True,
         )
 
-        # Hook: Validate that a query was executed
+        # Ensure the agent actually queries before responding
         self.on(AgentEvent.BEFORE_FINAL_RESPONSE).when(
-            self._must_have_queried
+            self._no_query_executed
         ).handle(
             decision=HookDecision.RETRY,
-            effects=[self._inject_query_reminder],
+            effects=[self._remind_to_query],
         )
 
-    def _must_have_queried(self, status) -> bool:
-        """Check if database_query tool was called."""
+    def _no_query_executed(self, status) -> bool:
         return not any(
-            "database_query" in str(msg)
-            for msg in status.agent.conversation_history
+            isinstance(msg, ToolMessage)
+            for msg in self.conversation_history
         )
 
-    def _inject_query_reminder(self, status):
-        """Remind the agent to use the database_query tool."""
+    def _remind_to_query(self, status):
         status.agent.conversation_history.append(
-            SystemMessage(content="Remember to query the database before analyzing.")
+            SystemMessage(content="You must query the database before responding.")
         )
 
 
-# Use the agent
-agent = DataAnalystAgent()
-response = agent.execute_query("Analyze Q4 sales trends")
+# Usage
+agent = DataAnalystAgent(provider=provider)
+response = agent.execute_query("What were Q4 sales trends?")
 print(response.content)
 ```
 
@@ -557,6 +546,7 @@ print(response.content)
 
 ## See Also
 
-- [Agent Factory](agent_factory.md) - Composing agents with factories
-- [Hooks API](hooks.md) - Detailed hook system documentation
-- [README](../README.md) - Installation and quick start
+- [Tools Guide](tools.md) — creating tools, deferred tools, OutputSchema, built-in tools
+- [Agent Factory](agent_factory.md) — composing agents with shared memory
+- [A2A Server](a2a_server.md) — exposing agents as HTTP services
+- [Hooks Guide](hooks.md) — full hook API and patterns
