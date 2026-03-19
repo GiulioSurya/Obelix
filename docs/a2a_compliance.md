@@ -6,7 +6,7 @@ It serves as a complete gap analysis, behavioral reference, and implementation r
 
 > **Spec reference**: https://a2a-protocol.org/latest/specification/ (v1.0, Linux Foundation).
 > **SDK**: [`a2a-sdk`](https://github.com/a2aproject/a2a-python) v0.3.25.
-> **Last updated**: 2026-03-17.
+> **Last updated**: 2026-03-19.
 
 ---
 
@@ -28,15 +28,19 @@ a2a-sdk infrastructure (managed by SDK):
   v
 ObelixAgentExecutor (our only code):
   RequestContext.get_user_input() -> BaseAgent.execute_query_stream() -> EventQueue events
-  Generic deferred tool protocol (OutputSchema-based parsing)
+  Part converter: A2A Part <-> Obelix ContentPart (bidirectional, part_converter.py)
+  Generic deferred tool protocol (DataPart transport, OutputSchema-based validation)
   Built-in deferred tools: RequestUserInputTool (auto-registered), BashTool (opt-in)
 ```
 
 **Files**:
 - `src/obelix/adapters/inbound/a2a/server.py` — `ObelixAgentExecutor(AgentExecutor)`
 - `src/obelix/adapters/inbound/a2a/input_channel.py` — `InputChannel` (tool <-> executor async channel)
+- `src/obelix/adapters/inbound/a2a/part_converter.py` — bidirectional A2A `Part` <-> Obelix `ContentPart` conversion
 - `src/obelix/adapters/inbound/a2a/request_user_input_tool.py` — `RequestUserInputTool` (A2A-specific)
+- `src/obelix/adapters/inbound/a2a/client/cli_client.py` — CLI client with multimodal attachments and deferred tool handlers
 - `src/obelix/plugins/builtin/bash_tool.py` — `BashTool` (deferred, opt-in)
+- `src/obelix/core/model/content.py` — `TextContent`, `FileContent`, `DataContent`, `ContentPart` union
 - `src/obelix/core/agent/agent_factory.py` — `a2a_serve()`, `_build_agent_card()`
 
 **Implication**: data model compliance (Task, Message, Part, Artifact, errors,
@@ -146,22 +150,24 @@ Deferred tool:  LLM -> inputSchema -> None (stop loop) -> CLIENT executes -> Out
 3. ObelixAgentExecutor receives the StreamEvent
    → saves entry.deferred_tool_calls + entry.deferred_tools (tool snapshot)
    → saves entry.trace_session + entry.trace_span
-   → builds client message via _build_deferred_message():
-     JSON: [{"tool_name": "bash", "arguments": {...}}]
-   → emits TaskState.input_required with the JSON message
+   → builds client message via deferred_calls_to_a2a_parts():
+     DataPart(data={"deferred_tool_calls": [{"tool_name": "bash", "arguments": {...}}, ...]})
+   → emits TaskState.input_required with the DataPart message
    → returns (idle gate released)
 
 4. Client receives input-required
-   → identifies tool by "tool_name" in the JSON payload
+   → extracts DataPart.data → {"deferred_tool_calls": [...]}
+   → identifies tool by "tool_name" in the payload
    → executes the action locally (or asks human for input)
-   → responds on same contextId with result
+   → responds on same contextId with result wrapped in DataPart
 
 5. ObelixAgentExecutor.execute() on same contextId
    → detects entry.deferred_tool_calls is not None (resume path)
    → calls _inject_deferred_response():
+     - extracts DataPart from incoming message parts
      - looks up tool by name in entry.deferred_tools
-     - if tool has _output_schema: json.loads(raw) → validate → model_dump()
-     - if no _output_schema: fallback to {"answer": raw_text}
+     - if tool has _output_schema: validate data dict → model_dump()
+     - if no _output_schema: use data dict as-is (or fallback to {"answer": raw_text})
      - appends ToolMessage to entry.history
    → restores trace context
    → creates fresh agent, injects history
@@ -208,9 +214,9 @@ output schemas — the full contract for any consumer.
 
 | Scenario | Behavior |
 |----------|----------|
-| Tool has `_output_schema`, client sends valid JSON | Validate with `OutputSchema(**parsed)`, use `model_dump()` |
+| Tool has `_output_schema`, client sends `DataPart` with valid dict | Validate with `OutputSchema(**data)`, use `model_dump()` |
 | Tool has `_output_schema`, client sends plain text | Populate defaults, override first `str` field with raw text |
-| Tool has no `_output_schema` (e.g. `RequestUserInputTool`) | Fallback to `{"answer": raw_text}` |
+| Tool has no `_output_schema` (e.g. `RequestUserInputTool`) | Use data dict as-is, or fallback to `{"answer": raw_text}` |
 
 #### Current deferred tools
 
@@ -226,12 +232,12 @@ agent.register_tool(BashTool())
 ```
 
 **Client contract for `bash` tool calls:**
-- Client receives: `[{"tool_name": "bash", "arguments": {"command": "...", "description": "...", "timeout": 120, "working_directory": null}}]`
-- Client should: review/authorize the command, execute locally, respond with JSON:
+- Client receives: `DataPart(data={"deferred_tool_calls": [{"tool_name": "bash", "arguments": {"command": "...", "description": "...", "timeout": 120, "working_directory": null}}]})`
+- Client should: review/authorize the command, execute locally, respond with `DataPart`:
   ```json
   {"stdout": "file.txt\nREADME.md\n", "stderr": "", "exit_code": 0}
   ```
-- If the client sends plain text instead of JSON, the executor treats it as stdout with exit_code=0
+- If the client sends plain text instead of `DataPart`, the executor treats it as stdout with exit_code=0
 
 **Security**: command authorization is the **client's responsibility**. The framework does
 not execute commands and does not enforce any command whitelist/blacklist. Clients should
@@ -348,7 +354,7 @@ Included in `message/send` and `message/stream` requests. **Currently ignored by
 
 | Field | Type | Description | Obelix Status |
 |-------|------|-------------|---------------|
-| `accepted_output_modes` | `string[]` | MIME types the client can handle (e.g. `["text/plain", "application/json"]`) | **Ignored** — always returns `text/plain` |
+| `accepted_output_modes` | `string[]` | MIME types the client can handle (e.g. `["text/plain", "application/json"]`) | **Ignored** — returns `text/plain` (TextPart) + `application/json` (DataPart) but does not negotiate based on client preference |
 | `history_length` | `int` | Max messages to include in task history | **Ignored** — SDK may handle this |
 | `task_push_notification_config` | `TaskPushNotificationConfig` | Inline webhook config | **Ignored** — push not implemented |
 | `return_immediately` | `bool` | **Fire-and-forget mode**: server returns Task in `submitted` state immediately, processes async. Client polls/streams/gets-pushed later. | **Not supported** — always blocks until completion |
@@ -369,21 +375,55 @@ agent tasks (minutes/hours).
 |-------|------|---------------|
 | `message_id` | Required, unique ID | **Not set by executor** — SDK may generate |
 | `role` | `user` or `agent` | OK (SDK sets user, executor should set agent) |
-| `parts` | `Part[]` — content | Only `TextPart` used (see 4.2) |
+| `parts` | `Part[]` — content | **OK** — `TextPart`, `FilePart`, `DataPart` all used (see 4.2) |
 | `context_id` | Conversation grouping | Managed by SDK |
 | `task_id` | Associated task | Managed by SDK |
 | `reference_task_ids` | References to related tasks | **Not used** — needed for follow-up tasks |
 | `metadata` | Custom key-value | Not used |
 | `extensions` | Extension URIs | Not used |
 
-### 4.2 Part Types
+### 4.2 Part Types (Updated 2026-03-19)
 
 | Type | Spec | Obelix Status |
 |------|------|---------------|
-| `TextPart` | `text` string | **OK** — only type used |
-| `FilePart` (raw) | `raw` bytes + `media_type` + `filename` | **Not used** — for binary file content |
-| `FilePart` (url) | `url` string + `media_type` + `filename` | **Not used** — for file references |
-| `DataPart` | `data` JSON value + `media_type` | **Not used** — should use for structured tool results |
+| `TextPart` | `text` string | **OK** — agent text responses, streaming tokens |
+| `FilePart` (raw) | `raw` bytes + `media_type` + `filename` | **OK** — inbound attachments via CLI (`@file` syntax), converted to `FileContent` in `HumanMessage.attachments` |
+| `FilePart` (url) | `url` string + `media_type` + `filename` | **OK** — inbound URL references, converted to `FileContent(is_url=True)` |
+| `DataPart` | `data` JSON value + `media_type` | **OK** — structured tool results in artifacts, deferred tool call payloads, deferred tool responses |
+
+#### Part usage by flow
+
+| Flow | Part types used |
+|------|----------------|
+| **Client → Server (query)** | `TextPart` (text), `FilePart` (attachments via `@file`) |
+| **Server → Client (artifact)** | `TextPart` (response text) + `DataPart` (tool results with `metadata.type=tool_result`) |
+| **Server → Client (input-required)** | `DataPart(data={"deferred_tool_calls": [...]})` |
+| **Client → Server (deferred response)** | `DataPart(data={...})` matching tool's `OutputSchema` |
+| **Streaming artifact chunks** | `TextPart` per token, final `DataPart`s for tool results |
+
+#### Core content model (`core/model/content.py`)
+
+Obelix internal content types, mapped bidirectionally to A2A parts via `part_converter.py`:
+
+| Obelix type | A2A equivalent | Description |
+|-------------|----------------|-------------|
+| `TextContent` | `TextPart` | Plain text (`type: "text"`, `text: str`) |
+| `FileContent` | `FilePart` | Base64 data or URL reference (`type: "file"`, `data`, `mime_type`, `filename`, `is_url`) |
+| `DataContent` | `DataPart` | Structured JSON (`type: "data"`, `data: dict`, optional `metadata`) |
+| `ContentPart` | `Part` | Union: `TextContent \| FileContent \| DataContent` |
+
+`HumanMessage.attachments: list[ContentPart]` carries multimodal content through the agent pipeline.
+
+#### Part converter (`adapters/inbound/a2a/part_converter.py`)
+
+Bidirectional conversion between A2A `Part` and Obelix `ContentPart`:
+
+- **Inbound** `a2a_parts_to_obelix(parts) → (text, attachments)`:
+  `TextPart` → concatenated text, `FilePart` → `FileContent`, `DataPart` → `DataContent`
+- **Outbound** `obelix_response_to_a2a_parts(response) → list[Part]`:
+  `response.content` → `TextPart`, `response.tool_results` (dict) → `DataPart` each with metadata
+- **Deferred** `deferred_calls_to_a2a_parts(calls) → list[Part]`:
+  Wraps `list[ToolCall]` into single `DataPart(data={"deferred_tool_calls": [...]})`
 
 ### 4.3 Artifact
 
@@ -392,12 +432,13 @@ agent tasks (minutes/hours).
 | `artifact_id` | Required, unique within task | OK — `uuid.uuid4()` |
 | `name` | Optional display name | **Not set** |
 | `description` | Optional description | **Not set** |
-| `parts` | `Part[]` (min 1) | OK — single `TextPart` |
+| `parts` | `Part[]` (min 1) | **OK** — `TextPart` for text + `DataPart` for structured tool results |
 | `metadata` | Custom key-value | Not used |
 | `extensions` | Extension URIs | Not used |
 
-**Streaming artifacts**: `TaskArtifactUpdateEvent` has `append` (bool) and `last_chunk` (bool)
-fields for incremental delivery. Not used — we send a single complete artifact.
+**Streaming artifacts**: `TaskArtifactUpdateEvent` uses `append` and `last_chunk` for incremental
+delivery. Text tokens are streamed as `TextPart` chunks (`append=True`). On the final chunk
+(`last_chunk=True`), tool results are appended as `DataPart`s with metadata.
 
 ### 4.4 Task
 
@@ -696,16 +737,17 @@ Emettere `rejected` quando l'agent determina di non poter gestire la richiesta.
 2. **Criterio di detection**: euristica (analisi contenuto risposta) vs segnale esplicito (flag/eccezione dall'agent). L'euristica e' fragile; un segnale esplicito richiede modifiche al core.
 3. **Priorita' bassa**: la spec dice che `rejected` e' per scenari in cui l'agent "determines it cannot handle the request". Piu' rilevante in contesti multi-agent dove un agent potrebbe non avere le skill richieste.
 
-#### 2g. Structured artifacts con `DataPart` (TODO — bassa priorita')
+#### 2g. Multi-part content & structured artifacts (DONE - 2026-03-18)
 
-Emettere `DataPart` per risultati strutturati (tool results JSON) invece di serializzare tutto come `TextPart`.
+Full multi-part content support: inbound attachments, structured artifacts, DataPart transport.
 
-- [ ] **Artifact con DataPart**: quando l'agent produce tool results strutturati, wrappare il JSON in `DataPart(data=..., media_type="application/json")` invece di `TextPart(text=str(...))`.
-- [ ] **Coesistenza**: il testo di risposta dell'agent resta `TextPart`, i tool results come `DataPart` aggiuntivi nello stesso artifact o in artifact separati.
-
-**Gap informativi**:
-1. **Formato DataPart**: la spec dice `data: Any` (JSON value) + `media_type`. Ma come strutturiamo i tool results? Un `DataPart` per tool result, o un unico `DataPart` con lista di results?
-2. **Utilita' pratica**: nessun client A2A noto oggi consuma `DataPart` in modo diverso da `TextPart`. Il valore e' principalmente semantico (machine-readable vs human-readable).
+- [x] **Core content types**: `TextContent`, `FileContent`, `DataContent`, `ContentPart` union in `core/model/content.py`. `HumanMessage.attachments: list[ContentPart]` for multimodal input.
+- [x] **Bidirectional part converter**: `adapters/inbound/a2a/part_converter.py` — `a2a_parts_to_obelix()` (inbound), `obelix_response_to_a2a_parts()` (outbound), `deferred_calls_to_a2a_parts()` (deferred).
+- [x] **Artifact con DataPart**: tool results wrappati in `DataPart(data=result, metadata={"type": "tool_result", "tool_name": ...})`. Testo resta `TextPart`. Un `DataPart` per tool result.
+- [x] **FilePart inbound**: CLI client supporta `@file` syntax per allegare file come `FilePart(FileWithBytes)`. Convertiti in `FileContent` → provider-specific format (OCI: ImageContent/DocumentContent, Cohere: fallback testuale).
+- [x] **Deferred tool DataPart transport**: `deferred_calls_to_a2a_parts()` emette `DataPart(data={"deferred_tool_calls": [...]})`. Client risponde con `DataPart`. Sostituisce il precedente formato JSON string in `TextPart`.
+- [x] **Streaming artifacts**: text tokens come `TextPart` chunks, tool results come `DataPart` nel chunk finale.
+- [x] **CLI client handler dispatch**: `HandlerDispatcher` per tool-specific handling (BashHandler, BaseDeferredHandler). Risposte wrappate in `DataPart`.
 
 #### 2h. Agent response in task history (TODO — bassa priorita')
 
@@ -768,7 +810,8 @@ Async update delivery via webhooks.
 - [ ] **Agent Card signing**: JWS signatures via `AgentCardSignature`
 - [ ] **`reference_task_ids`**: support follow-up task references
 - [ ] **Skill examples**: populate `AgentSkill.examples` with sample prompts
-- [ ] **Multi-modal I/O**: `FilePart` support for binary content, per-skill input/output modes
+- [x] **Multi-modal I/O (inbound)**: `FilePart` support for binary content via CLI attachments (`@file` syntax)
+- [ ] **Multi-modal I/O (outbound)**: per-skill input/output modes in Agent Card, `FilePart` in artifacts
 
 ---
 
