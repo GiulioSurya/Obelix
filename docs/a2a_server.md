@@ -336,10 +336,12 @@ Send a message to the agent and receive a response. Creates a task to track exec
 2. Agent processes the message asynchronously
 3. On success: state becomes `"completed"`, response stored in artifacts
 4. On failure: state becomes `"failed"`, error message in status
+5. On rejection: state becomes `"rejected"`, reason in status message (see [Task Rejection](#task-rejection))
 
 > **Spec note**: the full spec defines additional states: `INPUT_REQUIRED` (agent needs
-> more info from user), `AUTH_REQUIRED`, and `REJECTED`. These are not yet supported.
-> See [Life of a Task](https://a2a-protocol.org/latest/topics/life-of-a-task/).
+> more info from user) and `AUTH_REQUIRED`. `INPUT_REQUIRED` is supported via deferred tools
+> (see [A2A Compliance](a2a_compliance.md#deferred-tool-protocol--input-required-flow-2026-03-17)).
+> `AUTH_REQUIRED` is not yet supported.
 
 ---
 
@@ -891,6 +893,101 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 30
 ```
+
+---
+
+## Task Rejection
+
+The A2A protocol defines `rejected` as a terminal state meaning "the agent has determined
+it can't or won't proceed". Obelix supports this via two mechanisms:
+
+### 1. Hook-based rejection (`.reject()`)
+
+Use the fluent hook API to reject tasks based on conditions:
+
+```python
+class PolicyAgent(BaseAgent):
+    def __init__(self, **kwargs):
+        super().__init__(system_message="...", **kwargs)
+
+        # Reject before calling the LLM
+        self.on(AgentEvent.BEFORE_LLM_CALL).when(
+            lambda s: "DROP TABLE" in (s.agent.conversation_history[-1].content or "")
+        ).reject("Destructive SQL queries are not allowed")
+
+        # Reject after LLM analysis
+        self.on(AgentEvent.AFTER_LLM_CALL).when(
+            lambda s: "out of scope" in (s.assistant_message.content or "")
+        ).reject("Request is outside this agent's scope")
+```
+
+### 2. Direct exception
+
+Raise `TaskRejectedError` anywhere in agent code:
+
+```python
+from obelix.core.agent.exceptions import TaskRejectedError
+
+class StrictAgent(BaseAgent):
+    async def _pre_check(self, query: str) -> None:
+        if not self._can_handle(query):
+            raise TaskRejectedError("This agent only handles billing queries")
+```
+
+### How the client sees it
+
+The A2A executor catches `TaskRejectedError` and emits:
+
+```json
+{
+  "status": {
+    "state": "rejected",
+    "message": {
+      "role": "agent",
+      "parts": [{"text": "Destructive SQL queries are not allowed"}]
+    }
+  }
+}
+```
+
+### Client handling
+
+The built-in CLI client displays a red panel with the rejection reason:
+
+```
+┌─ coordinator rejected the request ─┐
+│                                     │
+│  This agent only supports basic     │
+│  arithmetic (add, subtract,         │
+│  multiply, divide). Requested       │
+│  operation is not available.        │
+│                                     │
+└─────────────────────────────────────┘
+```
+
+For custom A2A clients, check `task.status.state == TaskState.rejected` and
+extract the reason from `task.status.message.parts[0].text`:
+
+```python
+if task.status.state == TaskState.rejected:
+    reason = task.status.message.parts[0].root.text
+    # Option A: show to user
+    print(f"Rejected: {reason}")
+    # Option B: route to a different agent
+    task = await other_agent.send_message(msg)
+```
+
+### Rejected vs Failed vs Canceled
+
+| State | Meaning | Who decides |
+|-------|---------|-------------|
+| `rejected` | Agent consciously refuses the request | Agent (hook or exception) |
+| `failed` | Unhandled error during execution | System (exception) |
+| `canceled` | Client requested cancellation | Client (via `tasks/cancel`) |
+
+The key distinction: `rejected` is a **deliberate policy decision**, not an error.
+In multi-agent scenarios, a client receiving `rejected` can route the request to
+a different agent.
 
 ---
 

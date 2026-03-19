@@ -376,6 +376,16 @@ class CLIClient:
                 self.show_agent_response(agent.name, text)
             else:
                 self.show_info(f"{agent.name}: completed (no content)")
+        elif task.status.state == TaskState.rejected:
+            msg_text = _extract_status_text(task)
+            self.console.print(
+                Panel(
+                    msg_text or "No reason provided",
+                    title=f"[status.fail]{agent.name} rejected the request[/status.fail]",
+                    border_style="red",
+                    padding=(1, 2),
+                )
+            )
         elif task.status.state == TaskState.failed:
             msg_text = _extract_status_text(task)
             self.show_error(f"{agent.name}: {msg_text}")

@@ -112,7 +112,7 @@ Ref: [Life of a Task](https://a2a-protocol.org/latest/topics/life-of-a-task/)
 | `completed` | Terminal | Successfully finished. | **OK** |
 | `failed` | Terminal | Execution error. | **OK** — structured `Message(role=agent, TextPart)` in `TaskStatus.message` |
 | `canceled` | Terminal | Client-initiated cancellation. | **OK** — structured `Message` in status (but cancellation is not real — see Section 1.2) |
-| `rejected` | Terminal | Agent declined the task. | **Never emitted** — useful when agent determines it cannot handle the request. |
+| `rejected` | Terminal | Agent declined the task. | **OK** — emitted via `TaskRejectedError` or `HookDecision.REJECT`. See Section 2f. |
 
 ### 2.2 Deferred Tool Protocol & `input-required` Flow (2026-03-17)
 
@@ -723,19 +723,16 @@ Generic deferred tool protocol. See Section 2.2 for full architecture.
 - [x] **Trace continuity**: trace session + span saved when loop stops, restored on resume. Deferred round-trip appears under same trace.
 - [x] **E2E verified**: full round-trip with calculator + report sub-agents, streaming tokens on resume.
 
-#### 2f. `rejected` state (TODO — richiede definizione use case)
+#### 2f. `rejected` state (DONE - 2026-03-19)
 
-Emettere `rejected` quando l'agent determina di non poter gestire la richiesta.
+Agent-initiated task rejection via explicit decision (hook or exception). No automatic detection.
 
-- [ ] **Definire i criteri**: quando un agent "rifiuta"? Possibili scenari:
-  - L'agent non ha tool e la query richiede un'azione
-  - L'agent risponde esplicitamente "non posso aiutarti"
-  - Il contenuto viola una policy
-
-**Gap informativi**:
-1. **Nessun use case concreto attuale**: nessun agent Obelix oggi rifiuta esplicitamente una richiesta. Il caso piu' vicino e' un agent senza tool che risponde "non so", ma quello e' `completed` con contenuto informativo, non `rejected`.
-2. **Criterio di detection**: euristica (analisi contenuto risposta) vs segnale esplicito (flag/eccezione dall'agent). L'euristica e' fragile; un segnale esplicito richiede modifiche al core.
-3. **Priorita' bassa**: la spec dice che `rejected` e' per scenari in cui l'agent "determines it cannot handle the request". Piu' rilevante in contesti multi-agent dove un agent potrebbe non avere le skill richieste.
+- [x] **`TaskRejectedError`**: exception in `core/agent/exceptions.py`. Carries a mandatory `reason: str` that becomes `TaskStatus.message` as `TextPart`.
+- [x] **`HookDecision.REJECT`**: new enum value in `HookDecision`. Converted to `TaskRejectedError` in `_run_hooks()`. Allowed on all events except `QUERY_END`.
+- [x] **`.reject(reason)` fluent API**: shorthand on `Hook` class — `self.on(event).when(condition).reject("reason")`.
+- [x] **Executor catch**: `ObelixAgentExecutor._run_agent()` catches `TaskRejectedError` and emits `TaskState.rejected` with structured `Message(role=agent, TextPart)`. Catch order: `CancelledError` > `TaskRejectedError` > `Exception`.
+- [x] **Semantic distinction**: `rejected` = conscious agent decision (policy). `failed` = unhandled error. `canceled` = client-initiated.
+- [x] **No automatic detection**: framework provides the mechanism (exception + hook), users define the policy (when to reject).
 
 #### 2g. Multi-part content & structured artifacts (DONE - 2026-03-18)
 

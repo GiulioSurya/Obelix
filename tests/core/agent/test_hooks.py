@@ -65,8 +65,8 @@ class TestHookDecision:
     """Tests for HookDecision enum."""
 
     def test_all_decisions_present(self):
-        """CONTINUE, RETRY, FAIL, STOP are all defined."""
-        expected = {"CONTINUE", "RETRY", "FAIL", "STOP"}
+        """CONTINUE, RETRY, FAIL, STOP, REJECT are all defined."""
+        expected = {"CONTINUE", "RETRY", "FAIL", "STOP", "REJECT"}
         actual = {d.name for d in HookDecision}
         assert actual == expected
 

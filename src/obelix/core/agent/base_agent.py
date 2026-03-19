@@ -25,6 +25,7 @@ from obelix.core.agent.agent_tracing import (
     start_tool_span,
 )
 from obelix.core.agent.event_contracts import EventContract, get_event_contracts
+from obelix.core.agent.exceptions import TaskRejectedError
 from obelix.core.agent.hooks import AgentEvent, AgentStatus, Hook, HookDecision, Outcome
 from obelix.core.agent.memory_hooks import register_memory_hooks
 from obelix.core.model.assistant_message import (
@@ -211,6 +212,14 @@ class BaseAgent:
 
             if outcome.decision == HookDecision.FAIL:
                 return outcome
+
+            if outcome.decision == HookDecision.REJECT:
+                reason = (
+                    outcome.value
+                    if isinstance(outcome.value, str)
+                    else "Task rejected by agent"
+                )
+                raise TaskRejectedError(reason)
 
             if not self._is_valid_value(outcome.value, contract.output_type):
                 raise RuntimeError(

@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, get_type_hints
 from pydantic import Field, create_model
 from pydantic.fields import FieldInfo
 
+from obelix.core.agent.exceptions import TaskRejectedError
 from obelix.core.model.tool_message import (
     MCPToolSchema,
     ToolCall,
@@ -97,6 +98,18 @@ class SubAgentWrapper:
                 status=ToolStatus.SUCCESS,
                 execution_time=time.time() - start_time,
             )
+        except TaskRejectedError as e:
+            logger.info(
+                f"[SubAgentWrapper] Sub-agent rejected | agent={self.tool_name} reason={e.reason}"
+            )
+            return ToolResult(
+                tool_name=tool_call.name,
+                tool_call_id=tool_call.id,
+                result=f"REJECTED: {e.reason}",
+                status=ToolStatus.ERROR,
+                error=f"Sub-agent '{self.tool_name}' rejected the request: {e.reason}",
+                execution_time=time.time() - start_time,
+            )
         except Exception as e:
             return ToolResult(
                 tool_name=tool_call.name,
@@ -118,6 +131,18 @@ class SubAgentWrapper:
                 tool_call_id=tool_call.id,
                 result=response.content,
                 status=ToolStatus.SUCCESS,
+                execution_time=time.time() - start_time,
+            )
+        except TaskRejectedError as e:
+            logger.info(
+                f"[SubAgentWrapper] Sub-agent rejected | agent={self.tool_name} reason={e.reason}"
+            )
+            return ToolResult(
+                tool_name=tool_call.name,
+                tool_call_id=tool_call.id,
+                result=f"REJECTED: {e.reason}",
+                status=ToolStatus.ERROR,
+                error=f"Sub-agent '{self.tool_name}' rejected the request: {e.reason}",
                 execution_time=time.time() - start_time,
             )
         except Exception as e:

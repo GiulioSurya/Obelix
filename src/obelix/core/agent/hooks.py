@@ -6,7 +6,7 @@ The API uses when(...) and handle(...) to define:
 - activation conditions
 - state effects via context
 - value transformations in the pipeline
-- flow decisions (CONTINUE/RETRY/FAIL/STOP)
+- flow decisions (CONTINUE/RETRY/FAIL/STOP/REJECT)
 """
 
 import asyncio
@@ -62,6 +62,7 @@ class HookDecision(StrEnum):
     RETRY = "retry"
     FAIL = "fail"
     STOP = "stop"
+    REJECT = "reject"
 
 
 @dataclass
@@ -146,6 +147,12 @@ class Hook:
         logger.trace(
             f"[Hook] Handler registered | event={self.event.value} decision={decision.value} effects={len(self._effects)}"
         )
+        return self
+
+    def reject(self, reason: str) -> "Hook":
+        """Reject the task with a reason. Maps to A2A TaskState.rejected."""
+        self._decision = HookDecision.REJECT
+        self._value = reason
         return self
 
     async def execute(

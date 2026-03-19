@@ -43,6 +43,7 @@ from obelix.adapters.inbound.a2a.part_converter import (
     deferred_calls_to_a2a_parts,
     obelix_response_to_a2a_parts,
 )
+from obelix.core.agent.exceptions import TaskRejectedError
 from obelix.core.model.human_message import HumanMessage
 from obelix.core.model.tool_message import ToolMessage, ToolResult, ToolStatus
 from obelix.core.tracer.context import (
@@ -411,6 +412,22 @@ class ObelixAgentExecutor(AgentExecutor):
                 )
             )
             raise
+
+        except TaskRejectedError as e:
+            logger.info(
+                f"[A2A] Agent rejected task | task_id={task_id} reason={e.reason}"
+            )
+            await event_queue.enqueue_event(
+                TaskStatusUpdateEvent(
+                    task_id=task_id,
+                    context_id=context_id,
+                    status=TaskStatus(
+                        state=TaskState.rejected,
+                        message=_agent_message(e.reason),
+                    ),
+                    final=True,
+                )
+            )
 
         except Exception as e:
             logger.error(f"[A2A] Agent failed | task_id={task_id} error={e}")

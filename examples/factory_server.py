@@ -18,6 +18,7 @@ Usage:
 """
 
 import os
+import re
 
 from dotenv import load_dotenv
 from pydantic import Field
@@ -25,6 +26,7 @@ from pydantic import Field
 from obelix.adapters.outbound.litellm import LiteLLMProvider
 from obelix.core.agent import BaseAgent, SharedMemoryGraph
 from obelix.core.agent.agent_factory import AgentFactory
+from obelix.core.agent.hooks import AgentEvent
 from obelix.core.agent.shared_memory import PropagationPolicy
 from obelix.core.model.tool_message import ToolRequirement
 from obelix.core.tool.tool_base import Tool
@@ -82,6 +84,15 @@ class CalculatorTool(Tool):
 # -- Agents ------------------------------------------------------------------
 
 
+# Patterns that indicate unsupported math operations
+_UNSUPPORTED_OPS = re.compile(
+    r"\b(sqrt|square root|radice|power|potenza|exponent|esponente|"
+    r"factorial|fattoriale|modulo|logarithm|log|ln|"
+    r"sin|cos|tan|integral|derivative|derivata|matrix|matrice)\b",
+    re.IGNORECASE,
+)
+
+
 class MathAgent(BaseAgent):
     """Math expert agent."""
 
@@ -104,6 +115,21 @@ class MathAgent(BaseAgent):
             **kwargs,
         )
         self.register_tool(CalculatorTool())
+
+        # Reject unsupported operations at the sub-agent level.
+        # The coordinator receives this as a clear rejection in ToolResult,
+        # not a generic error — so the LLM knows the agent refused on purpose.
+        self.on(AgentEvent.BEFORE_LLM_CALL).when(
+            lambda s: (
+                _UNSUPPORTED_OPS.search(
+                    getattr(s.agent.conversation_history[-1], "content", None) or ""
+                )
+                is not None
+            )
+        ).reject(
+            "This agent only supports basic arithmetic (add, subtract, multiply, divide). "
+            "Operations like power, sqrt, log, trigonometry are not available."
+        )
 
 
 class ReportAgent(BaseAgent):
@@ -141,6 +167,8 @@ class CoordinatorAgent(BaseAgent):
                 "- If information is missing or ambiguous, use request_user_input to ask for clarification.\n"
                 "- Only after the user responds can you call the Math Agent.\n"
                 "- After the Math Agent responds, call the Report Agent to format the results.\n"
+                "- If a sub-agent REJECTS a request, do NOT try to work around it or retry with a different phrasing. "
+                "Report the rejection reason directly to the user as your final answer.\n"
                 "Always use request_user_input at least once before doing any calculation."
             ),
             provider=LiteLLMProvider(
@@ -152,6 +180,21 @@ class CoordinatorAgent(BaseAgent):
             ),
             **kwargs,
             planning=True,
+        )
+
+        # Reject queries requesting operations the calculator cannot handle.
+        # The coordinator is the A2A entry point, so REJECT here produces
+        # TaskState.rejected for the client — no LLM call wasted.
+        self.on(AgentEvent.BEFORE_LLM_CALL).when(
+            lambda s: (
+                _UNSUPPORTED_OPS.search(
+                    getattr(s.agent.conversation_history[-1], "content", None) or ""
+                )
+                is not None
+            )
+        ).reject(
+            "This agent only supports basic arithmetic (add, subtract, multiply, divide). "
+            "Operations like power, sqrt, log, trigonometry are not available."
         )
 
 

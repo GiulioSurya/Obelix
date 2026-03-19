@@ -12,7 +12,7 @@ A hook is a named lifecycle event where you can:
 1. **Observe** the current state via `AgentStatus`
 2. **Change state** via side effects (modifying conversation history, flags, etc.)
 3. **Transform values** that flow through the pipeline
-4. **Control flow** with decisions (CONTINUE, RETRY, FAIL, STOP)
+4. **Control flow** with decisions (CONTINUE, RETRY, FAIL, STOP, REJECT)
 
 ### Hook vs Effect vs Value
 
@@ -151,6 +151,7 @@ Every hook must return a decision that controls the pipeline:
 | `RETRY` | Restart LLM phase | `AFTER_LLM_CALL`, `BEFORE_FINAL_RESPONSE` |
 | `FAIL` | Stop with error | All |
 | `STOP` | Return immediately with value | All (but requires specific value type) |
+| `REJECT` | Stop with rejection (A2A `rejected` state) | All except `QUERY_END` |
 
 ### CONTINUE
 
@@ -194,6 +195,30 @@ self.on(AgentEvent.BEFORE_LLM_CALL).when(
     value=self._cached_response(),  # Must be AssistantMessage
 )
 ```
+
+### REJECT
+
+Reject the task deliberately. Maps to A2A `TaskState.rejected`.
+Unlike FAIL (which indicates an error), REJECT signals a conscious decision
+by the agent to not handle the request:
+
+```python
+# Reject destructive queries before calling the LLM
+self.on(AgentEvent.BEFORE_LLM_CALL).when(
+    lambda s: "DROP TABLE" in (s.agent.current_query or "")
+).reject("Destructive queries are not allowed")
+
+# Reject after LLM analysis
+self.on(AgentEvent.AFTER_LLM_CALL).when(
+    lambda s: "out of scope" in (s.assistant_message.content or "")
+).reject("Request is outside this agent's scope")
+```
+
+The reason string is included in the A2A `TaskStatus.message` so the
+client knows why the task was rejected.
+
+Raises `TaskRejectedError` internally -- can also be raised directly
+in agent code without hooks.
 
 ---
 
@@ -258,7 +283,7 @@ Define what happens when the hook triggers:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `decision` | `HookDecision` | `CONTINUE`, `RETRY`, `FAIL`, or `STOP` |
+| `decision` | `HookDecision` | `CONTINUE`, `RETRY`, `FAIL`, `STOP`, or `REJECT` |
 | `value` | callable or direct value | Optional: transform pipeline data |
 | `effects` | `List[callable]` | Optional: side effects to execute |
 
