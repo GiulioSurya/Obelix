@@ -27,7 +27,7 @@ from obelix.adapters.outbound.shell import LocalShellExecutor
 from obelix.core.agent import BaseAgent
 from obelix.core.agent.agent_factory import AgentFactory
 from obelix.core.tracer import Tracer
-from obelix.core.tracer.exporters import HTTPExporter
+from obelix.core.tracer.exporters import ConsoleExporter
 from obelix.infrastructure.logging import setup_logging
 from obelix.plugins.builtin import BashTool
 
@@ -39,12 +39,12 @@ LOCAL_EXECUTOR = False
 
 LITELLM_MODEL = "anthropic/claude-haiku-4-5-20251001"
 
-# tracer = Tracer(exporter=ConsoleExporter(verbosity=3))
+tracer = Tracer(exporter=ConsoleExporter(verbosity=3))
 
-tracer = Tracer(
-    exporter=HTTPExporter(endpoint="http://localhost:8100/api/v1/ingest"),
-    service_name="demo_bash",
-)
+# tracer = Tracer(
+#     exporter=HTTPExporter(endpoint="http://localhost:8100/api/v1/ingest"),
+#     service_name="demo_bash",
+# )
 
 
 # -- Provider ----------------------------------------------------------------

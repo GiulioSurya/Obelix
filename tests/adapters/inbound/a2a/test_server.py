@@ -28,10 +28,10 @@ from pydantic import BaseModel
 
 from obelix.adapters.inbound.a2a.server import (
     DEFAULT_MAX_CONTEXTS,
+    ContextEntry,
     ObelixAgentExecutor,
-    _agent_message,
-    _ContextEntry,
-    _parse_deferred_result,
+    agent_message,
+    parse_deferred_result,
 )
 from obelix.core.model.tool_message import ToolCall
 
@@ -145,7 +145,7 @@ def _assert_error_message(status, expected_text: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# _agent_message helper
+# agent_message helper
 # ---------------------------------------------------------------------------
 
 
@@ -153,14 +153,14 @@ class TestAgentMessage:
     def test_returns_message_with_agent_role(self):
         from a2a.types import Message, Role
 
-        msg = _agent_message("some error")
+        msg = agent_message("some error")
         assert isinstance(msg, Message)
         assert msg.role == Role.agent
 
     def test_has_single_text_part_with_given_text(self):
         from a2a.types import TextPart
 
-        msg = _agent_message("specific error text")
+        msg = agent_message("specific error text")
         assert len(msg.parts) == 1
         assert isinstance(msg.parts[0].root, TextPart)
         assert msg.parts[0].root.text == "specific error text"
@@ -168,19 +168,19 @@ class TestAgentMessage:
     def test_message_id_is_valid_uuid(self):
         import uuid
 
-        msg = _agent_message("test")
+        msg = agent_message("test")
         parsed = uuid.UUID(msg.message_id)
         assert str(parsed) == msg.message_id
 
 
 # ---------------------------------------------------------------------------
-# _ContextEntry
+# ContextEntry
 # ---------------------------------------------------------------------------
 
 
 class TestContextEntry:
     def test_initial_state(self):
-        entry = _ContextEntry()
+        entry = ContextEntry()
         assert entry.history == []
         assert isinstance(entry.idle, asyncio.Event)
         assert entry.idle.is_set()  # starts idle (ready)
@@ -189,7 +189,7 @@ class TestContextEntry:
         assert entry.trace_span is None
 
     def test_history_is_mutable_list(self):
-        entry = _ContextEntry()
+        entry = ContextEntry()
         entry.history.append("msg")
         assert len(entry.history) == 1
 
@@ -208,17 +208,17 @@ class TestExecutorConstruction:
     def test_default_max_contexts(self):
         factory, _ = _make_factory()
         executor = ObelixAgentExecutor(factory)
-        assert executor._max_contexts == DEFAULT_MAX_CONTEXTS
+        assert executor._store._max_contexts == DEFAULT_MAX_CONTEXTS
 
     def test_custom_max_contexts(self):
         factory, _ = _make_factory()
         executor = ObelixAgentExecutor(factory, max_contexts=5)
-        assert executor._max_contexts == 5
+        assert executor._store._max_contexts == 5
 
     def test_empty_contexts_on_init(self):
         factory, _ = _make_factory()
         executor = ObelixAgentExecutor(factory)
-        assert len(executor._contexts) == 0
+        assert len(executor._store._contexts) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -230,55 +230,55 @@ class TestGetOrCreateContext:
     def test_creates_new_context(self):
         factory, _ = _make_factory()
         executor = ObelixAgentExecutor(factory)
-        entry = executor._get_or_create_context("ctx-1")
-        assert isinstance(entry, _ContextEntry)
-        assert "ctx-1" in executor._contexts
+        entry = executor._store.get_or_create("ctx-1")
+        assert isinstance(entry, ContextEntry)
+        assert "ctx-1" in executor._store._contexts
 
     def test_returns_existing_context(self):
         factory, _ = _make_factory()
         executor = ObelixAgentExecutor(factory)
-        entry1 = executor._get_or_create_context("ctx-1")
-        entry2 = executor._get_or_create_context("ctx-1")
+        entry1 = executor._store.get_or_create("ctx-1")
+        entry2 = executor._store.get_or_create("ctx-1")
         assert entry1 is entry2
 
     def test_moves_existing_to_end(self):
         factory, _ = _make_factory()
         executor = ObelixAgentExecutor(factory)
-        executor._get_or_create_context("ctx-1")
-        executor._get_or_create_context("ctx-2")
-        executor._get_or_create_context("ctx-1")  # should move to end
-        keys = list(executor._contexts.keys())
+        executor._store.get_or_create("ctx-1")
+        executor._store.get_or_create("ctx-2")
+        executor._store.get_or_create("ctx-1")  # should move to end
+        keys = list(executor._store._contexts.keys())
         assert keys == ["ctx-2", "ctx-1"]
 
     def test_lru_eviction_at_capacity(self):
         factory, _ = _make_factory()
         executor = ObelixAgentExecutor(factory, max_contexts=2)
-        executor._get_or_create_context("ctx-1")
-        executor._get_or_create_context("ctx-2")
-        executor._get_or_create_context("ctx-3")  # should evict ctx-1
-        assert "ctx-1" not in executor._contexts
-        assert "ctx-2" in executor._contexts
-        assert "ctx-3" in executor._contexts
+        executor._store.get_or_create("ctx-1")
+        executor._store.get_or_create("ctx-2")
+        executor._store.get_or_create("ctx-3")  # should evict ctx-1
+        assert "ctx-1" not in executor._store._contexts
+        assert "ctx-2" in executor._store._contexts
+        assert "ctx-3" in executor._store._contexts
 
     def test_lru_eviction_preserves_recently_used(self):
         factory, _ = _make_factory()
         executor = ObelixAgentExecutor(factory, max_contexts=2)
-        executor._get_or_create_context("ctx-1")
-        executor._get_or_create_context("ctx-2")
-        executor._get_or_create_context("ctx-1")  # refresh ctx-1
-        executor._get_or_create_context("ctx-3")  # should evict ctx-2 (oldest)
-        assert "ctx-1" in executor._contexts
-        assert "ctx-2" not in executor._contexts
-        assert "ctx-3" in executor._contexts
+        executor._store.get_or_create("ctx-1")
+        executor._store.get_or_create("ctx-2")
+        executor._store.get_or_create("ctx-1")  # refresh ctx-1
+        executor._store.get_or_create("ctx-3")  # should evict ctx-2 (oldest)
+        assert "ctx-1" in executor._store._contexts
+        assert "ctx-2" not in executor._store._contexts
+        assert "ctx-3" in executor._store._contexts
 
     def test_eviction_history_is_lost(self):
         """Once a context is evicted, its history is gone."""
         factory, _ = _make_factory()
         executor = ObelixAgentExecutor(factory, max_contexts=1)
-        entry = executor._get_or_create_context("ctx-1")
+        entry = executor._store.get_or_create("ctx-1")
         entry.history.append("some message")
-        executor._get_or_create_context("ctx-2")  # evicts ctx-1
-        new_entry = executor._get_or_create_context("ctx-1")  # re-created fresh
+        executor._store.get_or_create("ctx-2")  # evicts ctx-1
+        new_entry = executor._store.get_or_create("ctx-1")  # re-created fresh
         assert new_entry.history == []
 
 
@@ -315,6 +315,7 @@ class TestExecuteSuccess:
     async def test_event_sequence_working_artifact_completed(self):
         """Successful execution emits: working -> artifact -> completed."""
         from a2a.types import (
+            Role,
             TaskArtifactUpdateEvent,
             TaskState,
             TaskStatusUpdateEvent,
@@ -327,8 +328,8 @@ class TestExecuteSuccess:
 
         await executor.execute(ctx, queue)
 
-        assert len(queue.events) == 3
-        # Event 1: working
+        assert len(queue.events) == 4
+        # Event 1: working (initial)
         assert isinstance(queue.events[0], TaskStatusUpdateEvent)
         assert queue.events[0].status.state == TaskState.working
         assert queue.events[0].final is False
@@ -337,10 +338,17 @@ class TestExecuteSuccess:
         assert queue.events[1].artifact.parts[0].root.text == "Agent response"
         assert queue.events[1].append is False
         assert queue.events[1].last_chunk is True
-        # Event 3: completed
+        # Event 3: working with agent message (for task history promotion)
         assert isinstance(queue.events[2], TaskStatusUpdateEvent)
-        assert queue.events[2].status.state == TaskState.completed
-        assert queue.events[2].final is True
+        assert queue.events[2].status.state == TaskState.working
+        assert queue.events[2].status.message is not None
+        assert queue.events[2].status.message.role == Role.agent
+        assert queue.events[2].status.message.parts[0].root.text == "Agent response"
+        assert queue.events[2].final is False
+        # Event 4: completed
+        assert isinstance(queue.events[3], TaskStatusUpdateEvent)
+        assert queue.events[3].status.state == TaskState.completed
+        assert queue.events[3].final is True
 
     @pytest.mark.asyncio
     async def test_task_id_and_context_id_propagated(self):
@@ -461,7 +469,7 @@ class TestMultiTurnHistory:
         queue2 = FakeEventQueue()
         await executor.execute(ctx2, queue2)
 
-        entry = executor._contexts["ctx-mt"]
+        entry = executor._store._contexts["ctx-mt"]
         assert len(entry.history) >= 2
 
     @pytest.mark.asyncio
@@ -500,8 +508,8 @@ class TestMultiTurnHistory:
         ctx_b = FakeRequestContext(context_id="ctx-B")
         await executor.execute(ctx_b, FakeEventQueue())
 
-        entry_a = executor._contexts["ctx-A"]
-        entry_b = executor._contexts["ctx-B"]
+        entry_a = executor._store._contexts["ctx-A"]
+        entry_b = executor._store._contexts["ctx-B"]
         assert entry_a is not entry_b
         assert entry_a.history is not entry_b.history
 
@@ -805,10 +813,10 @@ class TestLRUEvictionIntegration:
             ctx = FakeRequestContext(context_id=cid)
             await executor.execute(ctx, FakeEventQueue())
 
-        assert "ctx-1" not in executor._contexts
-        assert "ctx-2" in executor._contexts
-        assert "ctx-3" in executor._contexts
-        assert len(executor._contexts) == 2
+        assert "ctx-1" not in executor._store._contexts
+        assert "ctx-2" in executor._store._contexts
+        assert "ctx-3" in executor._store._contexts
+        assert len(executor._store._contexts) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -905,7 +913,7 @@ class TestDeferredInputRequired:
 
         await executor.execute(ctx, queue)
 
-        entry = executor._contexts["ctx-saved"]
+        entry = executor._store._contexts["ctx-saved"]
         assert entry.deferred_tool_calls is not None
         assert len(entry.deferred_tool_calls) == 1
         assert entry.deferred_tool_calls[0].name == "request_user_input"
@@ -919,7 +927,7 @@ class TestDeferredInputRequired:
 
         await executor.execute(ctx, queue)
 
-        entry = executor._contexts["ctx-idle"]
+        entry = executor._store._contexts["ctx-idle"]
         assert entry.idle.is_set()
 
 
@@ -991,7 +999,7 @@ class TestResumeAfterDeferred:
         )
         await executor.execute(ctx2, FakeEventQueue())
 
-        entry = executor._contexts["ctx-clear"]
+        entry = executor._store._contexts["ctx-clear"]
         assert entry.deferred_tool_calls is None
         assert entry.idle.is_set()
 
@@ -1035,13 +1043,13 @@ class TestNormalFlowUnchanged:
         assert queue.events[0].status.state == TaskState.working
         assert queue.events[2].status.state == TaskState.completed
 
-        entry = executor._contexts["ctx-001"]
+        entry = executor._store._contexts["ctx-001"]
         assert entry.idle.is_set()
         assert entry.deferred_tool_calls is None
 
 
 # ---------------------------------------------------------------------------
-# _parse_deferred_result (now takes dict, not str)
+# parse_deferred_result (now takes dict, not str)
 # ---------------------------------------------------------------------------
 
 
@@ -1073,7 +1081,7 @@ class TestParseDeferredResult:
         tools = [_MockBashTool(), _MockSimpleTool()]
         data = {"stdout": "hello world", "exit_code": 0}
 
-        result = _parse_deferred_result(call, tools, data)
+        result = parse_deferred_result(call, tools, data)
 
         assert result["stdout"] == "hello world"
         assert result["exit_code"] == 0
@@ -1085,7 +1093,7 @@ class TestParseDeferredResult:
         tools = [_MockBashTool()]
         data = {"unexpected_field": "value"}
 
-        result = _parse_deferred_result(call, tools, data)
+        result = parse_deferred_result(call, tools, data)
 
         # Pydantic ignores extra fields and fills defaults
         assert result["stdout"] == ""
@@ -1098,7 +1106,7 @@ class TestParseDeferredResult:
         tools = [_MockSimpleTool()]
         data = {"answer": "EUR"}
 
-        result = _parse_deferred_result(call, tools, data)
+        result = parse_deferred_result(call, tools, data)
 
         assert result == {"answer": "EUR"}
 
@@ -1107,7 +1115,7 @@ class TestParseDeferredResult:
         call = ToolCall(id="tc-1", name="bash", arguments={})
         data = {"answer": "some answer"}
 
-        result = _parse_deferred_result(call, None, data)
+        result = parse_deferred_result(call, None, data)
 
         assert result == {"answer": "some answer"}
 

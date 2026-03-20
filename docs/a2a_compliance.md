@@ -26,16 +26,21 @@ a2a-sdk infrastructure (managed by SDK):
   AgentCard (Pydantic)    -- agent card model
   |
   v
-ObelixAgentExecutor (our only code):
-  RequestContext.get_user_input() -> BaseAgent.execute_query_stream() -> EventQueue events
+ObelixAgentExecutor (our only code — server/ package):
+  executor.py:  RequestContext -> BaseAgent.execute_query_stream() -> EventQueue events
+  context.py:   ContextEntry + ContextStore (per-context history, LRU eviction)
+  deferred.py:  inject_deferred_response() + parse_deferred_result()
   Part converter: A2A Part <-> Obelix ContentPart (bidirectional, part_converter.py)
   Generic deferred tool protocol (DataPart transport, OutputSchema-based validation)
   Built-in deferred tools: RequestUserInputTool (auto-registered), BashTool (opt-in)
 ```
 
 **Files**:
-- `src/obelix/adapters/inbound/a2a/server.py` — `ObelixAgentExecutor(AgentExecutor)`
-- `src/obelix/adapters/inbound/a2a/input_channel.py` — `InputChannel` (tool <-> executor async channel)
+- `src/obelix/adapters/inbound/a2a/server/` — server package (executor, context, deferred, helpers)
+  - `executor.py` — `ObelixAgentExecutor(AgentExecutor)`
+  - `context.py` — `ContextEntry`, `ContextStore` (LRU eviction)
+  - `deferred.py` — `inject_deferred_response()`, `parse_deferred_result()`
+  - `helpers.py` — `agent_message()`, `DEFAULT_MAX_CONTEXTS`
 - `src/obelix/adapters/inbound/a2a/part_converter.py` — bidirectional A2A `Part` <-> Obelix `ContentPart` conversion
 - `src/obelix/adapters/inbound/a2a/request_user_input_tool.py` — `RequestUserInputTool` (A2A-specific)
 - `src/obelix/adapters/inbound/a2a/client/cli_client.py` — CLI client with multimodal attachments and deferred tool handlers
@@ -459,12 +464,13 @@ Spec behavior:
 - **Multiple tasks**: same `contextId` can contain parallel or sequential tasks
 - **State management**: server uses `contextId` to maintain conversational state
 
-**Obelix status (DONE)**: `ObelixAgentExecutor` stores conversation history per
-`contextId` in `_ContextEntry`. Each request creates a fresh agent via the factory,
-injects the context's history, executes, and persists the updated history. Multi-turn
-conversations work correctly. LRU eviction (default 1024 contexts) prevents unbounded
-memory growth. Per-context `asyncio.Lock` serializes concurrent requests on the same
-context while allowing full parallelism across different contexts.
+**Obelix status (DONE)**: `ObelixAgentExecutor` delegates context management to
+`ContextStore` (`server/context.py`). Each `contextId` maps to a `ContextEntry` holding
+conversation history, idle gate, and deferred tool state. Each request creates a fresh
+agent via the factory, injects the context's history, executes, and persists the updated
+history. Multi-turn conversations work correctly. LRU eviction (default 1024 contexts)
+prevents unbounded memory growth. Per-context `asyncio.Event` serializes concurrent
+requests on the same context while allowing full parallelism across different contexts.
 
 ---
 

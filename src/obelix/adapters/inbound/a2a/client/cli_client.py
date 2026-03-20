@@ -24,12 +24,15 @@ from a2a.types import (
     Message,
     Part,
     Role,
+    TaskQueryParams,
     TaskState,
     TextPart,
 )
 from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.styles import Style as PTStyle
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -67,13 +70,43 @@ LOGO = r"""[bold cyan]
 """
 
 
+_COMMANDS = {
+    "/agents": "List connected agents",
+    "/switch": "Switch to agent n",
+    "/task-info": "Show last task details and messages",
+    "/clear": "Clear conversation context",
+    "/help": "Show help",
+    "/quit": "Exit",
+}
+
+
+class _SlashCompleter(Completer):
+    """Auto-complete slash commands."""
+
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+        if not text.startswith("/"):
+            return
+        for cmd, desc in _COMMANDS.items():
+            if cmd.startswith(text):
+                yield Completion(cmd, start_position=-len(text), display_meta=desc)
+
+
 # -- Agent Connection --------------------------------------------------------
 
 
 class AgentConnection:
     """A resolved connection to a remote A2A agent."""
 
-    __slots__ = ("name", "description", "skills", "client", "url", "context_id")
+    __slots__ = (
+        "name",
+        "description",
+        "skills",
+        "client",
+        "url",
+        "context_id",
+        "last_task_id",
+    )
 
     def __init__(
         self,
@@ -89,6 +122,7 @@ class AgentConnection:
         self.client = client
         self.url = url
         self.context_id: str | None = None
+        self.last_task_id: str | None = None
 
 
 # -- A2A message helpers -----------------------------------------------------
@@ -103,13 +137,18 @@ def _make_message(text: str, context_id: str | None = None) -> Message:
     )
 
 
-def _make_data_message(data: dict[str, Any], context_id: str | None = None) -> Message:
+def _make_data_message(
+    data: dict[str, Any],
+    context_id: str | None = None,
+    task_id: str | None = None,
+) -> Message:
     """Build a user message with a DataPart payload (for deferred tool responses)."""
     return Message(
         message_id=str(uuid.uuid4()),
         role=Role.user,
         parts=[Part(root=DataPart(data=data))],
         context_id=context_id,
+        task_id=task_id,
     )
 
 
@@ -257,11 +296,9 @@ class CLIClient:
         help_table = Table(show_header=False, box=None, padding=(0, 2))
         help_table.add_column("Command", style="cmd")
         help_table.add_column("Description")
-        help_table.add_row("/agents", "List connected agents")
-        help_table.add_row("/switch <n>", "Switch to agent n")
-        help_table.add_row("/clear", "Clear conversation context")
-        help_table.add_row("/help", "Show this help")
-        help_table.add_row("/quit", "Exit")
+        for cmd, desc in _COMMANDS.items():
+            label = f"{cmd} <n>" if cmd == "/switch" else cmd
+            help_table.add_row(label, desc)
         help_table.add_row("", "")
         help_table.add_row("@<path>", "Attach a file (image, PDF, ...)")
         help_table.add_row('@"path with spaces"', "Attach a file with spaces in path")
@@ -277,6 +314,53 @@ class CLIClient:
                 padding=(1, 2),
             )
         )
+
+    async def show_task_info(self, agent: AgentConnection) -> None:
+        """Fetch the last task via tasks/get and display its details and messages."""
+        if not agent.last_task_id:
+            self.show_info("No task in this session yet.")
+            return
+
+        try:
+            task = await agent.client.get_task(TaskQueryParams(id=agent.last_task_id))
+        except Exception as e:
+            self.show_error(f"tasks/get failed: {e}")
+            return
+
+        if not task.history:
+            self.show_info("Task has no history.")
+            return
+
+        table = Table(
+            title=f"Task {task.id} — Messages",
+            title_style="bold",
+            show_lines=True,
+            padding=(0, 1),
+        )
+        table.add_column("#", style="bold", width=3, justify="right")
+        table.add_column("Role", style="bold", width=8)
+        table.add_column("Content")
+
+        for i, msg in enumerate(task.history):
+            role = msg.role if hasattr(msg, "role") else None
+            role_label = role.value if role else "?"
+            role_style = "green" if role == Role.user else "cyan"
+            parts_text = []
+            for part in msg.parts:
+                if hasattr(part.root, "text") and part.root.text:
+                    parts_text.append(part.root.text)
+                elif isinstance(part.root, DataPart):
+                    parts_text.append(f"[dim]DataPart: {part.root.data}[/dim]")
+                else:
+                    parts_text.append(f"[dim]{type(part.root).__name__}[/dim]")
+            content = "\n".join(parts_text) or "[dim](empty)[/dim]"
+            table.add_row(
+                str(i + 1), f"[{role_style}]{role_label}[/{role_style}]", content
+            )
+
+        self.console.print()
+        self.console.print(table)
+        self.console.print()
 
     def show_error(self, msg: str) -> None:
         self.console.print(f"[status.fail]  Error:[/status.fail] {msg}")
@@ -355,13 +439,20 @@ class CLIClient:
             return
 
         agent.context_id = task.context_id
+        if hasattr(task, "id"):
+            agent.last_task_id = task.id
 
         # Handle input-required loop (deferred tools)
+        # Per A2A spec: continue the SAME task by sending taskId + contextId
         while task.status.state == TaskState.input_required:
             data = _extract_status_data(task)
             result = await self._handle_deferred(data, session)
 
-            msg = _make_data_message(result, context_id=agent.context_id)
+            msg = _make_data_message(
+                result,
+                context_id=agent.context_id,
+                task_id=agent.last_task_id,
+            )
             with self.console.status("[info]Thinking...[/info]"):
                 task = await _collect_task(agent.client.send_message(msg))
 
@@ -448,7 +539,19 @@ class CLIClient:
             self.show_help()
             self.console.print()
 
-            session = PromptSession(history=InMemoryHistory())
+            session = PromptSession(
+                history=InMemoryHistory(),
+                completer=_SlashCompleter(),
+                style=PTStyle.from_dict(
+                    {
+                        "completion-menu": "bg:#1a1a2e #e0e0e0",
+                        "completion-menu.completion": "bg:#1a1a2e #e0e0e0",
+                        "completion-menu.completion.current": "bg:#00d4aa #1a1a2e bold",
+                        "completion-menu.meta": "bg:#1a1a2e #888888 italic",
+                        "completion-menu.meta.current": "bg:#00d4aa #1a1a2e italic",
+                    }
+                ),
+            )
 
             while True:
                 try:
@@ -478,8 +581,13 @@ class CLIClient:
                     self.show_agents_table(agents, current)
                     continue
 
+                if text == "/task-info":
+                    await self.show_task_info(agents[current])
+                    continue
+
                 if text == "/clear":
                     agents[current].context_id = None
+                    agents[current].last_task_id = None
                     self.show_info(f"Context cleared for {agents[current].name}")
                     continue
 

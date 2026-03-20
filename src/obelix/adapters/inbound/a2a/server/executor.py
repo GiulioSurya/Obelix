@@ -1,4 +1,4 @@
-"""Bridge between the a2a-sdk AgentExecutor and Obelix BaseAgent.
+"""ObelixAgentExecutor: bridges the a2a-sdk AgentExecutor to Obelix BaseAgent.
 
 Thread safety: each A2A context_id gets its own BaseAgent instance
 (created via the agent_factory callable). Conversation history is
@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections import OrderedDict
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -43,9 +42,15 @@ from obelix.adapters.inbound.a2a.part_converter import (
     deferred_calls_to_a2a_parts,
     obelix_response_to_a2a_parts,
 )
+from obelix.adapters.inbound.a2a.server.context import ContextStore
+from obelix.adapters.inbound.a2a.server.deferred import inject_deferred_response
+from obelix.adapters.inbound.a2a.server.helpers import (
+    DEFAULT_MAX_CONTEXTS,
+    agent_message,
+)
 from obelix.core.agent.exceptions import TaskRejectedError
 from obelix.core.model.human_message import HumanMessage
-from obelix.core.model.tool_message import ToolMessage, ToolResult, ToolStatus
+from obelix.core.model.tool_message import ToolMessage
 from obelix.core.tracer.context import (
     get_current_span,
     get_current_trace,
@@ -58,43 +63,8 @@ if TYPE_CHECKING:
     from a2a.server.agent_execution.context import RequestContext
 
     from obelix.core.agent.base_agent import BaseAgent
-    from obelix.core.model import StandardMessage
-    from obelix.core.model.tool_message import ToolCall
 
 logger = get_logger(__name__)
-
-DEFAULT_MAX_CONTEXTS = 1024
-
-
-def _agent_message(text: str) -> Message:
-    """Build an A2A Message with agent role."""
-    return Message(
-        role=Role.agent,
-        parts=[Part(root=TextPart(text=text))],
-        message_id=str(uuid.uuid4()),
-    )
-
-
-class _ContextEntry:
-    """Holds the state for a single conversation context."""
-
-    __slots__ = (
-        "history",
-        "idle",
-        "deferred_tool_calls",
-        "deferred_tools",
-        "trace_session",
-        "trace_span",
-    )
-
-    def __init__(self) -> None:
-        self.history: list[StandardMessage] = []
-        self.idle = asyncio.Event()
-        self.idle.set()  # starts as idle (ready for new executions)
-        self.deferred_tool_calls: list[ToolCall] | None = None
-        self.deferred_tools: list | None = None  # tool snapshot for OutputSchema lookup
-        self.trace_session = None  # TraceSession saved when loop stops for deferred
-        self.trace_span = None  # Current span saved when loop stops for deferred
 
 
 class ObelixAgentExecutor(AgentExecutor):
@@ -120,24 +90,8 @@ class ObelixAgentExecutor(AgentExecutor):
         max_contexts: int = DEFAULT_MAX_CONTEXTS,
     ) -> None:
         self._agent_factory = agent_factory
-        self._max_contexts = max_contexts
-        self._contexts: OrderedDict[str, _ContextEntry] = OrderedDict()
-        self._contexts_lock = asyncio.Lock()
-
-    def _get_or_create_context(self, context_id: str) -> _ContextEntry:
-        """Get or create a context entry, evicting oldest if over limit."""
-        if context_id in self._contexts:
-            self._contexts.move_to_end(context_id)
-            return self._contexts[context_id]
-
-        # Evict oldest contexts if we're at capacity
-        while len(self._contexts) >= self._max_contexts:
-            evicted_id, _evicted = self._contexts.popitem(last=False)
-            logger.debug(f"[A2A] Evicted context | context_id={evicted_id}")
-
-        entry = _ContextEntry()
-        self._contexts[context_id] = entry
-        return entry
+        self._store = ContextStore(max_contexts)
+        self._store_lock = asyncio.Lock()
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         task_id = context.task_id
@@ -154,7 +108,7 @@ class ObelixAgentExecutor(AgentExecutor):
                     context_id=context_id,
                     status=TaskStatus(
                         state=TaskState.failed,
-                        message=_agent_message("No user input provided"),
+                        message=agent_message("No user input provided"),
                     ),
                     final=True,
                 )
@@ -162,8 +116,8 @@ class ObelixAgentExecutor(AgentExecutor):
             return
 
         # Get or create the context entry (LRU eviction under global lock)
-        async with self._contexts_lock:
-            entry = self._get_or_create_context(context_id)
+        async with self._store_lock:
+            entry = self._store.get_or_create(context_id)
 
         # Serialize requests on the same context
         await entry.idle.wait()
@@ -172,7 +126,7 @@ class ObelixAgentExecutor(AgentExecutor):
         try:
             # RESUME PATH: if we have deferred tool calls, inject response
             if entry.deferred_tool_calls:
-                self._inject_deferred_response(entry, message)
+                inject_deferred_response(entry, message)
 
             await self._run_agent(
                 task_id=task_id,
@@ -185,43 +139,6 @@ class ObelixAgentExecutor(AgentExecutor):
         finally:
             entry.idle.set()
 
-    def _inject_deferred_response(
-        self,
-        entry: _ContextEntry,
-        message: Message,
-    ) -> None:
-        """Inject the client's response as ToolMessage for deferred tools.
-
-        Extracts structured data from the DataPart in the message and
-        validates it against the tool's OutputSchema if present.
-        """
-        # Extract structured data from DataPart
-        structured_data: dict | None = None
-        for part in message.parts:
-            if isinstance(part.root, DataPart):
-                structured_data = part.root.data
-                break
-
-        tool_results = []
-        for call in entry.deferred_tool_calls:
-            result_data = _parse_deferred_result(
-                call, entry.deferred_tools, structured_data or {}
-            )
-            tool_results.append(
-                ToolResult(
-                    tool_name=call.name,
-                    tool_call_id=call.id,
-                    result=result_data,
-                    status=ToolStatus.SUCCESS,
-                )
-            )
-        entry.history.append(ToolMessage(tool_results=tool_results))
-        entry.deferred_tool_calls = None
-        entry.deferred_tools = None
-        logger.info(
-            f"[A2A] Injected deferred response | tool_count={len(tool_results)}"
-        )
-
     async def _run_agent(
         self,
         *,
@@ -229,7 +146,7 @@ class ObelixAgentExecutor(AgentExecutor):
         context_id: str,
         user_text: str,
         attachments: list,
-        entry: _ContextEntry,
+        entry,
         event_queue: EventQueue,
     ) -> None:
         """Run the agent with isolated context and persist history."""
@@ -387,6 +304,32 @@ class ObelixAgentExecutor(AgentExecutor):
                             )
                         )
 
+                    # Place the agent response in a working status so
+                    # the SDK TaskManager appends it to task.history.
+                    # (TaskManager promotes status.message to history
+                    # when the *next* event overwrites the status —
+                    # the completed event that follows triggers this.)
+                    history_parts = (
+                        obelix_response_to_a2a_parts(response)
+                        if response
+                        else [Part(root=TextPart(text=""))]
+                    )
+                    await event_queue.enqueue_event(
+                        TaskStatusUpdateEvent(
+                            task_id=task_id,
+                            context_id=context_id,
+                            status=TaskStatus(
+                                state=TaskState.working,
+                                message=Message(
+                                    role=Role.agent,
+                                    parts=history_parts,
+                                    message_id=str(uuid.uuid4()),
+                                ),
+                            ),
+                            final=False,
+                        )
+                    )
+
                     await event_queue.enqueue_event(
                         TaskStatusUpdateEvent(
                             task_id=task_id,
@@ -406,7 +349,7 @@ class ObelixAgentExecutor(AgentExecutor):
                     context_id=context_id,
                     status=TaskStatus(
                         state=TaskState.canceled,
-                        message=_agent_message("Task canceled by client"),
+                        message=agent_message("Task canceled by client"),
                     ),
                     final=True,
                 )
@@ -423,7 +366,7 @@ class ObelixAgentExecutor(AgentExecutor):
                     context_id=context_id,
                     status=TaskStatus(
                         state=TaskState.rejected,
-                        message=_agent_message(e.reason),
+                        message=agent_message(e.reason),
                     ),
                     final=True,
                 )
@@ -437,7 +380,7 @@ class ObelixAgentExecutor(AgentExecutor):
                     context_id=context_id,
                     status=TaskStatus(
                         state=TaskState.failed,
-                        message=_agent_message(f"Execution failed: {e}"),
+                        message=agent_message(f"Execution failed: {e}"),
                     ),
                     final=True,
                 )
@@ -455,37 +398,8 @@ class ObelixAgentExecutor(AgentExecutor):
                 context_id=context_id,
                 status=TaskStatus(
                     state=TaskState.canceled,
-                    message=_agent_message("Task canceled by client"),
+                    message=agent_message("Task canceled by client"),
                 ),
                 final=True,
             )
         )
-
-
-# ── Module-level helpers for deferred tool protocol ─────────────────
-
-
-def _parse_deferred_result(
-    call: ToolCall,
-    tools: list | None,
-    data: dict,
-) -> dict:
-    """Parse a structured DataPart response for a deferred tool.
-
-    If the tool has an OutputSchema, validates the data against it.
-    Otherwise returns the data dict directly.
-    """
-    output_schema = None
-    for tool in tools or []:
-        if getattr(tool, "tool_name", None) == call.name:
-            output_schema = getattr(tool, "_output_schema", None)
-            break
-
-    if output_schema:
-        try:
-            validated = output_schema(**data)
-            return validated.model_dump()
-        except Exception:
-            return data
-
-    return data

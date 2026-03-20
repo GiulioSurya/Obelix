@@ -546,7 +546,7 @@ class AgentFactory:
         )
         from a2a.server.tasks.inmemory_task_store import InMemoryTaskStore
 
-        from obelix.adapters.inbound.a2a.server import ObelixAgentExecutor
+        from obelix.adapters.inbound.a2a.server.executor import ObelixAgentExecutor
 
         agent_card = self._build_agent_card(
             agent_instance=agent_instance,
