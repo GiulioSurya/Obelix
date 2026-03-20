@@ -1039,9 +1039,12 @@ class TestNormalFlowUnchanged:
 
         await executor.execute(ctx, queue)
 
-        assert len(queue.events) == 3  # working -> artifact -> completed
+        # working -> artifact -> working(with message) -> completed
+        assert len(queue.events) == 4
         assert queue.events[0].status.state == TaskState.working
-        assert queue.events[2].status.state == TaskState.completed
+        assert queue.events[2].status.state == TaskState.working
+        assert queue.events[2].status.message is not None
+        assert queue.events[3].status.state == TaskState.completed
 
         entry = executor._store._contexts["ctx-001"]
         assert entry.idle.is_set()
