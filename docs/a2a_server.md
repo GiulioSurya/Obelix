@@ -10,9 +10,11 @@ JSON-RPC 2.0 methods.
 > For a detailed gap analysis and roadmap, see [A2A Compliance](a2a_compliance.md).
 
 This guide covers:
-- How the A2A server works
-- Exposing agents via `factory.serve()`
+- How the A2A server works (architecture, context isolation)
+- Exposing agents via `factory.a2a_serve()`
 - Endpoints and JSON-RPC methods
+- Streaming (SSE), deferred tools (input-required), and multi-part content
+- Task rejection
 - Complete working examples
 - Deployment considerations
 
@@ -51,7 +53,11 @@ Obelix currently implements the **A2A Server** role (inbound adapter):
 | GetTask | Implemented |
 | ListTasks | Implemented |
 | CancelTask | Implemented |
-| Streaming (SSE) | Not yet |
+| Streaming (SSE) | Implemented |
+| Input-Required (deferred tools) | Implemented |
+| Multi-Part Content | Implemented |
+| Task Rejection | Implemented |
+| Context Isolation | Implemented |
 | Push Notifications | Not yet |
 | A2A Client (outbound) | Not yet |
 
@@ -63,7 +69,7 @@ For the full compliance matrix, see [A2A Compliance](a2a_compliance.md).
 
 ### Starting an A2A Server
 
-Use `AgentFactory.serve()` to expose an agent as an A2A service:
+Use `AgentFactory.a2a_serve()` to expose an agent as an A2A service:
 
 ```python
 from obelix.core.agent.agent_factory import AgentFactory
@@ -72,7 +78,7 @@ factory = AgentFactory()
 factory.register("my_agent", MyAgent, subagent_description="Does work")
 
 # Start the A2A server
-factory.serve(
+factory.a2a_serve(
     "my_agent",
     host="0.0.0.0",
     port=8000,
@@ -143,7 +149,7 @@ factory.register(
 factory.register("coordinator", CoordinatorAgent)
 
 # Serve the coordinator with math and report as sub-agents
-factory.serve(
+factory.a2a_serve(
     "coordinator",
     host="0.0.0.0",
     port=8000,
@@ -223,6 +229,50 @@ POST /
 ```
 
 Accepts JSON-RPC 2.0 requests for agent methods. See "JSON-RPC Methods" below.
+
+---
+
+## Server Architecture
+
+The A2A server lives in `src/obelix/adapters/inbound/a2a/server/` as a package
+with focused modules:
+
+```
+server/
+  __init__.py         # Public API re-exports
+  executor.py         # ObelixAgentExecutor — bridges a2a-sdk to BaseAgent
+  context.py          # ContextEntry + ContextStore (LRU, per-context state)
+  deferred.py         # Deferred tool injection + OutputSchema validation
+  helpers.py          # Shared utilities (agent_message builder, constants)
+```
+
+The `ObelixAgentExecutor` implements the a2a-sdk `AgentExecutor` interface. For
+each incoming request it:
+
+1. Extracts text and attachments from A2A message parts (multi-part support)
+2. Looks up or creates a `ContextEntry` for the `contextId`
+3. Serializes concurrent requests on the same context via an `asyncio.Event` idle gate
+4. Creates a **fresh BaseAgent** via the factory callable (thread safety)
+5. Injects conversation history from the context store
+6. Runs `execute_query_stream()` and emits A2A events (status updates, artifact chunks)
+7. Persists updated history back to the context store
+
+### Context Isolation
+
+Each `contextId` gets its own `ContextEntry` with:
+- **Conversation history** — messages survive across requests on the same context
+- **Idle gate** (`asyncio.Event`) — serializes concurrent requests per context
+- **Deferred tool state** — pending tool calls + tool snapshot for resume
+- **Trace context** — saved when the loop stops for deferred, restored on resume
+
+Contexts are stored in an `OrderedDict` with **LRU eviction** (default: 1024 contexts).
+When the store is full, the oldest context is evicted to free memory.
+
+### RequestUserInputTool
+
+`a2a_serve()` automatically registers a `RequestUserInputTool` on every agent instance.
+This is a deferred tool that stops the agent loop and emits `input_required` to the
+A2A client, enabling the agent to ask the user for clarification mid-conversation.
 
 ---
 
@@ -339,8 +389,8 @@ Send a message to the agent and receive a response. Creates a task to track exec
 5. On rejection: state becomes `"rejected"`, reason in status message (see [Task Rejection](#task-rejection))
 
 > **Spec note**: the full spec defines additional states: `INPUT_REQUIRED` (agent needs
-> more info from user) and `AUTH_REQUIRED`. `INPUT_REQUIRED` is supported via deferred tools
-> (see [A2A Compliance](a2a_compliance.md#deferred-tool-protocol--input-required-flow-2026-03-17)).
+> more info from user) and `AUTH_REQUIRED`. `INPUT_REQUIRED` is fully supported via
+> deferred tools (see [Deferred Tools](#deferred-tools-input-required-flow) below).
 > `AUTH_REQUIRED` is not yet supported.
 
 ---
@@ -547,7 +597,9 @@ Cancel a task that is still in the `"working"` state.
 
 ## Complete Example
 
-Here's a complete example that defines agents, creates a factory, and serves them via A2A:
+Here's a complete example that defines agents, creates a factory, and serves them via A2A.
+For runnable examples see [`examples/factory_server.py`](../examples/factory_server.py)
+and [`examples/bash_server.py`](../examples/bash_server.py).
 
 ```python
 import os
@@ -652,7 +704,7 @@ factory.register(name="coordinator", cls=CoordinatorAgent)
 
 # Start the A2A server
 if __name__ == "__main__":
-    factory.serve(
+    factory.a2a_serve(
         "coordinator",
         host="0.0.0.0",
         port=8000,
@@ -700,16 +752,16 @@ curl -X POST http://localhost:8000/ \
 
 ---
 
-## serve() Parameters
+## a2a_serve() Parameters
 
-The `AgentFactory.serve()` method accepts these parameters:
+The `AgentFactory.a2a_serve()` method accepts these parameters:
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `agent` | String | Required | Name of the registered agent to serve |
 | `host` | String | `"0.0.0.0"` | Bind address (use `"127.0.0.1"` for localhost only) |
 | `port` | Integer | `8000` | Port to bind to |
-| `agent_id` | String (Optional) | agent name | ID in the agent card |
+| `endpoint` | String (Optional) | `http://{host}:{port}` | Reachable URL for the Agent Card (e.g. `"https://my-agent.prod.example.com"`) |
 | `version` | String | `"0.1.0"` | Version string in agent card |
 | `description` | String (Optional) | system message (truncated) | Agent description in card |
 | `provider_name` | String | `"Obelix"` | Organization name in card |
@@ -740,6 +792,170 @@ The A2A server uses standard JSON-RPC error codes plus A2A-specific codes:
 
 ---
 
+## Streaming (SSE)
+
+The A2A server streams agent responses via Server-Sent Events. When the agent
+produces tokens via `execute_query_stream()`, each token is emitted as a
+`TaskArtifactUpdateEvent`:
+
+```
+Client                          Server
+  │  POST / (SendMessage)        │
+  │ ──────────────────────────>  │
+  │                              │  TaskStatusUpdate(working)
+  │  <───────────────────────── │
+  │                              │  TaskArtifactUpdate(token="The")
+  │  <───────────────────────── │
+  │                              │  TaskArtifactUpdate(token=" answer")
+  │  <───────────────────────── │
+  │                              │  TaskArtifactUpdate(token=" is 105")
+  │  <───────────────────────── │
+  │                              │  TaskArtifactUpdate(last_chunk=true)
+  │  <───────────────────────── │
+  │                              │  TaskStatusUpdate(completed, final=true)
+  │  <───────────────────────── │
+```
+
+The first artifact chunk uses `append=False`, subsequent chunks use `append=True`.
+The final chunk has `last_chunk=True`. If the provider does not support streaming,
+the full response is emitted as a single artifact chunk.
+
+---
+
+## Deferred Tools (Input-Required Flow)
+
+Deferred tools enable the **input-required** A2A flow: the agent pauses execution,
+asks the client for information, and resumes when the client responds.
+
+### How it works
+
+1. A tool with `is_deferred=True` returns `None` from `execute()`
+2. The agent loop stops and yields a `StreamEvent` with `deferred_tool_calls`
+3. The executor emits `TaskState.input_required` with a `DataPart` describing
+   what the tool needs
+4. The client executes the tool (or asks the user) and sends back a `SendMessage`
+   on the same `contextId`
+5. The executor injects the response as a `ToolMessage` and restarts the agent loop
+
+### Client perspective
+
+The `input_required` status contains a `DataPart` with the deferred tool calls:
+
+```json
+{
+  "status": {
+    "state": "input-required",
+    "message": {
+      "role": "agent",
+      "parts": [{
+        "type": "data",
+        "data": {
+          "deferred_tool_calls": [
+            {
+              "tool_name": "bash",
+              "arguments": {"command": "ls -la", "description": "List files"}
+            }
+          ]
+        }
+      }]
+    }
+  }
+}
+```
+
+The client responds with a `DataPart` containing the tool result:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "SendMessage",
+  "params": {
+    "message": {
+      "parts": [{
+        "type": "data",
+        "data": {
+          "stdout": "total 42\ndrwxr-xr-x ...",
+          "stderr": "",
+          "exit_code": 0
+        }
+      }]
+    },
+    "contextId": "same-context-id"
+  },
+  "id": "resume-001"
+}
+```
+
+### OutputSchema validation
+
+Deferred tools can define an inner `OutputSchema(BaseModel)` class. When the
+client responds, the executor validates the `DataPart` data against this schema.
+If validation fails, the raw data is passed through as-is.
+
+```python
+@tool(name="bash", description="Execute a shell command")
+class BashTool(Tool):
+    command: str = Field(..., description="Command to execute")
+    is_deferred = True
+
+    class OutputSchema(BaseModel):
+        stdout: str = ""
+        stderr: str = ""
+        exit_code: int = 0
+
+    async def execute(self) -> None:
+        return None  # Deferred: client executes
+```
+
+### Built-in deferred tools
+
+| Tool | Description | Auto-registered |
+|------|-------------|-----------------|
+| `RequestUserInputTool` | Asks the user for clarification | Yes (by `a2a_serve()`) |
+| `BashTool` | Executes shell commands | No (opt-in, has `OutputSchema`) |
+
+---
+
+## Multi-Part Content
+
+The A2A server supports multi-part messages in both directions via
+`part_converter.py`:
+
+### Inbound (client -> agent)
+
+A2A message parts are converted to Obelix types:
+
+| A2A Part | Obelix Type | Description |
+|----------|-------------|-------------|
+| `TextPart` | `str` (concatenated) | User text content |
+| `FilePart` (bytes) | `FileContent(is_url=False)` | Base64-encoded file |
+| `FilePart` (URI) | `FileContent(is_url=True)` | File reference by URL |
+| `DataPart` | `DataContent` | Structured JSON data |
+
+Attachments are passed as `HumanMessage(content=text, attachments=[...])`,
+enabling multimodal agent interactions (images, documents, structured data).
+
+### Outbound (agent -> client)
+
+`AssistantResponse` is converted to A2A artifact parts:
+
+| Obelix Content | A2A Part | Description |
+|----------------|----------|-------------|
+| `response.content` | `TextPart` | Agent text response |
+| `response.tool_results` (dict) | `DataPart` | Structured tool results with metadata |
+
+Tool results include metadata identifying the source tool:
+
+```json
+{
+  "type": "data",
+  "data": {"result": 105},
+  "metadata": {"type": "tool_result", "tool_name": "calculator"}
+}
+```
+
+---
+
 ## Best Practices
 
 ### 1. Use Stateless Sub-Agents
@@ -760,7 +976,7 @@ factory.register(
 Use `host="127.0.0.1"` during development:
 
 ```python
-factory.serve("agent", host="127.0.0.1", port=8000)
+factory.a2a_serve("agent", host="127.0.0.1", port=8000)
 ```
 
 ### 3. Use Context IDs for Session Tracking
@@ -814,10 +1030,46 @@ Adjust log level based on environment:
 
 ```python
 # Development
-factory.serve("agent", log_level="debug")
+factory.a2a_serve("agent", log_level="debug")
 
 # Production
-factory.serve("agent", log_level="warning")
+factory.a2a_serve("agent", log_level="warning")
+```
+
+### 6. Enable Tracing
+
+Attach a `Tracer` to the factory for observability across all agent executions:
+
+```python
+from obelix.core.tracer import Tracer
+from obelix.core.tracer.exporters import ConsoleExporter
+
+tracer = Tracer(exporter=ConsoleExporter(verbosity=3))
+factory.with_tracer(tracer)
+
+# Or export to a remote tracer backend
+from obelix.core.tracer.exporters import HTTPExporter
+tracer = Tracer(
+    exporter=HTTPExporter(endpoint="http://localhost:8100/api/v1/ingest"),
+    service_name="my_agent_service",
+)
+factory.with_tracer(tracer)
+```
+
+The tracer captures spans for every LLM call, tool execution, and sub-agent invocation.
+Deferred tool resumes continue under the same trace as the original request.
+
+### 7. Use `endpoint` for Production URLs
+
+In production the Agent Card needs the externally-reachable URL, not `0.0.0.0`:
+
+```python
+factory.a2a_serve(
+    "agent",
+    host="0.0.0.0",
+    port=8000,
+    endpoint="https://my-agent.prod.example.com",
+)
 ```
 
 ---
