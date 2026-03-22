@@ -78,7 +78,7 @@ TaskStatusUpdateEvent | TaskArtifactUpdateEvent). Stream closes on terminal stat
 | Method | Spec Description | Status | Notes |
 |--------|-----------------|--------|-------|
 | `tasks/get` | Retrieve current task state by ID. Params: `id`, `historyLength?`, `tenant?`. | **Working** | Via `InMemoryTaskStore` |
-| `tasks/list` | List tasks with filtering and pagination. | **TODO (NEW in v1.0)** | Params: `contextId?`, `status?`, `pageSize?`, `pageToken?`, `historyLength?`, `statusTimestampAfter?`, `includeArtifacts?`, `tenant?`. Returns `{tasks[], nextPageToken, pageSize, totalSize}`. Need to verify SDK support. |
+| `tasks/list` | List tasks with filtering and pagination. | **BLOCKED (SDK)** | Spec defines full filtering + cursor pagination. `a2a-sdk` v0.3.25 has zero implementation (no types, no store method, no routing). Blocked until SDK adds support. See Section 2i. |
 | `tasks/cancel` | Request task cancellation. | **Partial** | SDK routes to `ObelixAgentExecutor.cancel()`. But cancel is "fake" — emits `canceled` state without actually interrupting `execute_query_async()`. Needs cancellation token. |
 | `tasks/resubscribe` | Reconnect SSE stream for an active task. | **SDK-ready** | Requires streaming executor (DONE). Client uses this to reconnect after broken SSE connection. SDK handles reconnection via `QueueManager.tap()`. |
 
@@ -752,21 +752,19 @@ Full multi-part content support: inbound attachments, structured artifacts, Data
 - [x] **Streaming artifacts**: text tokens come `TextPart` chunks, tool results come `DataPart` nel chunk finale.
 - [x] **CLI client handler dispatch**: `HandlerDispatcher` per tool-specific handling (BashHandler, BaseDeferredHandler). Risposte wrappate in `DataPart`.
 
-#### 2h. Agent response in task history (TODO — bassa priorita')
+#### 2h. Agent response in task history (DONE - 2026-03-20)
 
-Aggiungere la risposta dell'agent come `Message` nella history del task (oggi c'e' solo il messaggio utente).
+The executor emits a `TaskStatusUpdateEvent(state=working, message=Message(role=agent, ...))` just before the final `completed` event. The SDK's `TaskManager.save_task_event()` automatically promotes `status.message` to `task.history` when the next event overwrites the status. This means `tasks/get` returns the full conversation: user message + agent response.
 
-- [ ] **Emit agent Message**: dopo il completamento, aggiungere `Message(role=agent, parts=[TextPart(response)])` alla task history via `TaskManager`.
-
-**Gap informativi**:
-1. **SDK behavior**: verificare se il `TaskManager` / `ResultAggregator` aggiunge automaticamente l'agent message alla history quando processa il `TaskArtifactUpdateEvent`, o se dobbiamo farlo noi esplicitamente.
+- [x] **Emit agent Message**: executor emits `working` status with `Message(role=agent, parts=[response_parts])` before `completed`. SDK appends it to history automatically.
+- [x] **SDK behavior verified**: `TaskManager.save_task_event()` (lines 143-147) moves `status.message` to `task.history` on each `TaskStatusUpdateEvent`. No explicit history manipulation needed.
 
 #### 2i. Altre migliorie (TODO — bassa priorita')
 
 | Item | Stato | Gap informativi |
 |------|-------|-----------------|
 | **`accepted_output_modes`** | TODO | Come accediamo alla `SendMessageConfiguration` dall'executor? `RequestContext` la espone? Se no, serve accesso ai `params` originali. Inoltre: come negoziiamo se il client chiede `application/json` ma l'agent produce solo testo? |
-| **`tasks/list`** | TODO | L'SDK's `TaskStore` ABC non ha `list_tasks()`. Serve un custom `TaskStore` (subclass di `InMemoryTaskStore` con metodo `list`). Verificare se l'SDK ha aggiunto supporto nelle versioni recenti. |
+| **`tasks/list`** | **BLOCKED (SDK)** | Spec v1.0 defines `ListTasks` with full filtering (context_id, status, page_size, page_token, status_timestamp_after, include_artifacts) and cursor-based pagination. However `a2a-sdk` v0.3.25 has **zero implementation**: no Pydantic types (`ListTasksParams`/`ListTasksResponse`), no `TaskStore.list()` method, no `RequestHandler.on_list_tasks()`, no JSON-RPC routing, no client method. REST handler has a stub raising `NotImplementedError`. Even Google ADK doesn't use it. Proto-generated stubs are outdated and don't include `ListTasks` messages. Blocked until SDK adds support, or we contribute upstream. |
 | **`supported_interfaces`** | TODO | Cosmetico: usare `AgentInterface(url, protocol_binding, protocol_version)` nella card invece del flat `url`. Nessun gap, solo lavoro meccanico. |
 | **Real cancellation** | TODO | `cancel()` oggi emette `canceled` senza interrompere `execute_query_async()`. Serve un `CancellationToken` o `asyncio.Task.cancel()` per interrompere davvero l'esecuzione. Richiede modifiche a BaseAgent per supportare cancellation cooperativa. |
 
