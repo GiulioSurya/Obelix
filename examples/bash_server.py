@@ -35,7 +35,7 @@ load_dotenv()
 setup_logging(console_level="INFO")
 
 # Toggle: True = server executes commands, False = client executes (deferred)
-LOCAL_EXECUTOR = False
+LOCAL_EXECUTOR = True
 
 LITELLM_MODEL = "anthropic/claude-haiku-4-5-20251001"
 

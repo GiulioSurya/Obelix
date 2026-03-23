@@ -88,10 +88,10 @@ These are **conditional** — required only if `AgentCard.capabilities.push_noti
 
 | Method | Spec Description | Status | Notes |
 |--------|-----------------|--------|-------|
-| `tasks/pushNotificationConfig/set` | Create webhook config for task updates. | **TODO** | SDK has `InMemoryPushNotificationConfigStore` ready. |
-| `tasks/pushNotificationConfig/get` | Retrieve webhook configuration. | **TODO** | |
-| `tasks/pushNotificationConfig/list` | List webhook configurations for a task. | **TODO** | Supports pagination. |
-| `tasks/pushNotificationConfig/delete` | Remove webhook configuration. | **TODO** | |
+| `tasks/pushNotificationConfig/set` | Create webhook config for task updates. | **Working** | Via `InMemoryPushNotificationConfigStore` + `DefaultRequestHandler`. |
+| `tasks/pushNotificationConfig/get` | Retrieve webhook configuration. | **Working** | Via `DefaultRequestHandler`. |
+| `tasks/pushNotificationConfig/list` | List webhook configurations for a task. | **Working** | Via `DefaultRequestHandler`. |
+| `tasks/pushNotificationConfig/delete` | Remove webhook configuration. | **Working** | Via `DefaultRequestHandler`. |
 
 ### 1.4 Agent Card Methods
 
@@ -334,24 +334,28 @@ Client sends `message/stream` → gets SSE stream with real-time events.
 
 ### 3.3 Push Notifications (Webhooks)
 
-**Status: TODO**
+**Status: Working (2026-03-22)**
 
 For disconnected/async scenarios. Client provides a webhook URL, server POSTs updates.
 
 **Flow**:
-1. Client includes `TaskPushNotificationConfig` in `SendMessageConfiguration`, OR calls `tasks/pushNotificationConfig/set` separately
+1. Client includes `PushNotificationConfig` in `SendMessageConfiguration`, OR calls `tasks/pushNotificationConfig/set` separately
 2. Config contains: `url` (webhook), `token?` (validation), `authentication?` (credentials for server to use when calling webhook)
-3. Server POSTs `StreamResponse` payloads to webhook URL on significant state changes
+3. Server POSTs full `Task` JSON to webhook URL on significant state changes
 4. Client receives notification, optionally calls `tasks/get` for full state
 
-**Security requirements** (from spec):
+**Implementation**: wired in `_create_a2a_app()` via SDK components:
+- `InMemoryPushNotificationConfigStore` — stores webhook configs per task
+- `BasePushNotificationSender` — httpx POST to all configured webhooks (parallel via `asyncio.gather`)
+- `DefaultRequestHandler` — calls `send_notification()` after every event (blocking, non-blocking, streaming)
+- Shared `httpx.AsyncClient` for connection pooling across notifications
+- Token sent as `X-A2A-Notification-Token` header
+
+**Security requirements** (from spec — not yet enforced):
 - Server SHOULD NOT blindly POST to any client-provided URL (prevent SSRF/DDoS)
 - Server should implement: domain allowlisting, ownership verification, egress firewalls
 - Client webhook MUST verify authenticity (JWT signatures, HMAC, API keys)
 - Replay attack prevention: validate timestamps, use nonces
-
-**SDK support**: `InMemoryPushNotificationConfigStore` for config storage, but
-`PushNotificationSender` (the actual httpx POST logic) must be implemented.
 
 ### 3.4 `SendMessageConfiguration`
 
@@ -360,13 +364,13 @@ Included in `message/send` and `message/stream` requests. **Currently ignored by
 | Field | Type | Description | Obelix Status |
 |-------|------|-------------|---------------|
 | `accepted_output_modes` | `string[]` | MIME types the client can handle (e.g. `["text/plain", "application/json"]`) | **Ignored** — returns `text/plain` (TextPart) + `application/json` (DataPart) but does not negotiate based on client preference |
-| `history_length` | `int` | Max messages to include in task history | **Ignored** — SDK may handle this |
-| `task_push_notification_config` | `TaskPushNotificationConfig` | Inline webhook config | **Ignored** — push not implemented |
-| `return_immediately` | `bool` | **Fire-and-forget mode**: server returns Task in `submitted` state immediately, processes async. Client polls/streams/gets-pushed later. | **Not supported** — always blocks until completion |
+| `history_length` | `int` | Max messages to include in task history | **Working** — SDK applies via `apply_history_length()` |
+| `push_notification_config` | `PushNotificationConfig` | Inline webhook config | **Working** — stored by `DefaultRequestHandler`, used by `BasePushNotificationSender` |
+| `blocking` | `bool` | If `false`, server returns Task immediately, processes in background. Client polls/streams/gets-pushed later. | **Working** — SDK `DefaultRequestHandler` handles via `consume_and_break_on_interrupt()`. Tested E2E. |
 
-**`return_immediately` is the key async pattern**: client sends request, gets back a Task ID
-instantly, then uses polling/SSE/push to track progress. This is critical for long-running
-agent tasks (minutes/hours).
+**`blocking=false` is the key async pattern**: client sends request, gets back a Task ID
+instantly, then uses polling (`tasks/get`), SSE (`tasks/resubscribe`), or push notifications
+to track progress. Critical for long-running agent tasks (minutes/hours).
 
 ---
 
@@ -517,7 +521,7 @@ Ref: [Agent Discovery](https://a2a-protocol.org/latest/topics/agent-discovery/)
 | Field | Spec | Obelix Status |
 |-------|------|---------------|
 | `streaming` | Supports SSE | **`True`** — executor emits incremental artifact events |
-| `push_notifications` | Supports webhooks | `False` — TODO |
+| `push_notifications` | Supports webhooks | **`True`** — `BasePushNotificationSender` + `InMemoryPushNotificationConfigStore` |
 | `extended_agent_card` | Supports authenticated card | `False` — TODO |
 | `extensions` | `AgentExtension[]` | **Not set** |
 
@@ -784,11 +788,11 @@ Enable Obelix agents to call external A2A agents.
 
 Async update delivery via webhooks.
 
-- [ ] Wire `InMemoryPushNotificationConfigStore` into `DefaultRequestHandler`
-- [ ] Implement `PushNotificationSender` (httpx POST to webhook URL)
-- [ ] Respect `authentication` in `TaskPushNotificationConfig` when POSTing
+- [x] Wire `InMemoryPushNotificationConfigStore` into `DefaultRequestHandler`
+- [x] Implement `PushNotificationSender` — SDK's `BasePushNotificationSender` (httpx POST, parallel dispatch, token header)
+- [x] Respect `token` in `PushNotificationConfig` — sent as `X-A2A-Notification-Token` header
 - [ ] Security: domain allowlisting, ownership verification for webhook URLs
-- [ ] Set `capabilities.push_notifications=true` in Agent Card
+- [x] Set `capabilities.push_notifications=true` in Agent Card
 - [ ] Client-side: webhook receiver endpoint in `RemoteAgentWrapper`
 
 ### Phase 5: Security & Enterprise (Medium Priority)

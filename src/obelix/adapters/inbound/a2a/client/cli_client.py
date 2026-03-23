@@ -7,6 +7,7 @@ terminal UI with intelligent handling of deferred tool calls
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import mimetypes
 import re
@@ -23,9 +24,9 @@ from a2a.types import (
     FileWithBytes,
     Message,
     Part,
+    PushNotificationConfig,
     Role,
     TaskQueryParams,
-    TaskState,
     TextPart,
 )
 from prompt_toolkit import PromptSession
@@ -40,6 +41,11 @@ from rich.table import Table
 from rich.theme import Theme
 
 from obelix.adapters.inbound.a2a.client.handlers import HandlerDispatcher
+from obelix.adapters.inbound.a2a.client.webhook_server import (
+    TaskInfo,
+    TaskTracker,
+    WebhookServer,
+)
 from obelix.infrastructure.logging import suppress_console
 
 # -- Theme -------------------------------------------------------------------
@@ -73,7 +79,8 @@ LOGO = r"""[bold cyan]
 _COMMANDS = {
     "/agents": "List connected agents",
     "/switch": "Switch to agent n",
-    "/task-info": "Show last task details and messages",
+    "/tasks": "List background tasks and their status",
+    "/task-info": "Show task details (last task or /task-info <id>)",
     "/clear": "Clear conversation context",
     "/help": "Show help",
     "/quit": "Exit",
@@ -255,6 +262,9 @@ class CLIClient:
     ):
         self.dispatcher = dispatcher
         self.console = console or Console(theme=_THEME, highlight=False)
+        self.tracker = TaskTracker()
+        self._webhook_server: WebhookServer | None = None
+        self._webhook_url: str | None = None
 
     # -- UI helpers ----------------------------------------------------------
 
@@ -362,6 +372,101 @@ class CLIClient:
         self.console.print(table)
         self.console.print()
 
+    def show_tasks(self) -> None:
+        """Show all background tasks."""
+        tasks = self.tracker.get_all()
+        if not tasks:
+            self.show_info("No background tasks.")
+            return
+
+        table = Table(
+            title="Background Tasks",
+            title_style="bold",
+            show_lines=False,
+            padding=(0, 1),
+        )
+        table.add_column("Task ID", style="dim", max_width=12)
+        table.add_column("Agent", style="agent.name")
+        table.add_column("State", width=16)
+
+        _state_styles = {
+            "submitted": "dim",
+            "working": "bold yellow",
+            "input-required": "bold red",
+            "completed": "bold green",
+            "failed": "bold red",
+            "canceled": "dim",
+            "rejected": "bold red",
+        }
+
+        for t in tasks:
+            style = _state_styles.get(t.state, "dim")
+            state_label = t.state
+            if t.state == "input-required":
+                state_label = "⚠ input-required"
+            elif t.state == "completed":
+                state_label = "✓ completed"
+            elif t.state == "failed":
+                state_label = "✗ failed"
+            table.add_row(
+                t.task_id[:12],
+                t.agent_name,
+                f"[{style}]{state_label}[/{style}]",
+            )
+
+        self.console.print()
+        self.console.print(table)
+        self.console.print()
+
+    def _bottom_toolbar_html(self) -> HTML:
+        """Build the bottom toolbar as HTML for prompt_toolkit.
+
+        Groups tasks by agent — shows only the latest task per agent,
+        so repeated messages to the same server don't pile up.
+        """
+        all_tasks = self.tracker.get_all()
+        if not all_tasks:
+            return HTML("<b> Tasks: none</b>")
+
+        # Group by agent: keep only the most recent task per agent
+        latest_by_agent: dict[str, TaskInfo] = {}
+        for t in all_tasks:
+            prev = latest_by_agent.get(t.agent_name)
+            if prev is None or t.timestamp >= prev.timestamp:
+                latest_by_agent[t.agent_name] = t
+
+        active = [t for t in latest_by_agent.values() if not t.is_terminal]
+        pending = [t for t in latest_by_agent.values() if t.state == "input-required"]
+
+        segments = []
+
+        if active:
+            segments.append(f"{len(active)} active")
+        if pending:
+            segments.append(
+                f'<style bg="ansired" fg="ansiwhite"> {len(pending)} input-required! </style>'
+            )
+
+        for t in latest_by_agent.values():
+            if t.state == "input-required":
+                segments.append(
+                    f'<style fg="ansired"><b>[{t.agent_name}: ⚠ INPUT]</b></style>'
+                )
+            elif t.state == "working":
+                segments.append(
+                    f'<style fg="ansiyellow">[{t.agent_name}: working]</style>'
+                )
+            elif t.state == "completed":
+                segments.append(f'<style fg="ansigreen">[{t.agent_name}: ✓]</style>')
+            elif t.state == "failed":
+                segments.append(f'<style fg="ansired">[{t.agent_name}: ✗]</style>')
+            elif t.is_terminal:
+                segments.append(f"[{t.agent_name}: {t.state}]")
+            else:
+                segments.append(f"[{t.agent_name}: {t.state}]")
+
+        return HTML("<b> Tasks: </b>" + " | ".join(segments))
+
     def show_error(self, msg: str) -> None:
         self.console.print(f"[status.fail]  Error:[/status.fail] {msg}")
 
@@ -374,7 +479,15 @@ class CLIClient:
         self, urls: list[str], httpx_client: httpx.AsyncClient
     ) -> list[AgentConnection]:
         agents = []
-        config = ClientConfig(httpx_client=httpx_client, streaming=False)
+        push_configs = []
+        if self._webhook_url:
+            push_configs = [PushNotificationConfig(url=self._webhook_url)]
+        config = ClientConfig(
+            httpx_client=httpx_client,
+            streaming=False,
+            polling=True,
+            push_notification_configs=push_configs,
+        )
         factory = ClientFactory(config)
 
         for url in urls:
@@ -409,7 +522,7 @@ class CLIClient:
         text: str,
         session: PromptSession,
     ) -> None:
-        """Send a message and handle the response, including input-required."""
+        """Send a message (non-blocking) and register the task for push tracking."""
         # Parse @path attachments from the input
         clean_text, file_parts = _parse_attachments(text)
         if file_parts:
@@ -427,8 +540,8 @@ class CLIClient:
         else:
             msg = _make_message(clean_text or text, context_id=agent.context_id)
 
-        with self.console.status("[info]Thinking...[/info]"):
-            task = await _collect_task(agent.client.send_message(msg))
+        # Non-blocking: send and get initial Task(working) back immediately
+        task = await _collect_task(agent.client.send_message(msg))
 
         if task is None:
             self.show_info("No response from agent")
@@ -442,46 +555,120 @@ class CLIClient:
         if hasattr(task, "id"):
             agent.last_task_id = task.id
 
-        # Handle input-required loop (deferred tools)
-        # Per A2A spec: continue the SAME task by sending taskId + contextId
-        while task.status.state == TaskState.input_required:
-            data = _extract_status_data(task)
-            result = await self._handle_deferred(data, session)
+        # Register in tracker for push notification updates
+        await self.tracker.register(task.id, agent.name)
+        await self.tracker.update(task.model_dump(mode="json", exclude_none=True))
 
-            msg = _make_data_message(
-                result,
-                context_id=agent.context_id,
-                task_id=agent.last_task_id,
+        self.show_info(
+            f"Task {task.id[:12]}... sent to {agent.name} "
+            f"[status.wait][{task.status.state.value}][/status.wait]"
+        )
+
+    async def handle_pending_input(
+        self,
+        agent: AgentConnection,
+        session: PromptSession,
+    ) -> bool:
+        """Check if agent has a pending input-required task and handle it.
+
+        Returns True if a deferred interaction was handled.
+        """
+        pending = self.tracker.get_pending_input(agent.name)
+        if not pending or not pending.task_data:
+            return False
+
+        task_data = pending.task_data
+        status = task_data.get("status", {})
+        message = status.get("message", {})
+        parts = message.get("parts", [])
+
+        # Extract DataPart from status message
+        data = None
+        for part in parts:
+            if isinstance(part, dict) and part.get("type") == "data":
+                data = part.get("data")
+                break
+            if isinstance(part, dict) and "data" in part:
+                data = part["data"]
+                break
+
+        if data is None:
+            return False
+
+        self.console.print(
+            f"\n[status.wait]⚠ Task {pending.task_id[:12]}... needs input[/status.wait]"
+        )
+
+        result = await self._handle_deferred(data, session)
+
+        # Send the deferred response back
+        msg = _make_data_message(
+            result,
+            context_id=agent.context_id,
+            task_id=pending.task_id,
+        )
+
+        # This resume call is also non-blocking — push will notify on completion
+        task = await _collect_task(agent.client.send_message(msg))
+        if task and hasattr(task, "id"):
+            await self.tracker.update(task.model_dump(mode="json", exclude_none=True))
+            self.show_info(
+                f"Response sent for task {pending.task_id[:12]}... "
+                f"[status.wait][{task.status.state.value}][/status.wait]"
             )
-            with self.console.status("[info]Thinking...[/info]"):
-                task = await _collect_task(agent.client.send_message(msg))
 
-            if task is None:
-                self.show_error("No response from agent")
-                return
+        return True
 
-        # Final result
-        if task.status.state == TaskState.completed:
-            text = _extract_text(task)
-            if text:
-                self.show_agent_response(agent.name, text)
-            else:
-                self.show_info(f"{agent.name}: completed (no content)")
-        elif task.status.state == TaskState.rejected:
-            msg_text = _extract_status_text(task)
+    def _show_completed_task(self, agent_name: str, task_data: dict) -> None:
+        """Display a completed task result inline."""
+        # Extract text from artifacts
+        artifacts = task_data.get("artifacts", [])
+        text_parts = []
+        for artifact in artifacts:
+            for part in artifact.get("parts", []):
+                if isinstance(part, dict):
+                    root = part.get("root", part)
+                    if "text" in root and root["text"]:
+                        text_parts.append(root["text"])
+                    elif "text" in part and part["text"]:
+                        text_parts.append(part["text"])
+
+        text = "".join(text_parts)
+        if text:
+            self.show_agent_response(agent_name, text)
+        else:
+            self.show_info(f"{agent_name}: completed (no content)")
+
+    def _show_terminal_result(self, task_data: dict, agent_name: str) -> None:
+        """Show result for a terminal-state task."""
+        state = task_data.get("status", {}).get("state", "")
+        if state == "completed":
+            self._show_completed_task(agent_name, task_data)
+        elif state == "rejected":
+            status_msg = task_data.get("status", {}).get("message", {})
+            parts = status_msg.get("parts", [])
+            reason = ""
+            for p in parts:
+                if isinstance(p, dict) and "text" in p:
+                    reason = p["text"]
+                    break
             self.console.print(
                 Panel(
-                    msg_text or "No reason provided",
-                    title=f"[status.fail]{agent.name} rejected the request[/status.fail]",
+                    reason or "No reason provided",
+                    title=f"[status.fail]{agent_name} rejected[/status.fail]",
                     border_style="red",
                     padding=(1, 2),
                 )
             )
-        elif task.status.state == TaskState.failed:
-            msg_text = _extract_status_text(task)
-            self.show_error(f"{agent.name}: {msg_text}")
-        else:
-            self.show_info(f"{agent.name}: state={task.status.state}")
+        elif state == "failed":
+            status_msg = task_data.get("status", {}).get("message", {})
+            parts = status_msg.get("parts", [])
+            err_text = ""
+            for p in parts:
+                if isinstance(p, dict) and "text" in p:
+                    err_text = p["text"]
+                    break
+            self.show_error(f"{agent_name}: {err_text}")
 
     async def _handle_deferred(self, data: dict | None, session: PromptSession) -> dict:
         """Dispatch deferred tool calls from DataPart to the appropriate handler."""
@@ -527,85 +714,166 @@ class CLIClient:
         self.show_logo()
         suppress_console()  # hide loguru INFO/DEBUG — Rich UI only
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0)) as httpx_client:
-            agents = await self.resolve_agents(urls, httpx_client)
+        # Start webhook server for push notifications
+        self._webhook_server = WebhookServer(self.tracker)
+        await self._webhook_server.start()
+        self._webhook_url = self._webhook_server.get_url()
+        self.show_info(f"Webhook server listening on {self._webhook_url}")
 
-            if not agents:
-                self.show_error("No agents connected. Exiting.")
-                sys.exit(1)
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(180.0)) as httpx_client:
+                agents = await self.resolve_agents(urls, httpx_client)
 
-            current = 0
-            self.show_agents_table(agents, current)
-            self.show_help()
-            self.console.print()
+                if not agents:
+                    self.show_error("No agents connected. Exiting.")
+                    sys.exit(1)
 
-            session = PromptSession(
-                history=InMemoryHistory(),
-                completer=_SlashCompleter(),
-                style=PTStyle.from_dict(
-                    {
-                        "completion-menu": "bg:#1a1a2e #e0e0e0",
-                        "completion-menu.completion": "bg:#1a1a2e #e0e0e0",
-                        "completion-menu.completion.current": "bg:#00d4aa #1a1a2e bold",
-                        "completion-menu.meta": "bg:#1a1a2e #888888 italic",
-                        "completion-menu.meta.current": "bg:#00d4aa #1a1a2e italic",
-                    }
-                ),
-            )
-
-            while True:
-                try:
-                    agent = agents[current]
-                    prompt_text = (
-                        f"<style fg='ansigreen' bg='' bold='true'>"
-                        f"[{agent.name}]</style> <b>> </b>"
-                    )
-                    user_input = await session.prompt_async(HTML(prompt_text))
-                except (EOFError, KeyboardInterrupt):
-                    self.console.print("\n[info]Bye.[/info]")
-                    break
-
-                text = user_input.strip()
-                if not text:
-                    continue
-
-                if text == "/quit":
-                    self.console.print("[info]Bye.[/info]")
-                    break
-
-                if text == "/help":
-                    self.show_help()
-                    continue
-
-                if text == "/agents":
-                    self.show_agents_table(agents, current)
-                    continue
-
-                if text == "/task-info":
-                    await self.show_task_info(agents[current])
-                    continue
-
-                if text == "/clear":
-                    agents[current].context_id = None
-                    agents[current].last_task_id = None
-                    self.show_info(f"Context cleared for {agents[current].name}")
-                    continue
-
-                if text.startswith("/switch"):
-                    parts = text.split()
-                    if len(parts) == 2 and parts[1].isdigit():
-                        idx = int(parts[1]) - 1
-                        if 0 <= idx < len(agents):
-                            current = idx
-                            self.show_info(f"Switched to: {agents[current].name}")
-                        else:
-                            self.show_error(f"Invalid. Use 1-{len(agents)}.")
-                    else:
-                        self.show_error("Usage: /switch <n>")
-                    continue
-
-                try:
-                    await self.send_message(agents[current], text, session)
-                except Exception as e:
-                    self.show_error(str(e))
+                current = 0
+                self.show_agents_table(agents, current)
+                self.show_help()
                 self.console.print()
+
+                session = PromptSession(
+                    history=InMemoryHistory(),
+                    completer=_SlashCompleter(),
+                    style=PTStyle.from_dict(
+                        {
+                            "completion-menu": "bg:#1a1a2e #e0e0e0",
+                            "completion-menu.completion": "bg:#1a1a2e #e0e0e0",
+                            "completion-menu.completion.current": "bg:#00d4aa #1a1a2e bold",
+                            "completion-menu.meta": "bg:#1a1a2e #888888 italic",
+                            "completion-menu.meta.current": "bg:#00d4aa #1a1a2e italic",
+                        }
+                    ),
+                    bottom_toolbar=lambda: self._bottom_toolbar_html(),
+                )
+
+                # Background watcher: shows results as soon as push arrives
+                _shown_results: set[str] = set()
+
+                async def _result_watcher() -> None:
+                    """Background task that shows results via run_in_terminal."""
+                    while True:
+                        await asyncio.sleep(0.5)
+                        for t in self.tracker.get_all():
+                            if (
+                                t.is_terminal
+                                and t.task_id not in _shown_results
+                                and t.task_data
+                            ):
+                                _shown_results.add(t.task_id)
+                                task_data = t.task_data
+                                agent_name = t.agent_name
+
+                                # Use run_in_terminal to safely print while
+                                # prompt_toolkit is showing the prompt
+                                def _print_result(_data=task_data, _name=agent_name):
+                                    self._show_terminal_result(_data, _name)
+
+                                try:
+                                    await session.app.run_in_terminal_async(
+                                        _print_result
+                                    )
+                                except Exception:
+                                    # Fallback: just print directly
+                                    _print_result()
+                        # Refresh toolbar
+                        try:
+                            session.app.invalidate()
+                        except Exception:
+                            pass
+
+                watcher_task = asyncio.create_task(_result_watcher())
+
+                while True:
+                    try:
+                        agent = agents[current]
+
+                        # Check for pending input-required on current agent
+                        pending = self.tracker.get_pending_input(agent.name)
+                        if pending:
+                            handled = await self.handle_pending_input(agent, session)
+                            if handled:
+                                continue
+
+                        prompt_text = (
+                            f"<style fg='ansigreen' bg='' bold='true'>"
+                            f"[{agent.name}]</style> <b>> </b>"
+                        )
+                        user_input = await session.prompt_async(HTML(prompt_text))
+                    except (EOFError, KeyboardInterrupt):
+                        self.console.print("\n[info]Bye.[/info]")
+                        break
+
+                    text = user_input.strip()
+                    if not text:
+                        continue
+
+                    if text == "/quit":
+                        self.console.print("[info]Bye.[/info]")
+                        break
+
+                    if text == "/help":
+                        self.show_help()
+                        continue
+
+                    if text == "/agents":
+                        self.show_agents_table(agents, current)
+                        continue
+
+                    if text == "/tasks":
+                        self.show_tasks()
+                        continue
+
+                    if text.startswith("/task-info"):
+                        parts_cmd = text.split()
+                        if len(parts_cmd) == 2:
+                            # /task-info <id> — look up by partial id
+                            partial = parts_cmd[1]
+                            info = None
+                            for t in self.tracker.get_all():
+                                if t.task_id.startswith(partial):
+                                    info = t
+                                    break
+                            if info and info.task_data:
+                                self._show_terminal_result(
+                                    info.task_data, info.agent_name
+                                )
+                            elif info:
+                                self.show_info(
+                                    f"Task {info.task_id[:12]}... state={info.state}"
+                                )
+                            else:
+                                # Fallback to tasks/get via API
+                                await self.show_task_info(agents[current])
+                        else:
+                            await self.show_task_info(agents[current])
+                        continue
+
+                    if text == "/clear":
+                        agents[current].context_id = None
+                        agents[current].last_task_id = None
+                        self.show_info(f"Context cleared for {agents[current].name}")
+                        continue
+
+                    if text.startswith("/switch"):
+                        parts = text.split()
+                        if len(parts) == 2 and parts[1].isdigit():
+                            idx = int(parts[1]) - 1
+                            if 0 <= idx < len(agents):
+                                current = idx
+                                self.show_info(f"Switched to: {agents[current].name}")
+                            else:
+                                self.show_error(f"Invalid. Use 1-{len(agents)}.")
+                        else:
+                            self.show_error("Usage: /switch <n>")
+                        continue
+
+                    try:
+                        await self.send_message(agents[current], text, session)
+                    except Exception as e:
+                        self.show_error(str(e))
+                watcher_task.cancel()
+        finally:
+            if self._webhook_server:
+                await self._webhook_server.stop()

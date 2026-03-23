@@ -540,9 +540,16 @@ class AgentFactory:
                 A2A request. Ensures context isolation between concurrent
                 requests.
         """
+        import httpx
         from a2a.server.apps.jsonrpc.fastapi_app import A2AFastAPIApplication
         from a2a.server.request_handlers.default_request_handler import (
             DefaultRequestHandler,
+        )
+        from a2a.server.tasks.base_push_notification_sender import (
+            BasePushNotificationSender,
+        )
+        from a2a.server.tasks.inmemory_push_notification_config_store import (
+            InMemoryPushNotificationConfigStore,
         )
         from a2a.server.tasks.inmemory_task_store import InMemoryTaskStore
 
@@ -561,10 +568,17 @@ class AgentFactory:
         )
 
         task_store = InMemoryTaskStore()
+        push_config_store = InMemoryPushNotificationConfigStore()
+        push_sender = BasePushNotificationSender(
+            httpx_client=httpx.AsyncClient(),
+            config_store=push_config_store,
+        )
         executor = ObelixAgentExecutor(agent_factory)
         request_handler = DefaultRequestHandler(
             agent_executor=executor,
             task_store=task_store,
+            push_config_store=push_config_store,
+            push_sender=push_sender,
         )
 
         a2a_app = A2AFastAPIApplication(
@@ -648,7 +662,7 @@ class AgentFactory:
             provider=provider,
             capabilities=AgentCapabilities(
                 streaming=True,
-                push_notifications=False,
+                push_notifications=True,
                 supports_authenticated_extended_card=False,
             ),
             skills=skills,
