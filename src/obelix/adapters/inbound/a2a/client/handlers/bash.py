@@ -7,14 +7,13 @@ returns a dict matching ``BashTool.OutputSchema``.
 
 from __future__ import annotations
 
-from prompt_toolkit import PromptSession
-from prompt_toolkit.formatted_text import HTML
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
 from obelix.adapters.inbound.a2a.client.handlers.base import (
     BaseDeferredHandler,
+    InputCallback,
     PermissionPolicy,
 )
 
@@ -68,15 +67,13 @@ class BashHandler(BaseDeferredHandler):
             )
         )
 
-    async def prompt_response(self, args: dict, session: PromptSession) -> dict:
+    async def prompt_response(self, args: dict, input_fn: InputCallback) -> dict:
         # Check permission policy
         if self.permission == PermissionPolicy.ALWAYS_DENY:
             return _DENIED_RESPONSE
 
         if self.permission == PermissionPolicy.ALWAYS_ASK:
-            answer = await session.prompt_async(
-                HTML("<b>Execute? </b><style fg='ansibrightblack'>[Y/n]</style> "),
-            )
+            answer = await input_fn()
             if answer.strip().lower() in ("n", "no"):
                 return _DENIED_RESPONSE
 

@@ -15,12 +15,11 @@ Commands:
 
 from __future__ import annotations
 
-import asyncio
 import sys
 
 from obelix.adapters.inbound.a2a.client import CLIClient
 from obelix.adapters.inbound.a2a.client.handlers import default_dispatcher
 
 if __name__ == "__main__":
-    client = CLIClient(dispatcher=default_dispatcher())
-    asyncio.run(client.run(sys.argv[1:]))
+    app = CLIClient(dispatcher=default_dispatcher(), urls=sys.argv[1:])
+    app.run()

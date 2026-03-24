@@ -6,13 +6,14 @@ user's answer (selected label or free-form text) as a plain string.
 
 from __future__ import annotations
 
-from prompt_toolkit import PromptSession
-from prompt_toolkit.formatted_text import HTML
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
-from obelix.adapters.inbound.a2a.client.handlers.base import BaseDeferredHandler
+from obelix.adapters.inbound.a2a.client.handlers.base import (
+    BaseDeferredHandler,
+    InputCallback,
+)
 
 
 class RequestInputHandler(BaseDeferredHandler):
@@ -47,18 +48,10 @@ class RequestInputHandler(BaseDeferredHandler):
             )
         )
 
-    async def prompt_response(self, args: dict, session: PromptSession) -> dict:
+    async def prompt_response(self, args: dict, input_fn: InputCallback) -> dict:
         options: list[dict] = args.get("options", [])
 
-        console_hint = ""
-        if options:
-            console_hint = (
-                f" <style fg='ansibrightblack'>[1-{len(options)} or free text]</style>"
-            )
-
-        answer = await session.prompt_async(
-            HTML(f"<b>> </b>{console_hint} "),
-        )
+        answer = await input_fn()
         answer = answer.strip()
 
         if not answer:

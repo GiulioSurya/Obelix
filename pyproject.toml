@@ -32,6 +32,7 @@ serve = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
     "a2a-sdk>=0.3.10",
+    "textual>=3.0.0",
 ]
 
 all-llm = [

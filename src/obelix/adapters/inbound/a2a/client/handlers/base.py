@@ -8,13 +8,16 @@ response to send back to the server.
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from enum import Enum
 
-from prompt_toolkit import PromptSession
-from prompt_toolkit.formatted_text import HTML
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
+
+# A callable that waits for user input and returns the entered string.
+# The Textual app provides this via an asyncio.Future tied to the Input widget.
+InputCallback = Callable[[], Awaitable[str]]
 
 
 class PermissionPolicy(Enum):
@@ -53,17 +56,17 @@ class BaseDeferredHandler:
             )
         )
 
-    async def prompt_response(self, args: dict, session: PromptSession) -> dict:
+    async def prompt_response(self, args: dict, input_fn: InputCallback) -> dict:
         """Collect the user's response as a dict for DataPart transport.
 
         Override for custom interaction.  The returned dict is sent to
         the server as a DataPart and validated against OutputSchema.
         """
-        answer = await session.prompt_async(HTML("<b>> </b>"))
+        answer = await input_fn()
         return {"answer": answer.strip() or "proceed"}
 
     async def handle(
-        self, args: dict, console: Console, session: PromptSession
+        self, args: dict, console: Console, input_fn: InputCallback
     ) -> dict:
         """Render the tool call, then collect and return the response dict.
 
@@ -71,4 +74,4 @@ class BaseDeferredHandler:
         loop.  The returned dict is wrapped in a DataPart by the caller.
         """
         self.render(args, console)
-        return await self.prompt_response(args, session)
+        return await self.prompt_response(args, input_fn)

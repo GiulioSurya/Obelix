@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from obelix.adapters.inbound.a2a.client.handlers.base import (
     BaseDeferredHandler,
+    InputCallback,
     PermissionPolicy,
 )
 from obelix.adapters.inbound.a2a.client.handlers.bash import BashHandler
@@ -49,6 +50,7 @@ __all__ = [
     "BaseDeferredHandler",
     "BashHandler",
     "HandlerDispatcher",
+    "InputCallback",
     "PermissionPolicy",
     "RequestInputHandler",
     "default_dispatcher",
