@@ -34,7 +34,8 @@ from rich.table import Table
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
-from textual.widgets import Input, RichLog, Static
+from textual.widgets import Input, OptionList, RichLog, Static
+from textual.widgets.option_list import Option
 
 from obelix.adapters.inbound.a2a.client.handlers import HandlerDispatcher
 from obelix.adapters.inbound.a2a.client.webhook_server import (
@@ -68,6 +69,11 @@ _COMMANDS = {
     "/help": "Show help",
     "/quit": "Exit",
 }
+
+# Autocomplete data: (base_cmd, description, has_args)
+_SLASH_COMPLETIONS: list[tuple[str, str, bool]] = [
+    (full.split()[0], desc, "<" in full) for full, desc in _COMMANDS.items()
+]
 
 
 # -- Agent Connection --------------------------------------------------------
@@ -265,6 +271,12 @@ class CLIClient(App):
         color: $text-muted;
         padding: 0 1;
     }
+    #autocomplete {
+        height: auto;
+        max-height: 8;
+        display: none;
+        background: $surface;
+    }
     #input {
         height: auto;
     }
@@ -291,12 +303,14 @@ class CLIClient(App):
         self._shown_results: set[str] = set()
         self._unseen_by_agent: dict[str, list[str]] = {}
         self._input_future: asyncio.Future | None = None
+        self._ac_suppress: bool = False
 
     # -- Layout --------------------------------------------------------------
 
     def compose(self) -> ComposeResult:
         yield RichLog(id="chat", markup=True, highlight=False, wrap=True)
         yield Static("Starting...", id="status")
+        yield OptionList(id="autocomplete")
         yield Input(id="input", placeholder="Type a message or /help")
 
     # -- Lifecycle -----------------------------------------------------------
@@ -485,6 +499,72 @@ class CLIClient(App):
             agent = self.agents[self.current]
             inp = self.query_one("#input", Input)
             inp.placeholder = f"[{agent.name}] Type a message or /help"
+
+    # -- Autocomplete --------------------------------------------------------
+
+    @on(Input.Changed, "#input")
+    def _on_input_changed(self, event: Input.Changed) -> None:
+        """Show/hide slash-command autocomplete as the user types."""
+        if self._ac_suppress:
+            self._ac_suppress = False
+            return
+
+        ac = self.query_one("#autocomplete", OptionList)
+        text = event.value
+
+        if text.startswith("/") and " " not in text:
+            prefix = text.lower()
+            matches = [
+                (base, desc)
+                for base, desc, _ in _SLASH_COMPLETIONS
+                if base.startswith(prefix)
+            ]
+            ac.clear_options()
+            for base, desc in matches:
+                ac.add_option(Option(f"{base}  {desc}", id=base))
+            ac.display = bool(matches)
+            if matches:
+                ac.highlighted = 0
+        else:
+            ac.display = False
+
+    def on_key(self, event) -> None:
+        """Route arrow keys and Tab to autocomplete when visible."""
+        ac = self.query_one("#autocomplete", OptionList)
+        if not ac.display:
+            return
+
+        if event.key == "up":
+            if ac.highlighted is not None and ac.highlighted > 0:
+                ac.highlighted -= 1
+            event.prevent_default()
+            event.stop()
+        elif event.key == "down":
+            if ac.highlighted is not None and ac.highlighted < ac.option_count - 1:
+                ac.highlighted += 1
+            event.prevent_default()
+            event.stop()
+        elif event.key == "tab":
+            self._accept_autocomplete()
+            event.prevent_default()
+            event.stop()
+        elif event.key == "escape":
+            ac.display = False
+            event.prevent_default()
+            event.stop()
+
+    def _accept_autocomplete(self) -> None:
+        """Fill input with the selected autocomplete option."""
+        ac = self.query_one("#autocomplete", OptionList)
+        if ac.highlighted is not None:
+            option = ac.get_option_at_index(ac.highlighted)
+            base = str(option.id)
+            has_arg = any(b == base and a for b, _, a in _SLASH_COMPLETIONS)
+            inp = self.query_one("#input", Input)
+            self._ac_suppress = True
+            inp.value = f"{base} " if has_arg else base
+            inp.cursor_position = len(inp.value)
+        ac.display = False
 
     # -- Input handling ------------------------------------------------------
 
