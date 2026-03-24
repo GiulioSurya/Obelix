@@ -303,7 +303,10 @@ class CLIClient(App):
         self._shown_results: set[str] = set()
         self._unseen_by_agent: dict[str, list[str]] = {}
         self._input_future: asyncio.Future | None = None
+        self._handling_deferred: bool = False
         self._ac_suppress: bool = False
+        self._agent_select_mode: bool = False
+        self._agent_select_idx: int = 0
 
     # -- Layout --------------------------------------------------------------
 
@@ -404,12 +407,15 @@ class CLIClient(App):
                     self._unseen_by_agent.setdefault(t.agent_name, []).append(t.task_id)
 
         # Check for input-required on current agent
-        if self.agents and not self._input_future:
+        if self.agents and not self._handling_deferred:
             pending = self.tracker.get_pending_input(current_name)
             if pending and pending.task_data:
+                self._handling_deferred = True
                 self._handle_pending_input(pending)
 
     def _update_status_bar(self) -> None:
+        if self._agent_select_mode:
+            return  # Don't overwrite agent selector
         all_tasks = self.tracker.get_all()
         status = self.query_one("#status", Static)
 
@@ -529,29 +535,79 @@ class CLIClient(App):
             ac.display = False
 
     def on_key(self, event) -> None:
-        """Route arrow keys and Tab to autocomplete when visible."""
+        """Route keys to autocomplete or agent selector when active."""
+        # -- Autocomplete (highest priority) --
         ac = self.query_one("#autocomplete", OptionList)
-        if not ac.display:
+        if ac.display:
+            if event.key == "up":
+                if ac.highlighted is not None and ac.highlighted > 0:
+                    ac.highlighted -= 1
+                event.prevent_default()
+                event.stop()
+            elif event.key == "down":
+                if ac.highlighted is not None and ac.highlighted < ac.option_count - 1:
+                    ac.highlighted += 1
+                event.prevent_default()
+                event.stop()
+            elif event.key == "tab":
+                self._accept_autocomplete()
+                event.prevent_default()
+                event.stop()
+            elif event.key == "escape":
+                ac.display = False
+                event.prevent_default()
+                event.stop()
             return
 
-        if event.key == "up":
-            if ac.highlighted is not None and ac.highlighted > 0:
-                ac.highlighted -= 1
-            event.prevent_default()
-            event.stop()
-        elif event.key == "down":
-            if ac.highlighted is not None and ac.highlighted < ac.option_count - 1:
-                ac.highlighted += 1
-            event.prevent_default()
-            event.stop()
-        elif event.key == "tab":
-            self._accept_autocomplete()
-            event.prevent_default()
-            event.stop()
-        elif event.key == "escape":
-            ac.display = False
-            event.prevent_default()
-            event.stop()
+        # -- Agent selector mode --
+        if self._agent_select_mode:
+            if event.key == "left":
+                if self._agent_select_idx > 0:
+                    self._agent_select_idx -= 1
+                    self._render_agent_selector()
+                event.prevent_default()
+                event.stop()
+            elif event.key == "right":
+                if self._agent_select_idx < len(self.agents) - 1:
+                    self._agent_select_idx += 1
+                    self._render_agent_selector()
+                event.prevent_default()
+                event.stop()
+            elif event.key == "enter":
+                self._switch_to_agent(self._agent_select_idx)
+                self._agent_select_mode = False
+                event.prevent_default()
+                event.stop()
+            elif event.key in ("escape", "down"):
+                self._agent_select_mode = False
+                self._update_status_bar()
+                event.prevent_default()
+                event.stop()
+            return
+
+        # -- Enter agent selector (up arrow, empty input, multiple agents) --
+        if event.key == "up" and len(self.agents) > 1:
+            inp = self.query_one("#input", Input)
+            if not inp.value:
+                self._agent_select_mode = True
+                self._agent_select_idx = self.current
+                self._render_agent_selector()
+                event.prevent_default()
+                event.stop()
+
+    def _render_agent_selector(self) -> None:
+        """Render the status bar as an agent picker."""
+        status = self.query_one("#status", Static)
+        segments = []
+        for i, agent in enumerate(self.agents):
+            if i == self._agent_select_idx:
+                segments.append(f"[bold reverse] {agent.name} [/]")
+            elif i == self.current:
+                segments.append(f"[bold cyan]{agent.name}[/]")
+            else:
+                segments.append(f"[dim]{agent.name}[/]")
+        hint = "[dim italic]  ◀▶ navigate  Enter switch  ↓ cancel[/]"
+        status.update(Text.from_markup(" | ".join(segments) + hint))
 
     def _accept_autocomplete(self) -> None:
         """Fill input with the selected autocomplete option."""
@@ -686,43 +742,46 @@ class CLIClient(App):
     @work(exclusive=True, group="deferred")
     async def _handle_pending_input(self, pending) -> None:
         """Handle an input-required task from the current agent."""
-        task_data = pending.task_data
-        status = task_data.get("status", {})
-        message = status.get("message", {})
-        parts = message.get("parts", [])
-
-        data = None
-        for part in parts:
-            if isinstance(part, dict) and part.get("type") == "data":
-                data = part.get("data")
-                break
-            if isinstance(part, dict) and "data" in part:
-                data = part["data"]
-                break
-
-        if data is None:
-            return
-
-        chat = self.query_one("#chat", RichLog)
-        agent = self.agents[self.current]
-
-        result = await self._dispatch_deferred(data, chat)
-
-        msg = _make_data_message(
-            result,
-            context_id=agent.context_id,
-            task_id=pending.task_id,
-        )
         try:
-            task = await _collect_task(agent.client.send_message(msg))
-            if task and hasattr(task, "id"):
-                await self.tracker.update(
-                    task.model_dump(mode="json", exclude_none=True)
-                )
-        except Exception as e:
-            chat.write(
-                Text(f"✗ Error sending deferred response: {e}", style="bold red")
+            task_data = pending.task_data
+            status = task_data.get("status", {})
+            message = status.get("message", {})
+            parts = message.get("parts", [])
+
+            data = None
+            for part in parts:
+                if isinstance(part, dict) and part.get("type") == "data":
+                    data = part.get("data")
+                    break
+                if isinstance(part, dict) and "data" in part:
+                    data = part["data"]
+                    break
+
+            if data is None:
+                return
+
+            chat = self.query_one("#chat", RichLog)
+            agent = self.agents[self.current]
+
+            result = await self._dispatch_deferred(data, chat)
+
+            msg = _make_data_message(
+                result,
+                context_id=agent.context_id,
+                task_id=pending.task_id,
             )
+            try:
+                task = await _collect_task(agent.client.send_message(msg))
+                if task and hasattr(task, "id"):
+                    await self.tracker.update(
+                        task.model_dump(mode="json", exclude_none=True)
+                    )
+            except Exception as e:
+                chat.write(
+                    Text(f"✗ Error sending deferred response: {e}", style="bold red")
+                )
+        finally:
+            self._handling_deferred = False
 
     async def _dispatch_deferred(self, data: dict | None, chat: RichLog) -> dict:
         if not data or "deferred_tool_calls" not in data:
@@ -824,26 +883,26 @@ class CLIClient(App):
                     return
         chat.write(Text("No task found.", style="dim"))
 
+    def _switch_to_agent(self, idx: int) -> None:
+        """Switch to agent at index, show unseen results, update UI."""
+        chat = self.query_one("#chat", RichLog)
+        self.current = idx
+        unseen = self._unseen_by_agent.pop(self.agents[idx].name, [])
+        for tid in unseen:
+            t = self.tracker.get(tid)
+            if t and t.task_data:
+                self._show_result(t.task_data, t.agent_name)
+        chat.write(Text(f"Switched to: {self.agents[idx].name}", style="dim cyan"))
+        self._update_input_placeholder()
+        self._update_status_bar()
+
     def _handle_switch(self, text: str) -> None:
         chat = self.query_one("#chat", RichLog)
         parts = text.split()
         if len(parts) == 2 and parts[1].isdigit():
             idx = int(parts[1]) - 1
             if 0 <= idx < len(self.agents):
-                self.current = idx
-                # Show unseen results
-                unseen = self._unseen_by_agent.pop(self.agents[self.current].name, [])
-                for tid in unseen:
-                    t = self.tracker.get(tid)
-                    if t and t.task_data:
-                        self._show_result(t.task_data, t.agent_name)
-                chat.write(
-                    Text(
-                        f"Switched to: {self.agents[self.current].name}",
-                        style="dim cyan",
-                    )
-                )
-                self._update_input_placeholder()
+                self._switch_to_agent(idx)
             else:
                 chat.write(
                     Text(f"Invalid. Use 1-{len(self.agents)}.", style="bold red")
