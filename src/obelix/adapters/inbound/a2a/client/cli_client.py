@@ -805,7 +805,9 @@ class CLIClient(App):
             await agent.client.cancel_task(TaskIdParams(id=task_id))
             self.tracker.force_terminal(task_id, "canceled")
             chat.write(Text("  Task canceled.", style="yellow"))
-            self._handling_deferred = False
+            # NOTE: do NOT reset _handling_deferred here — the running
+            # _handle_pending_input work resets it in its finally block.
+            # Resetting early causes _poll_tasks to re-dispatch the panel.
         except Exception as e:
             chat.write(Text(f"  Cancel failed: {e}", style="red bold"))
 
@@ -899,6 +901,11 @@ class CLIClient(App):
             except asyncio.CancelledError:
                 # User pressed ESC during deferred input — task cancel
                 # already handled by _cancel_current_task
+                return
+
+            # Guard: don't send if the task was canceled while we were waiting
+            task_info = self.tracker.get(pending.task_id)
+            if task_info and task_info.is_terminal:
                 return
 
             msg = _make_data_message(

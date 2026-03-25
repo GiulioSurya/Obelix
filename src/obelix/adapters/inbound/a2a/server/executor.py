@@ -50,7 +50,7 @@ from obelix.adapters.inbound.a2a.server.helpers import (
 )
 from obelix.core.agent.exceptions import TaskRejectedError
 from obelix.core.model.human_message import HumanMessage
-from obelix.core.model.tool_message import ToolMessage
+from obelix.core.model.tool_message import ToolMessage, ToolResult, ToolStatus
 from obelix.core.tracer.context import (
     get_current_span,
     get_current_trace,
@@ -456,8 +456,27 @@ class ObelixAgentExecutor(AgentExecutor):
                 f"task_id={task_id} context_id={context_id}"
             )
         else:
-            # No active agent — emit canceled directly (task may have
-            # already completed or never started)
+            # No active agent — task was likely in input_required (deferred).
+            # Clean up: replace the null ToolMessage with a cancel message
+            # so the LLM knows the tool was not executed.
+            if entry.deferred_tool_calls and entry.history:
+                # Deferred tools have NO ToolMessage in the history yet —
+                # only the AssistantMessage with tool_calls was saved.
+                # Inject a ToolMessage with cancel results so the LLM
+                # sees a proper tool_use → tool_result sequence.
+                cancel_results = [
+                    ToolResult(
+                        tool_name=tc.name,
+                        tool_call_id=tc.id,
+                        result="Execution canceled by user",
+                        status=ToolStatus.ERROR,
+                    )
+                    for tc in entry.deferred_tool_calls
+                ]
+                entry.history.append(ToolMessage(tool_results=cancel_results))
+                entry.deferred_tool_calls = None
+                entry.deferred_tools = None
+
             await event_queue.enqueue_event(
                 TaskStatusUpdateEvent(
                     task_id=task_id,
