@@ -189,6 +189,7 @@ class ObelixAgentExecutor(AgentExecutor):
             )
         )
 
+        stream = None
         try:
             # For resume: restore the trace context from the first invocation
             # so the resume appears under the same trace in the tracer UI.
@@ -337,9 +338,6 @@ class ObelixAgentExecutor(AgentExecutor):
 
                     # Place the agent response in a working status so
                     # the SDK TaskManager appends it to task.history.
-                    # (TaskManager promotes status.message to history
-                    # when the *next* event overwrites the status —
-                    # the completed event that follows triggers this.)
                     history_parts = (
                         obelix_response_to_a2a_parts(response)
                         if response
@@ -373,6 +371,7 @@ class ObelixAgentExecutor(AgentExecutor):
                     break
 
         except asyncio.CancelledError:
+            entry.history = agent.conversation_history[1:]
             logger.info(f"[A2A] Agent canceled | task_id={task_id}")
             await event_queue.enqueue_event(
                 TaskStatusUpdateEvent(
@@ -388,6 +387,7 @@ class ObelixAgentExecutor(AgentExecutor):
             raise
 
         except TaskRejectedError as e:
+            entry.history = agent.conversation_history[1:]
             logger.info(
                 f"[A2A] Agent rejected task | task_id={task_id} reason={e.reason}"
             )
@@ -404,6 +404,7 @@ class ObelixAgentExecutor(AgentExecutor):
             )
 
         except Exception as e:
+            entry.history = agent.conversation_history[1:]
             logger.error(f"[A2A] Agent failed | task_id={task_id} error={e}")
             await event_queue.enqueue_event(
                 TaskStatusUpdateEvent(
@@ -417,6 +418,13 @@ class ObelixAgentExecutor(AgentExecutor):
                 )
             )
 
+        finally:
+            # Always close the async generator to trigger cleanup
+            # (tracer span closing, resource release) in base_agent's
+            # _execute_loop finally block.
+            if stream is not None:
+                await stream.aclose()
+
     @staticmethod
     def _inject_client_info(agent: BaseAgent, client_info: dict) -> None:
         """Inject client shell environment into the agent's system message.
@@ -429,10 +437,11 @@ class ObelixAgentExecutor(AgentExecutor):
 
         for tool in agent.registered_tools:
             executor = getattr(tool, "_executor", None)
-            if isinstance(executor, ClientShellExecutor) and not executor.shell_info:
-                executor.set_shell_info(client_info)
+            if isinstance(executor, ClientShellExecutor):
+                if not executor.shell_info:
+                    executor.set_shell_info(client_info)
                 fragment = tool.system_prompt_fragment()
-                if fragment:
+                if fragment and fragment not in agent.system_message.content:
                     agent.system_message.content += fragment
                     logger.info("[A2A] Injected client shell info into system message")
 
@@ -476,6 +485,8 @@ class ObelixAgentExecutor(AgentExecutor):
                 entry.history.append(ToolMessage(tool_results=cancel_results))
                 entry.deferred_tool_calls = None
                 entry.deferred_tools = None
+                entry.trace_session = None
+                entry.trace_span = None
 
             await event_queue.enqueue_event(
                 TaskStatusUpdateEvent(

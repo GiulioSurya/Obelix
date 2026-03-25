@@ -712,6 +712,10 @@ class BaseAgent:
                     self.system_message,
                     error=_trace_error,
                 )
+                # Clear cancel signal so this agent instance can be reused
+                # for subsequent queries. Don't clear when stopped for
+                # deferred — the cancel may arrive during input_required.
+                self._cancel_event.clear()
 
     # ─── Input Validation ─────────────────────────────────────────────────────
 

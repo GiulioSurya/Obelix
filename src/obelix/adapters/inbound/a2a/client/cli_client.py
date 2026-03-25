@@ -380,6 +380,7 @@ class CLIClient(App):
         self._unseen_by_agent: dict[str, list[str]] = {}
         self._input_future: asyncio.Future | None = None
         self._handling_deferred: bool = False
+        self._canceling: bool = False
         self._ac_suppress: bool = False
         self._agent_select_mode: bool = False
         self._agent_select_idx: int = 0
@@ -670,11 +671,12 @@ class CLIClient(App):
                 event.prevent_default()
                 event.stop()
             # Cancel active (non-terminal) task for current agent
-            agent = self.agents[self.current]
-            if agent.last_task_id:
-                info = self.tracker.get(agent.last_task_id)
-                if info and not info.is_terminal:
-                    self._cancel_current_task()
+            if not self._canceling and self.agents:
+                agent = self.agents[self.current]
+                if agent.last_task_id:
+                    info = self.tracker.get(agent.last_task_id)
+                    if info and not info.is_terminal:
+                        self._cancel_current_task()
                     event.prevent_default()
                     event.stop()
                     return
@@ -793,11 +795,14 @@ class CLIClient(App):
     @work(thread=False, group="cancel")
     async def _cancel_current_task(self) -> None:
         """Cancel the active task for the current agent via A2A cancel_task."""
+        if not self.agents:
+            return
         agent = self.agents[self.current]
         task_id = agent.last_task_id
         if not task_id:
             return
 
+        self._canceling = True
         chat = self.query_one("#chat", RichLog)
         chat.write(Text(f"  Canceling task {task_id[:12]}...", style="yellow italic"))
 
@@ -810,6 +815,8 @@ class CLIClient(App):
             # Resetting early causes _poll_tasks to re-dispatch the panel.
         except Exception as e:
             chat.write(Text(f"  Cancel failed: {e}", style="red bold"))
+        finally:
+            self._canceling = False
 
         self._update_status_bar()
 
@@ -901,6 +908,9 @@ class CLIClient(App):
             except asyncio.CancelledError:
                 # User pressed ESC during deferred input — task cancel
                 # already handled by _cancel_current_task
+                return
+            except Exception as e:
+                chat.write(Text(f"✗ Handler error: {e}", style="bold red"))
                 return
 
             # Guard: don't send if the task was canceled while we were waiting
