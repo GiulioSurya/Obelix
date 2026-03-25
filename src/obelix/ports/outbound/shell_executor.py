@@ -21,6 +21,15 @@ class AbstractShellExecutor(ABC):
         """
         return {}
 
+    @property
+    def is_remote(self) -> bool:
+        """Whether commands are executed remotely (by the client).
+
+        When True, the tool is deferred: execute() is not called server-side.
+        Default is False (local execution).
+        """
+        return False
+
     @abstractmethod
     async def execute(
         self,

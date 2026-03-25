@@ -24,6 +24,7 @@ class BashHandler(BaseDeferredHandler):
     """Execute shell commands locally on behalf of the remote agent."""
 
     tool_name = "bash"
+    input_hint = "Y/n (Enter = approve)"
 
     def __init__(self, permission: PermissionPolicy = PermissionPolicy.ALWAYS_ASK):
         self.permission = permission

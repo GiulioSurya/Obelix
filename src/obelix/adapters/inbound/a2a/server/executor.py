@@ -101,6 +101,14 @@ class ObelixAgentExecutor(AgentExecutor):
         message = context.message
         user_text, attachments = a2a_parts_to_obelix(message.parts)
 
+        # Extract client metadata (shell environment, etc.) if present.
+        # The client sends this via Message.metadata on the first message.
+        # Stored in the ContextEntry so it persists across the conversation.
+        if message.metadata and "client_info" in message.metadata:
+            async with self._store_lock:
+                entry = self._store.get_or_create(context_id)
+            entry.client_info = message.metadata["client_info"]
+
         if not user_text and not attachments:
             await event_queue.enqueue_event(
                 TaskStatusUpdateEvent(
@@ -162,6 +170,10 @@ class ObelixAgentExecutor(AgentExecutor):
         # Create a fresh agent for this request
         agent = self._agent_factory()
         entry.active_agent = agent
+
+        # Inject client shell info into BashTool's ClientShellExecutor
+        if entry.client_info:
+            self._inject_client_info(agent, entry.client_info)
 
         # Inject conversation history from this context
         if entry.history:
@@ -404,6 +416,25 @@ class ObelixAgentExecutor(AgentExecutor):
                     final=True,
                 )
             )
+
+    @staticmethod
+    def _inject_client_info(agent: BaseAgent, client_info: dict) -> None:
+        """Inject client shell environment into the agent's system message.
+
+        Finds any BashTool with a ClientShellExecutor among the agent's
+        registered tools, populates its shell_info, and appends the
+        system_prompt_fragment to the agent's system message.
+        """
+        from obelix.adapters.outbound.shell.client_executor import ClientShellExecutor
+
+        for tool in agent.registered_tools:
+            executor = getattr(tool, "_executor", None)
+            if isinstance(executor, ClientShellExecutor) and not executor.shell_info:
+                executor.set_shell_info(client_info)
+                fragment = tool.system_prompt_fragment()
+                if fragment:
+                    agent.system_message.content += fragment
+                    logger.info("[A2A] Injected client shell info into system message")
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         task_id = context.task_id

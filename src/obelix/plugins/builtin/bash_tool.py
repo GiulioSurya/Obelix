@@ -2,30 +2,28 @@
 """
 Bash tool — executes shell commands locally or delegates to the client.
 
-Behavior depends on whether an executor is provided:
+Behavior depends on the executor type:
 
-- **With executor** (e.g. LocalShellExecutor): execute() runs the command
-  directly via the executor. The tool is NOT deferred — the agent loop
-  continues normally. Use this for local/server-side execution.
+- **LocalShellExecutor**: execute() runs the command directly on the server.
+  The tool is NOT deferred — the agent loop continues normally.
 
-- **Without executor** (default): execute() returns None, which stops the
-  agent loop and yields a StreamEvent with deferred_tool_calls. The consumer
-  (A2A client, CLI runner, human) receives the command and handles execution.
+- **ClientShellExecutor**: execute() is never called (deferred). The agent
+  loop stops and yields a StreamEvent with deferred_tool_calls. The A2A
+  client receives the command, executes it, and sends back the result.
 
-The OutputSchema declares the expected response format so consumers and
-executors produce consistent results.
+Both executor types carry shell environment info (platform, shell, cwd)
+via shell_info, which system_prompt_fragment() uses to enrich the agent's
+system message.
+
+The executor parameter is required — there is no default.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from pydantic import BaseModel, Field
 
 from obelix.core.tool.tool_decorator import tool
-
-if TYPE_CHECKING:
-    from obelix.ports.outbound.shell_executor import AbstractShellExecutor
+from obelix.ports.outbound.shell_executor import AbstractShellExecutor
 
 
 @tool(
@@ -40,8 +38,9 @@ if TYPE_CHECKING:
 class BashTool:
     """Shell command tool with pluggable execution backend.
 
-    Without executor: deferred (client executes).
-    With executor: local (server executes via AbstractShellExecutor).
+    Requires an executor (LocalShellExecutor or ClientShellExecutor).
+    The executor determines whether commands run locally or are deferred
+    to the client.
     """
 
     command: str = Field(
@@ -73,22 +72,20 @@ class BashTool:
         stderr: str = Field(default="", description="Standard error of the command")
         exit_code: int = Field(default=0, description="Process exit code (0 = success)")
 
-    def __init__(self, executor: AbstractShellExecutor | None = None):
+    def __init__(self, executor: AbstractShellExecutor):
         self._executor = executor
-        # Override the class-level is_deferred based on executor presence
-        self.is_deferred = executor is None
+        self.is_deferred = executor.is_remote
 
     def system_prompt_fragment(self) -> str | None:
         """Build shell environment block for the agent's system prompt.
 
-        Returns None when deferred (no executor) — the client already
-        knows its own environment.  The executor probes the shell
-        environment automatically at construction time.
+        Returns None if the executor has no shell_info yet (e.g.
+        ClientShellExecutor before the client sends its environment).
         """
-        if self._executor is None:
+        info = self._executor.shell_info
+        if not info:
             return None
 
-        info = self._executor.shell_info
         shell_name = info.get("shell_name", "sh")
         plat = info.get("platform", "Unknown")
         os_ver = info.get("os_version", "")
@@ -118,7 +115,6 @@ class BashTool:
                 f"{drive} -> {mp}" for drive, mp in sorted(mounts.items())
             )
             lines.append(f"- Drive mounts: {mount_str}")
-            # Derive path style hint from the first mount
             first_mp = next(iter(mounts.values()))
             lines.append(
                 f"- Use Unix-style paths with forward slashes "
@@ -130,10 +126,10 @@ class BashTool:
     async def execute(self) -> dict | None:
         """Execute the command or defer to client.
 
-        With executor: runs the command and returns OutputSchema-compatible dict.
-        Without executor: returns None (deferred — client must execute).
+        Local executor: runs the command and returns OutputSchema-compatible dict.
+        Remote executor: returns None (deferred — client must execute).
         """
-        if self._executor is None:
+        if self._executor.is_remote:
             return None
 
         return await self._executor.execute(

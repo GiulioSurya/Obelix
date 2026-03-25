@@ -23,7 +23,7 @@ import os
 from dotenv import load_dotenv
 
 from obelix.adapters.outbound.litellm import LiteLLMProvider
-from obelix.adapters.outbound.shell import LocalShellExecutor
+from obelix.adapters.outbound.shell import ClientShellExecutor, LocalShellExecutor
 from obelix.core.agent import BaseAgent
 from obelix.core.agent.agent_factory import AgentFactory
 from obelix.core.tracer import HTTPExporter, Tracer
@@ -61,7 +61,7 @@ def make_provider() -> LiteLLMProvider:
 
 # -- Agent -------------------------------------------------------------------
 
-_executor = LocalShellExecutor() if LOCAL_EXECUTOR else None
+_executor = LocalShellExecutor() if LOCAL_EXECUTOR else ClientShellExecutor()
 
 _SYSTEM_MESSAGE = (
     "You are a helpful assistant with access to a bash tool. "
@@ -80,7 +80,7 @@ class BashAgent(BaseAgent):
             provider=make_provider(),
             **kwargs,
         )
-        self.register_tool(BashTool(executor=_executor) if _executor else BashTool())
+        self.register_tool(BashTool(executor=_executor))
 
 
 # -- Serve -------------------------------------------------------------------

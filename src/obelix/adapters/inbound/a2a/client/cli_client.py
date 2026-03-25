@@ -10,7 +10,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import mimetypes
+import platform
 import re
+import shutil
+import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -110,15 +113,85 @@ class AgentConnection:
         self.last_task_id: str | None = None
 
 
+# -- Shell probe -------------------------------------------------------------
+
+
+def _probe_shell_info() -> dict:
+    """Detect the local shell environment for the server's system prompt.
+
+    Returns a dict compatible with BashTool.system_prompt_fragment():
+    platform, os_version, shell_name, cwd, and mounts (Windows only).
+    """
+    info: dict[str, Any] = {
+        "platform": platform.system(),
+        "os_version": platform.platform(),
+    }
+
+    # Find the best available shell
+    shell_path = None
+    if platform.system() == "Windows":
+        # Prefer Git Bash
+        for candidate in [
+            Path(r"C:\Program Files\Git\bin\bash.exe"),
+            Path(r"C:\Program Files (x86)\Git\bin\bash.exe"),
+        ]:
+            if candidate.is_file():
+                shell_path = str(candidate)
+                break
+    if not shell_path:
+        shell_path = shutil.which("bash") or shutil.which("sh") or "sh"
+
+    info["shell"] = shell_path
+    info["shell_name"] = Path(shell_path).stem
+
+    # Probe cwd and mounts
+    probe_cmd = 'echo "CWD=$(pwd)" && echo "HOME=$HOME"'
+    if platform.system() == "Windows":
+        probe_cmd += ' && mount | grep "^[A-Z]:"'
+
+    try:
+        result = subprocess.run(
+            [shell_path, "-c", probe_cmd],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            mounts: dict[str, str] = {}
+            for line in result.stdout.splitlines():
+                if line.startswith("CWD="):
+                    info["cwd"] = line[4:]
+                elif line.startswith("HOME="):
+                    info["home"] = line[5:]
+                else:
+                    m = re.match(r"^([A-Z]:)\s+on\s+(/\S+)", line)
+                    if m:
+                        mp = m.group(2)
+                        if not mp.endswith("/"):
+                            mp += "/"
+                        mounts[m.group(1)] = mp
+            if mounts:
+                info["mounts"] = mounts
+    except (subprocess.TimeoutExpired, OSError):
+        pass  # probe failed — send what we have
+
+    return info
+
+
 # -- A2A message helpers -----------------------------------------------------
 
 
-def _make_message(text: str, context_id: str | None = None) -> Message:
+def _make_message(
+    text: str,
+    context_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> Message:
     return Message(
         message_id=str(uuid.uuid4()),
         role=Role.user,
         parts=[Part(root=TextPart(text=text))],
         context_id=context_id,
+        metadata=metadata,
     )
 
 
@@ -310,6 +383,7 @@ class CLIClient(App):
         self._ac_suppress: bool = False
         self._agent_select_mode: bool = False
         self._agent_select_idx: int = 0
+        self._shell_info: dict = _probe_shell_info()
 
     # -- Layout --------------------------------------------------------------
 
@@ -742,6 +816,11 @@ class CLIClient(App):
         agent = self.agents[self.current]
         chat = self.query_one("#chat", RichLog)
 
+        # First message to this agent: attach client shell info as metadata
+        metadata = None
+        if agent.context_id is None and self._shell_info:
+            metadata = {"client_info": self._shell_info}
+
         clean_text, file_parts = _parse_attachments(text)
         if file_parts:
             chat.write(Text(f"  Attached {len(file_parts)} file(s)", style="dim cyan"))
@@ -754,9 +833,14 @@ class CLIClient(App):
                 role=Role.user,
                 parts=parts,
                 context_id=agent.context_id,
+                metadata=metadata,
             )
         else:
-            msg = _make_message(clean_text or text, context_id=agent.context_id)
+            msg = _make_message(
+                clean_text or text,
+                context_id=agent.context_id,
+                metadata=metadata,
+            )
 
         try:
             task = await _collect_task(agent.client.send_message(msg))
@@ -804,6 +888,11 @@ class CLIClient(App):
 
             chat = self.query_one("#chat", RichLog)
             agent = self.agents[self.current]
+            inp = self.query_one("#input", Input)
+
+            # Show contextual hint in the input bar
+            hint = self._get_deferred_hint(data)
+            inp.placeholder = hint
 
             try:
                 result = await self._dispatch_deferred(data, chat)
@@ -829,6 +918,20 @@ class CLIClient(App):
                 )
         finally:
             self._handling_deferred = False
+            self._update_input_placeholder()
+
+    def _get_deferred_hint(self, data: dict | None) -> str:
+        """Get the input hint for the current deferred tool call."""
+        if not data or "deferred_tool_calls" not in data:
+            return "Type your response and press Enter"
+        calls = data.get("deferred_tool_calls", [])
+        if not calls:
+            return "Type your response and press Enter"
+        call = calls[0]
+        tool_name = call.get("tool_name", "")
+        args = call.get("arguments", {})
+        handler = self.dispatcher.get(tool_name)
+        return handler.get_input_hint(args)
 
     async def _dispatch_deferred(self, data: dict | None, chat: RichLog) -> dict:
         if not data or "deferred_tool_calls" not in data:

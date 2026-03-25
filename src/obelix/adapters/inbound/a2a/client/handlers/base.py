@@ -41,6 +41,13 @@ class BaseDeferredHandler:
     tool_name: str = ""
     permission: PermissionPolicy = PermissionPolicy.ALWAYS_ASK
 
+    # Default hint shown in the input bar while waiting for user response.
+    input_hint: str = "Type your response and press Enter"
+
+    def get_input_hint(self, args: dict) -> str:
+        """Return the hint for the input bar. Override for dynamic hints."""
+        return self.input_hint
+
     def can_handle(self, name: str) -> bool:
         return self.tool_name == name
 

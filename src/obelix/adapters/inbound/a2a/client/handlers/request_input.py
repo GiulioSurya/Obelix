@@ -21,6 +21,13 @@ class RequestInputHandler(BaseDeferredHandler):
 
     tool_name = "request_user_input"
 
+    def get_input_hint(self, args: dict) -> str:
+        options: list[dict] = args.get("options", [])
+        if options:
+            nums = ", ".join(str(i) for i in range(1, len(options) + 1))
+            return f"Type {nums} or free text"
+        return "Type your answer and press Enter"
+
     def render(self, args: dict, console: Console) -> None:
         question = args.get("question", "")
         options: list[dict] = args.get("options", [])

@@ -1,18 +1,44 @@
-"""Tests for obelix.plugins.builtin.bash_tool - BashTool (deferred).
+"""Tests for obelix.plugins.builtin.bash_tool - BashTool.
 
 Covers:
-- is_deferred flag
+- is_deferred flag (based on executor.is_remote)
 - OutputSchema detection and validation
 - Input schema (required/optional fields, defaults)
 - Output schema in MCPToolSchema
-- execute() returns None (deferred semantics)
+- execute() with local executor (returns result)
+- execute() with remote executor (returns None / deferred)
+- system_prompt_fragment() with populated/empty shell_info
 """
+
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import BaseModel
 
+from obelix.adapters.outbound.shell.client_executor import ClientShellExecutor
 from obelix.core.model.tool_message import MCPToolSchema, ToolCall, ToolStatus
 from obelix.plugins.builtin.bash_tool import BashTool
+
+# -- Fixtures ----------------------------------------------------------------
+
+
+@pytest.fixture
+def remote_executor() -> ClientShellExecutor:
+    """A ClientShellExecutor (remote / deferred)."""
+    return ClientShellExecutor()
+
+
+@pytest.fixture
+def local_executor():
+    """A mock local executor (not remote)."""
+    executor = AsyncMock()
+    executor.is_remote = False
+    executor.shell_info = {"platform": "Linux", "shell_name": "bash"}
+    executor.execute = AsyncMock(
+        return_value={"stdout": "hello\n", "stderr": "", "exit_code": 0}
+    )
+    return executor
+
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -21,10 +47,6 @@ from obelix.plugins.builtin.bash_tool import BashTool
 
 class TestBashToolAttributes:
     """Tests for BashTool class-level attributes set by @tool decorator."""
-
-    def test_bash_tool_is_deferred(self):
-        """BashTool must be marked as deferred (client-side execution)."""
-        assert BashTool.is_deferred is True
 
     def test_bash_tool_has_output_schema(self):
         """BashTool._output_schema should reference the inner OutputSchema class."""
@@ -43,6 +65,29 @@ class TestBashToolAttributes:
         """Tool description should be a non-empty string."""
         assert isinstance(BashTool.tool_description, str)
         assert len(BashTool.tool_description) > 0
+
+
+class TestBashToolDeferredFlag:
+    """Tests for is_deferred based on executor type."""
+
+    def test_with_remote_executor_is_deferred(self, remote_executor):
+        """BashTool with ClientShellExecutor should be deferred."""
+        tool = BashTool(executor=remote_executor)
+        assert tool.is_deferred is True
+
+    def test_with_local_executor_not_deferred(self, local_executor):
+        """BashTool with local executor should NOT be deferred."""
+        tool = BashTool(executor=local_executor)
+        assert tool.is_deferred is False
+
+    def test_class_level_is_deferred_true(self):
+        """Class-level is_deferred should remain True (decorator default)."""
+        assert BashTool.is_deferred is True
+
+    def test_executor_required(self):
+        """BashTool() without executor should raise TypeError."""
+        with pytest.raises(TypeError):
+            BashTool()
 
 
 class TestBashToolInputSchema:
@@ -154,12 +199,12 @@ class TestBashToolOutputSchemaValidation:
         assert restored == original
 
 
-class TestBashToolExecute:
-    """Tests for BashTool.execute() deferred behavior."""
+class TestBashToolExecuteDeferred:
+    """Tests for BashTool.execute() with remote executor (deferred)."""
 
     @pytest.fixture
-    def tool_instance(self) -> BashTool:
-        return BashTool()
+    def tool_instance(self, remote_executor) -> BashTool:
+        return BashTool(executor=remote_executor)
 
     @pytest.fixture
     def sample_call(self) -> ToolCall:
@@ -232,37 +277,17 @@ class TestBashToolExecute:
         assert result.status == ToolStatus.ERROR
 
 
-class TestBashToolWithExecutor:
-    """Tests for BashTool with an executor (local execution mode)."""
+class TestBashToolWithLocalExecutor:
+    """Tests for BashTool with a local executor (server-side execution)."""
 
-    @pytest.fixture
-    def mock_executor(self):
-        """A mock AbstractShellExecutor that returns a fixed result."""
-        from unittest.mock import AsyncMock
-
-        executor = AsyncMock()
-        executor.execute = AsyncMock(
-            return_value={"stdout": "hello\n", "stderr": "", "exit_code": 0}
-        )
-        return executor
-
-    def test_with_executor_not_deferred(self, mock_executor):
-        """BashTool with executor should NOT be deferred."""
-        tool = BashTool(executor=mock_executor)
+    def test_with_executor_not_deferred(self, local_executor):
+        """BashTool with local executor should NOT be deferred."""
+        tool = BashTool(executor=local_executor)
         assert tool.is_deferred is False
 
-    def test_without_executor_is_deferred(self):
-        """BashTool without executor should be deferred."""
-        tool = BashTool()
-        assert tool.is_deferred is True
-
-    def test_class_level_is_deferred_true(self):
-        """Class-level is_deferred should remain True (default)."""
-        assert BashTool.is_deferred is True
-
-    async def test_execute_with_executor_returns_result(self, mock_executor):
-        """With executor, execute() should return the executor's result."""
-        tool = BashTool(executor=mock_executor)
+    async def test_execute_with_executor_returns_result(self, local_executor):
+        """With local executor, execute() should return the executor's result."""
+        tool = BashTool(executor=local_executor)
         call = ToolCall(
             id="tc_exec_1",
             name="bash",
@@ -272,9 +297,9 @@ class TestBashToolWithExecutor:
         assert result.result == {"stdout": "hello\n", "stderr": "", "exit_code": 0}
         assert result.status == ToolStatus.SUCCESS
 
-    async def test_execute_with_executor_passes_arguments(self, mock_executor):
+    async def test_execute_with_executor_passes_arguments(self, local_executor):
         """Executor should receive command, timeout, working_directory."""
-        tool = BashTool(executor=mock_executor)
+        tool = BashTool(executor=local_executor)
         call = ToolCall(
             id="tc_exec_2",
             name="bash",
@@ -286,19 +311,69 @@ class TestBashToolWithExecutor:
             },
         )
         await tool.execute(call)
-        mock_executor.execute.assert_called_once_with(
+        local_executor.execute.assert_called_once_with(
             command="ls -la",
             timeout=30,
             working_directory="/tmp",
         )
 
-    async def test_execute_without_executor_returns_none(self):
-        """Without executor, execute() should still return None (deferred)."""
-        tool = BashTool()
-        call = ToolCall(
-            id="tc_def_1",
-            name="bash",
-            arguments={"command": "ls", "description": "List files"},
+
+class TestBashToolSystemPromptFragment:
+    """Tests for system_prompt_fragment() with different executor states."""
+
+    def test_fragment_none_when_no_shell_info(self, remote_executor):
+        """Returns None when executor has no shell_info."""
+        tool = BashTool(executor=remote_executor)
+        assert tool.system_prompt_fragment() is None
+
+    def test_fragment_with_shell_info(self, remote_executor):
+        """Returns fragment when executor has shell_info."""
+        remote_executor.set_shell_info(
+            {
+                "platform": "Linux",
+                "os_version": "Linux-6.1",
+                "shell_name": "bash",
+                "cwd": "/home/user",
+            }
         )
-        result = await tool.execute(call)
-        assert result.result is None
+        tool = BashTool(executor=remote_executor)
+        fragment = tool.system_prompt_fragment()
+        assert fragment is not None
+        assert "## Shell Environment" in fragment
+        assert "Linux" in fragment
+        assert "bash" in fragment
+        assert "/home/user" in fragment
+
+    def test_fragment_with_local_executor(self, local_executor):
+        """Local executor with shell_info produces a fragment."""
+        tool = BashTool(executor=local_executor)
+        fragment = tool.system_prompt_fragment()
+        assert fragment is not None
+        assert "Linux" in fragment
+
+    def test_fragment_windows_syntax_hint(self, remote_executor):
+        """Windows platform should include syntax hint."""
+        remote_executor.set_shell_info(
+            {
+                "platform": "Windows",
+                "shell_name": "bash",
+            }
+        )
+        tool = BashTool(executor=remote_executor)
+        fragment = tool.system_prompt_fragment()
+        assert "Unix shell syntax" in fragment
+
+    def test_fragment_with_mounts(self, remote_executor):
+        """Drive mounts should appear in the fragment."""
+        remote_executor.set_shell_info(
+            {
+                "platform": "Windows",
+                "shell_name": "bash",
+                "mounts": {"C:": "/c/", "D:": "/d/"},
+            }
+        )
+        tool = BashTool(executor=remote_executor)
+        fragment = tool.system_prompt_fragment()
+        assert "C: -> /c/" in fragment
+        assert "D: -> /d/" in fragment
+        assert "Unix-style paths" in fragment

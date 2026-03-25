@@ -32,6 +32,7 @@ class ContextEntry:
         "trace_session",
         "trace_span",
         "active_agent",
+        "client_info",
     )
 
     def __init__(self) -> None:
@@ -43,6 +44,7 @@ class ContextEntry:
         self.trace_session = None  # TraceSession saved when loop stops for deferred
         self.trace_span = None  # Current span saved when loop stops for deferred
         self.active_agent: BaseAgent | None = None  # ref to running agent for cancel
+        self.client_info: dict | None = None  # client shell environment for BashTool
 
 
 class ContextStore:
