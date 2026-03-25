@@ -137,6 +137,7 @@ class ObelixAgentExecutor(AgentExecutor):
                 event_queue=event_queue,
             )
         finally:
+            entry.active_agent = None
             entry.idle.set()
 
     async def _run_agent(
@@ -160,6 +161,7 @@ class ObelixAgentExecutor(AgentExecutor):
 
         # Create a fresh agent for this request
         agent = self._agent_factory()
+        entry.active_agent = agent
 
         # Inject conversation history from this context
         if entry.history:
@@ -196,6 +198,23 @@ class ObelixAgentExecutor(AgentExecutor):
             first_chunk = True
 
             async for event in stream:
+                # === Agent canceled by user ===
+                if event.canceled:
+                    entry.history = agent.conversation_history[1:]
+                    await event_queue.enqueue_event(
+                        TaskStatusUpdateEvent(
+                            task_id=task_id,
+                            context_id=context_id,
+                            status=TaskStatus(
+                                state=TaskState.canceled,
+                                message=agent_message("Task canceled by client"),
+                            ),
+                            final=True,
+                        )
+                    )
+                    logger.info(f"[A2A] Agent canceled by user | task_id={task_id}")
+                    return
+
                 # === Deferred tool detected: emit input-required ===
                 if event.deferred_tool_calls:
                     entry.history = agent.conversation_history[1:]
@@ -388,18 +407,34 @@ class ObelixAgentExecutor(AgentExecutor):
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         task_id = context.task_id
-        context_id = context.context_id
+        context_id = context.context_id or "default"
 
         logger.info(f"[A2A] Cancel requested | task_id={task_id}")
 
-        await event_queue.enqueue_event(
-            TaskStatusUpdateEvent(
-                task_id=task_id,
-                context_id=context_id,
-                status=TaskStatus(
-                    state=TaskState.canceled,
-                    message=agent_message("Task canceled by client"),
-                ),
-                final=True,
+        # Try to find the active agent for this context and signal cancel
+        async with self._store_lock:
+            entry = self._store.get_or_create(context_id)
+
+        if entry.active_agent:
+            # Agent is running — signal cooperative cancellation.
+            # The _execute_loop will detect the flag, yield a canceled
+            # StreamEvent, and _run_agent will emit TaskState.canceled.
+            entry.active_agent.cancel()
+            logger.info(
+                f"[A2A] Cancel signal sent to active agent | "
+                f"task_id={task_id} context_id={context_id}"
             )
-        )
+        else:
+            # No active agent — emit canceled directly (task may have
+            # already completed or never started)
+            await event_queue.enqueue_event(
+                TaskStatusUpdateEvent(
+                    task_id=task_id,
+                    context_id=context_id,
+                    status=TaskStatus(
+                        state=TaskState.canceled,
+                        message=agent_message("Task canceled by client"),
+                    ),
+                    final=True,
+                )
+            )

@@ -95,6 +95,13 @@ class TaskTracker:
         """Return a specific task."""
         return self._tasks.get(task_id)
 
+    def force_terminal(self, task_id: str, state: str) -> None:
+        """Force a task into a terminal state (e.g. after client-side cancel)."""
+        info = self._tasks.get(task_id)
+        if info:
+            info.state = state
+            info.timestamp = time.time()
+
     async def wait_for_terminal(
         self, task_id: str, timeout: float = 300.0
     ) -> TaskInfo | None:

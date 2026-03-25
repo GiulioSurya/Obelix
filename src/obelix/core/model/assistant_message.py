@@ -67,3 +67,4 @@ class StreamEvent:
     assistant_response: AssistantResponse | None = None
     is_final: bool = field(default=False)
     deferred_tool_calls: list[ToolCall] | None = field(default=None)
+    canceled: bool = field(default=False)

@@ -6,7 +6,7 @@ It serves as a complete gap analysis, behavioral reference, and implementation r
 
 > **Spec reference**: https://a2a-protocol.org/latest/specification/ (v1.0, Linux Foundation).
 > **SDK**: [`a2a-sdk`](https://github.com/a2aproject/a2a-python) v0.3.25.
-> **Last updated**: 2026-03-19.
+> **Last updated**: 2026-03-24.
 
 ---
 
@@ -79,7 +79,7 @@ TaskStatusUpdateEvent | TaskArtifactUpdateEvent). Stream closes on terminal stat
 |--------|-----------------|--------|-------|
 | `tasks/get` | Retrieve current task state by ID. Params: `id`, `historyLength?`, `tenant?`. | **Working** | Via `InMemoryTaskStore` |
 | `tasks/list` | List tasks with filtering and pagination. | **BLOCKED (SDK)** | Spec defines full filtering + cursor pagination. `a2a-sdk` v0.3.25 has zero implementation (no types, no store method, no routing). Blocked until SDK adds support. See Section 2i. |
-| `tasks/cancel` | Request task cancellation. | **Partial** | SDK routes to `ObelixAgentExecutor.cancel()`. But cancel is "fake" — emits `canceled` state without actually interrupting `execute_query_async()`. Needs cancellation token. |
+| `tasks/cancel` | Request task cancellation. | **Working** | Cooperative cancellation via `asyncio.Event` flag. SDK routes to `ObelixAgentExecutor.cancel()`, which calls `BaseAgent.cancel()`. Agent checks flag at 3 points: iteration start, between streaming tokens, and after tool dispatch. Pending tool tasks are cancelled; completed results preserved. See Section 2j. |
 | `tasks/resubscribe` | Reconnect SSE stream for an active task. | **SDK-ready** | Requires streaming executor (DONE). Client uses this to reconnect after broken SSE connection. SDK handles reconnection via `QueueManager.tap()`. |
 
 ### 1.3 Push Notification Config Methods
@@ -116,7 +116,7 @@ Ref: [Life of a Task](https://a2a-protocol.org/latest/topics/life-of-a-task/)
 | `auth-required` | Interrupted | Agent needs authentication. Client must authenticate and retry. | **Never emitted** — enterprise scenario, low priority. |
 | `completed` | Terminal | Successfully finished. | **OK** |
 | `failed` | Terminal | Execution error. | **OK** — structured `Message(role=agent, TextPart)` in `TaskStatus.message` |
-| `canceled` | Terminal | Client-initiated cancellation. | **OK** — structured `Message` in status (but cancellation is not real — see Section 1.2) |
+| `canceled` | Terminal | Client-initiated cancellation. | **Working** — cooperative cancellation via `asyncio.Event`. Agent stops at next iteration/token/tool-dispatch check point. Tool tasks are cancelled; pending results discarded. History annotated with cancellation context. See Section 2j. |
 | `rejected` | Terminal | Agent declined the task. | **OK** — emitted via `TaskRejectedError` or `HookDecision.REJECT`. See Section 2f. |
 
 ### 2.2 Deferred Tool Protocol & `input-required` Flow (2026-03-17)
@@ -619,57 +619,120 @@ in `Message.extensions` and `Artifact.extensions`.
 
 ---
 
-## 10. A2A Client (Outbound)
+## 10. A2A Client (Outbound) & Peer-to-Peer Architecture
 
 The current implementation is **server-only** (inbound adapter). For agent-to-agent
-communication, Obelix needs to also be an A2A **client**.
+communication, Obelix needs to also be an A2A **client**. This enables a **bidirectional
+topology** where each agent is both server (receives tasks) and client (delegates tasks).
 
-### 10.1 SDK Client Infrastructure
+### 10.1 Industry Landscape (2026-03-24)
+
+**A2A is not true P2P** — it is client-server per interaction. But any agent can play
+both roles simultaneously. "Peer-to-peer" emerges from composition:
+
+```
+Agent A (server + client) ←→ Agent B (server + client) ←→ Agent C (server + client)
+     ↑                              ↑                              ↑
+  AgentCard                     AgentCard                     AgentCard
+```
+
+**No protocol has solved true P2P mesh in production.** The landscape:
+
+| Protocol/Framework | Pattern | Discovery | Maturity | Notes |
+|--------------------|---------|-----------|----------|-------|
+| **A2A** (Google/LF) | Client-server, bidirectional by composition | Agent Cards (well-known URI) | High — 50+ partners, ACP merged | De facto standard |
+| **MCP** (Anthropic/LF) | Agent→tool (complementary to A2A) | Server manifests | Very high — 97M+ downloads/mo | Not agent-to-agent |
+| **ANP** (Agent Network Protocol) | True P2P symmetric | DIDs (W3C) + JSON-LD | Early — white paper Jul 2025 | Only true P2P protocol |
+| **NANDA** (MIT Media Lab) | Federated registry ("DNS for agents") | Decentralized index | Research | Addresses discovery gap |
+| **ACDP** | DNS-based discovery | DNS TXT/SRV records | Proposal | Leverages existing DNS infra |
+| **Kagent** (CNCF) | Agent mesh on Kubernetes | K8s CRDs + Istio | Medium | Requires K8s infrastructure |
+| AutoGen / CrewAI / LangGraph | In-process orchestration | Static/programmatic | High | No cross-network support |
+| OpenAI Agents SDK | Hub-spoke handoffs | Static | Medium-high | No distributed support |
+
+**Key insight**: the stack is layering — MCP (tool access) + A2A (agent communication) +
+discovery layer (NANDA/ANP/ACDP) form complementary tiers. ACP (IBM) merged into A2A
+in Aug 2025 under AAIF (Linux Foundation), confirming industry convergence.
+
+**Reference implementation**: Google ADK provides `RemoteA2aAgent` — a wrapper that takes
+a remote agent URL, resolves its Agent Card, and exposes it as a local sub-agent.
+This is the exact pattern Obelix should follow with `RemoteAgentWrapper`.
+
+### 10.2 SDK Client Infrastructure
 
 | SDK Module | Description |
 |------------|-------------|
-| `a2a.client.client` | A2A client: `send_message()`, `send_streaming_message()`, `get_task()`, `cancel_task()`, etc. |
-| `a2a.client.card_resolver` | Fetch + validate Agent Card from well-known URI |
+| `a2a.client.client` | `Client` ABC: `send_message()`, `send_streaming_message()`, `get_task()`, `cancel_task()`, `get_card()`, `resubscribe()` |
+| `a2a.client.client_factory` | `ClientFactory`: creates `Client` from `AgentCard`, negotiates transport. `connect(url)` convenience method resolves card + creates client in one call |
+| `a2a.client.card_resolver` | `A2ACardResolver`: fetch + validate Agent Card from `/.well-known/agent-card.json` |
+| `a2a.client.client_task_manager` | `ClientTaskManager`: tracks task lifecycle on client side |
 | `a2a.client.transports.jsonrpc` | JSON-RPC transport |
 | `a2a.client.transports.rest` | REST transport |
-| `a2a.client.transports.grpc` | gRPC transport |
+| `a2a.client.transports.grpc` | gRPC transport (optional) |
+| `a2a.client.auth` | `AuthInterceptor`, `CredentialService` — for authenticated agent calls |
 
-### 10.2 Proposed Obelix Integration
+### 10.3 Proposed Obelix Integration
 
 ```
 src/obelix/
   adapters/outbound/
     a2a/
-      remote_agent_wrapper.py   # Wraps a2a.client as ToolBase-compatible
+      remote_agent_wrapper.py   # Wraps a2a.client as SubAgentWrapper-compatible
+      agent_registry.py         # Optional: local registry of known agent endpoints
 ```
 
+**Registration API** — remote agents indistinguishable from local ones:
+
 ```python
-# Remote agent used exactly like a local sub-agent
+# Option 1: Direct registration on BaseAgent
 agent.register_agent(
     RemoteAgentWrapper(endpoint="https://other-agent.example.com"),
     name="remote_math",
     description="Remote math agent via A2A",
 )
 
-# Or: discover from agent card first
-card = await CardResolver.resolve("https://other-agent.example.com")
+# Option 2: Discover from agent card first
+card = await A2ACardResolver().resolve("https://other-agent.example.com")
 agent.register_agent(
     RemoteAgentWrapper.from_agent_card(card),
     name=card.name,
     description=card.description,
 )
+
+# Option 3: AgentFactory convenience method
+factory = AgentFactory()
+factory.register(name="local_agent", cls=LocalAgent, ...)
+factory.register_remote(name="billing", url="https://billing.internal", description="...")
+coordinator = factory.create("coordinator", subagents=["local_agent", "billing"])
 ```
 
-### 10.3 Client Capabilities Needed
+**Key design constraint**: `RemoteAgentWrapper` must implement the same interface as
+`SubAgentWrapper` so that `BaseAgent` treats local and remote sub-agents identically.
+The LLM sees them all as tools with `name`, `description`, and `parameters`.
+
+### 10.4 Client Capabilities Needed
 
 | Capability | Description | Priority |
 |------------|-------------|----------|
-| `send_message` (blocking) | Basic request/response | High |
+| `send_message` (blocking) | Basic request/response via `ClientFactory.connect()` | High |
+| Agent Card resolution | Auto-discover remote agent capabilities via `A2ACardResolver` | High |
 | `send_streaming_message` | SSE streaming from remote agent | Medium |
 | `get_task` / polling | Track async remote tasks | Medium |
-| Agent Card resolution | Auto-discover remote agent capabilities | Medium |
-| `contextId` propagation | Forward context across agent boundaries | Medium |
-| Push notification receiver | Webhook endpoint for async updates | Low |
+| `contextId` propagation | Forward context across local/remote boundaries | Medium |
+| Deferred tool forwarding | Remote agent requests input → propagate to local caller | Medium |
+| Push notification receiver | Webhook endpoint for async updates from remote | Low |
+
+### 10.5 Discovery Strategy (Progressive)
+
+| Level | Mechanism | When |
+|-------|-----------|------|
+| **1. Static** | URLs in config/env vars, `register_remote()` | MVP — immediate |
+| **2. Local registry** | YAML/JSON file mapping agent names → endpoints | Short-term |
+| **3. Well-known URI scan** | Resolve `/.well-known/agent-card.json` from known hosts | Medium-term |
+| **4. Curated registry** | Central service with query-by-skill/tag API | Long-term (spec doesn't define API) |
+| **5. Decentralized** | ANP DIDs, DNS-based (ACDP), federated (NANDA) | Future — standards immature |
+
+For levels 1-3, the `a2a-sdk` already has everything needed (`A2ACardResolver`, `ClientFactory`).
+Level 4+ requires waiting for ecosystem maturity or contributing to spec.
 
 ---
 
@@ -763,6 +826,55 @@ The executor emits a `TaskStatusUpdateEvent(state=working, message=Message(role=
 - [x] **Emit agent Message**: executor emits `working` status with `Message(role=agent, parts=[response_parts])` before `completed`. SDK appends it to history automatically.
 - [x] **SDK behavior verified**: `TaskManager.save_task_event()` (lines 143-147) moves `status.message` to `task.history` on each `TaskStatusUpdateEvent`. No explicit history manipulation needed.
 
+#### 2j. Real cancellation (DONE - 2026-03-24)
+
+Cooperative cancellation via `asyncio.Event` flag. When a client calls `tasks/cancel`, the agent stops gracefully at predefined checkpoints instead of emitting a fake status.
+
+**Architecture**:
+
+1. **BaseAgent cooperative checking** (`src/obelix/core/agent/base_agent.py`):
+   - `_cancel_event: asyncio.Event` flag in agent constructor
+   - **3 checkpoints** in `_execute_loop()`:
+     - **Iteration start**: before LLM call, check `_cancel_event.is_set()` → break
+     - **Between streaming tokens**: during `invoke_stream()`, call `aclose()` to interrupt the token generator
+     - **After tool dispatch**: pending tool tasks cancelled via `task.cancel()`, completed results preserved
+   - `cancel()` public method sets the flag
+   - **History injection**: when cancellation is detected, a message is injected into `conversation_history` so the LLM understands what happened:
+     - Between iterations: `"[This task was interrupted and canceled by the user. The partial response above is incomplete.]"`
+     - During streaming: `"[...while the response was being generated. The partial output above is incomplete.]"`
+     - After tool dispatch: `"[...after tool execution. Some tool results above may be incomplete.]"`
+
+2. **Tool task cancellation pattern** (`_process_tool_calls()`):
+   - Migrated from `asyncio.gather(*coroutines)` to explicit `asyncio.create_task()` + cancel watcher
+   - Pending tools are cancelled; completed tools' results preserved in artifact
+   - Cancellation status per-tool reflected in `ToolResult(status=CANCELED)`
+
+3. **A2A Executor wiring** (`src/obelix/adapters/inbound/a2a/server/executor.py`):
+   - `ContextEntry.active_agent` tracks running `BaseAgent` instance per context
+   - `ObelixAgentExecutor.cancel(context_id, task_id)` calls `agent.cancel()` on the active agent (cooperative interruption)
+   - If no agent is active, emits `TaskState.canceled` status directly
+   - `_run_agent()` handles `StreamEvent.canceled` flag → emits `TaskState.canceled` with full history preserved
+
+4. **Streaming events**:
+   - `StreamEvent.canceled: bool` new field signals cancellation to consumers
+   - Useful for CLI/UI to reflect cancellation in progress display
+
+5. **CLI Client (ESC to cancel)**:
+   - ESC key binding in interactive loop cancels the active task for current agent
+   - Uses `client.cancel_task(TaskIdParams(id=task_id))` (SDK A2A method)
+   - If in deferred input mode (awaiting user input), ESC cancels the input future and the task
+   - `TaskTracker.force_terminal()` immediately marks task as terminal client-side
+   - Help table updated with ESC documentation
+
+**Files touched**:
+- `src/obelix/core/agent/base_agent.py` — cooperative flag, 3 checkpoints, history injection
+- `src/obelix/adapters/inbound/a2a/server/executor.py` — wiring to `agent.cancel()`, `active_agent` tracking
+- `src/obelix/adapters/inbound/a2a/server/context.py` — `active_agent` field in `ContextEntry`
+- `src/obelix/core/model/assistant_message.py` — `StreamEvent.canceled` field
+- `src/obelix/adapters/inbound/a2a/client/cli_client.py` — ESC binding, help table
+
+**E2E verified**: task cancellation via `tasks/cancel` interrupts agent mid-execution, history reflects cancellation, tool tasks are properly cancelled, partial results discarded.
+
 #### 2i. Altre migliorie (TODO — bassa priorita')
 
 | Item | Stato | Gap informativi |
@@ -770,19 +882,42 @@ The executor emits a `TaskStatusUpdateEvent(state=working, message=Message(role=
 | **`accepted_output_modes`** | TODO | Come accediamo alla `SendMessageConfiguration` dall'executor? `RequestContext` la espone? Se no, serve accesso ai `params` originali. Inoltre: come negoziiamo se il client chiede `application/json` ma l'agent produce solo testo? |
 | **`tasks/list`** | **BLOCKED (SDK)** | Spec v1.0 defines `ListTasks` with full filtering (context_id, status, page_size, page_token, status_timestamp_after, include_artifacts) and cursor-based pagination. However `a2a-sdk` v0.3.25 has **zero implementation**: no Pydantic types (`ListTasksParams`/`ListTasksResponse`), no `TaskStore.list()` method, no `RequestHandler.on_list_tasks()`, no JSON-RPC routing, no client method. REST handler has a stub raising `NotImplementedError`. Even Google ADK doesn't use it. Proto-generated stubs are outdated and don't include `ListTasks` messages. Blocked until SDK adds support, or we contribute upstream. |
 | **`supported_interfaces`** | TODO | Cosmetico: usare `AgentInterface(url, protocol_binding, protocol_version)` nella card invece del flat `url`. Nessun gap, solo lavoro meccanico. |
-| **Real cancellation** | TODO | `cancel()` oggi emette `canceled` senza interrompere `execute_query_async()`. Serve un `CancellationToken` o `asyncio.Task.cancel()` per interrompere davvero l'esecuzione. Richiede modifiche a BaseAgent per supportare cancellation cooperativa. |
 
-### Phase 3: A2A Client — Outbound (High Priority)
+### Phase 3: A2A Client — Outbound & P2P Topology (High Priority)
 
-Enable Obelix agents to call external A2A agents.
+Enable Obelix agents to call external A2A agents, making each agent both server and client.
+Reference: Google ADK's `RemoteA2aAgent` pattern. See Section 10 for full design.
 
-- [ ] **`RemoteAgentWrapper`**: wrap `a2a.client` as ToolBase-compatible, register via `register_agent()`
-- [ ] **Agent Card resolver**: discover remote agents via well-known URI, extract skills
-- [ ] **Blocking send**: `send_message()` for simple request/response
-- [ ] **Streaming receive**: `send_streaming_message()` for real-time results from remote
-- [ ] **Async task tracking**: `get_task()` polling for `return_immediately` remote tasks
+#### 3a. `RemoteAgentWrapper` (core)
+
+- [ ] **`RemoteAgentWrapper`**: wrap `a2a.client.ClientFactory` as SubAgentWrapper-compatible
+  - Same interface as `SubAgentWrapper` (name, description, parameters, execute)
+  - Uses `ClientFactory.connect(url)` → resolves Agent Card → creates Client
+  - `from_agent_card(card)` factory method for pre-resolved cards
+  - Skills from Agent Card mapped to tool description for LLM
+- [ ] **`AgentFactory.register_remote()`**: convenience method for declarative registration
+  - `factory.register_remote(name, url, description?)` — description auto-fetched from card if omitted
+  - Coordinator creates remote sub-agents transparently alongside local ones
+
+#### 3b. Communication modes
+
+- [ ] **Blocking send**: `Client.send_message()` for simple request/response
+- [ ] **Streaming receive**: `Client.send_streaming_message()` for real-time results from remote
+- [ ] **Async task tracking**: `Client.get_task()` polling for non-blocking remote tasks
+- [ ] **Deferred tool forwarding**: if remote agent emits `input-required`, propagate to local caller chain
 - [ ] **`contextId` propagation**: forward context across local/remote boundaries
-- [ ] **Demo**: two Obelix agents on different ports talking via A2A
+
+#### 3c. Discovery
+
+- [ ] **Agent Card resolution**: `A2ACardResolver` to discover remote agents via `/.well-known/agent-card.json`
+- [ ] **Static config**: support agent URLs from env vars / YAML config file
+- [ ] **Optional local registry**: `AgentRegistry` class mapping names → endpoints, queryable by skill/tag
+
+#### 3d. Demo & validation
+
+- [ ] **Demo**: two Obelix agents on different ports, each acting as both server and client via A2A
+- [ ] **E2E test**: coordinator agent delegates to remote sub-agent, verifies full round-trip
+- [ ] **Mixed topology demo**: coordinator with both local (`SubAgentWrapper`) and remote (`RemoteAgentWrapper`) sub-agents
 
 ### Phase 4: Push Notifications (Medium Priority)
 
@@ -848,7 +983,7 @@ Async update delivery via webhooks.
 | Samples | https://github.com/a2aproject/a2a-samples |
 | Pydantic AI A2A | https://ai.pydantic.dev/a2a/ |
 
-### Related Standards
+### Related Standards & Protocols
 
 | Standard | URL | Relation |
 |----------|-----|----------|
@@ -856,6 +991,12 @@ Async update delivery via webhooks.
 | RFC 8615 (Well-Known URIs) | https://datatracker.ietf.org/doc/html/rfc8615 | Agent card discovery |
 | MCP | https://modelcontextprotocol.io/ | Complementary protocol (tools, not agents) |
 | JWS (RFC 7515) | https://datatracker.ietf.org/doc/html/rfc7515 | Agent card signatures |
+| ANP (Agent Network Protocol) | https://github.com/agent-network-protocol/AgentNetworkProtocol | True P2P protocol with DID-based identity (early stage) |
+| Project NANDA (MIT) | https://www.media.mit.edu/projects/mit-nanda/overview/ | Federated agent discovery ("DNS for agents") |
+| Google ADK | https://google.github.io/adk-docs/a2a/ | Reference implementation of A2A client (`RemoteA2aAgent`) |
+| Kagent (CNCF) | https://kagent.dev/ | Agent mesh on Kubernetes with Istio |
+| ACP → A2A merger | https://lfaidata.foundation/communityblog/2025/08/29/acp-joins-forces-with-a2a-under-the-linux-foundations-lf-ai-data/ | IBM ACP merged into A2A (Aug 2025) |
+| Survey: Agent Protocols | https://arxiv.org/html/2505.02279v1 | MCP vs ACP vs A2A vs ANP comparison |
 
 ---
 

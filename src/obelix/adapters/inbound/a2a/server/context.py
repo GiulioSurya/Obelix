@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from obelix.infrastructure.logging import get_logger
 
 if TYPE_CHECKING:
+    from obelix.core.agent.base_agent import BaseAgent
     from obelix.core.model import StandardMessage
     from obelix.core.model.tool_message import ToolCall
 
@@ -30,6 +31,7 @@ class ContextEntry:
         "deferred_tools",
         "trace_session",
         "trace_span",
+        "active_agent",
     )
 
     def __init__(self) -> None:
@@ -40,6 +42,7 @@ class ContextEntry:
         self.deferred_tools: list | None = None  # tool snapshot for OutputSchema lookup
         self.trace_session = None  # TraceSession saved when loop stops for deferred
         self.trace_span = None  # Current span saved when loop stops for deferred
+        self.active_agent: BaseAgent | None = None  # ref to running agent for cancel
 
 
 class ContextStore:

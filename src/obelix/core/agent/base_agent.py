@@ -106,6 +106,9 @@ class BaseAgent:
                 "for Anthropic) on the provider."
             )
 
+        # Cooperative cancellation flag (set by cancel(), checked in _execute_loop)
+        self._cancel_event = asyncio.Event()
+
         # Tracer (optional, zero overhead when None)
         self._tracer: Tracer | None = tracer
 
@@ -151,6 +154,23 @@ class BaseAgent:
                     logger.info(
                         f"[{self.__class__.__name__}] System prompt enriched by tool={tool_name}"
                     )
+
+    def cancel(self) -> None:
+        """Request cooperative cancellation of the running execution loop.
+
+        The loop checks this flag at three points:
+        1. At the start of each iteration (before LLM call)
+        2. Between streaming tokens (interrupts the LLM stream)
+        3. After tool dispatch completes (cancels pending tools)
+
+        A cancellation message is injected into conversation_history so the
+        LLM understands what happened if the conversation continues later.
+        """
+        self._cancel_event.set()
+        logger.info(f"[{self.__class__.__name__}] Cancel requested")
+
+    def _is_canceled(self) -> bool:
+        return self._cancel_event.is_set()
 
     def on(self, event: AgentEvent) -> Hook:
         """
@@ -357,6 +377,25 @@ class BaseAgent:
                 await emit_human_span(self._tracer, query_text)
 
             for iteration in range(1, self.max_iterations + 1):
+                # === CANCEL CHECK (between iterations) ===
+                if self._is_canceled():
+                    logger.info(
+                        f"[{self.__class__.__name__}] Execution canceled by user "
+                        f"before iteration {iteration}"
+                    )
+                    cancel_msg = AssistantMessage(
+                        content=(
+                            "[This task was interrupted and canceled by the user. "
+                            "The user explicitly requested to stop this execution. "
+                            "Do not continue the previous task unless the user "
+                            "explicitly asks to resume it.]"
+                        )
+                    )
+                    self.conversation_history.append(cancel_msg)
+                    _trace_error = "Canceled by user"
+                    yield StreamEvent(canceled=True, is_final=True)
+                    return
+
                 # === BEFORE_LLM_CALL hooks ===
                 outcome = await self._run_hooks(
                     AgentEvent.BEFORE_LLM_CALL, iteration=iteration
@@ -400,6 +439,31 @@ class BaseAgent:
                             self.response_schema,
                         )
                         async for event in llm_stream:
+                            # === CANCEL CHECK (mid-stream) ===
+                            if self._is_canceled():
+                                logger.info(
+                                    f"[{self.__class__.__name__}] Streaming "
+                                    f"interrupted by user cancel"
+                                )
+                                await llm_stream.aclose()
+                                await end_llm_span(
+                                    self._tracer,
+                                    AssistantMessage(content="[canceled]"),
+                                )
+                                cancel_msg = AssistantMessage(
+                                    content=(
+                                        "[This task was interrupted and canceled "
+                                        "by the user while the response was being "
+                                        "generated. The partial output above is "
+                                        "incomplete. Do not continue the previous "
+                                        "task unless the user explicitly asks to "
+                                        "resume it.]"
+                                    )
+                                )
+                                self.conversation_history.append(cancel_msg)
+                                _trace_error = "Canceled by user during streaming"
+                                yield StreamEvent(canceled=True, is_final=True)
+                                return
                             if event.is_final:
                                 assistant_msg = event.assistant_message
                             elif event.token is not None:
@@ -518,6 +582,29 @@ class BaseAgent:
                         execution_error,
                         iteration,
                     )
+
+                    # === CANCEL CHECK (after tool dispatch) ===
+                    if self._is_canceled():
+                        logger.info(
+                            f"[{self.__class__.__name__}] Execution canceled "
+                            f"by user after tool dispatch | iteration={iteration}"
+                        )
+                        # assistant_msg + ToolMessage already appended
+                        # by _process_tool_calls() — only add cancel message
+                        cancel_msg = AssistantMessage(
+                            content=(
+                                "[This task was interrupted and canceled by the "
+                                "user after tool execution. Some tool results "
+                                "above may be incomplete because they were "
+                                "canceled mid-execution. Do not continue the "
+                                "previous task unless the user explicitly asks "
+                                "to resume it.]"
+                            )
+                        )
+                        self.conversation_history.append(cancel_msg)
+                        _trace_error = "Canceled by user after tool dispatch"
+                        yield StreamEvent(canceled=True, is_final=True)
+                        return
 
                     # === Deferred tools: stop loop, signal caller ===
                     if deferred_calls:
@@ -665,11 +752,62 @@ class BaseAgent:
 
         batch_start_time = time.perf_counter()
 
-        tasks = [
-            self._execute_single_tool_with_hooks(call, iteration, batch_start_time)
+        # Create explicit tasks so we can cancel them on user request
+        tool_tasks = [
+            asyncio.create_task(
+                self._execute_single_tool_with_hooks(call, iteration, batch_start_time),
+                name=f"tool-{call.name}-{call.id[-8:]}",
+            )
             for call in assistant_msg.tool_calls
         ]
-        tool_results = await asyncio.gather(*tasks)
+
+        # Watcher: if cancel is requested, cancel all pending tool tasks
+        async def _cancel_watcher():
+            await self._cancel_event.wait()
+            for t in tool_tasks:
+                if not t.done():
+                    t.cancel()
+
+        watcher = asyncio.create_task(_cancel_watcher(), name="tool-cancel-watcher")
+
+        try:
+            raw_results = await asyncio.gather(*tool_tasks, return_exceptions=True)
+        finally:
+            watcher.cancel()
+            try:
+                await watcher
+            except asyncio.CancelledError:
+                pass
+
+        # Convert CancelledError / exceptions into ToolResult with clear message
+        tool_results: list[ToolResult] = []
+        for call, result in zip(assistant_msg.tool_calls, raw_results, strict=True):
+            if isinstance(result, asyncio.CancelledError):
+                tool_results.append(
+                    ToolResult(
+                        tool_call_id=call.id,
+                        tool_name=call.name,
+                        result=None,
+                        error=(
+                            f"Tool '{call.name}' was canceled because the user "
+                            f"explicitly requested to stop this task. "
+                            f"Do not retry this tool call."
+                        ),
+                        status=ToolStatus.ERROR,
+                    )
+                )
+            elif isinstance(result, Exception):
+                tool_results.append(
+                    ToolResult(
+                        tool_call_id=call.id,
+                        tool_name=call.name,
+                        result=None,
+                        error=str(result),
+                        status=ToolStatus.ERROR,
+                    )
+                )
+            else:
+                tool_results.append(result)
 
         batch_duration = time.perf_counter() - batch_start_time
 
@@ -734,74 +872,93 @@ class BaseAgent:
 
         await start_tool_span(self._tracer, call, self.registered_tools)
 
-        outcome = await self._run_hooks(
-            AgentEvent.BEFORE_TOOL_EXECUTION,
-            current_value=call,
-            iteration=iteration,
-            tool_call=call,
-        )
-        if outcome.decision == HookDecision.FAIL:
-            raise RuntimeError("Hook BEFORE_TOOL_EXECUTION requested FAIL")
-        if outcome.decision == HookDecision.RETRY:
-            error_msg = (
-                str(outcome.value)
-                if outcome.value
-                else "Tool execution blocked by hook"
-            )
-            logger.warning(
-                f"[{self.__class__.__name__}] Hook RETRY — tool skipped | tool={call.name} call_id={call.id[-12:]}"
-            )
-            return ToolResult(
-                tool_name=call.name,
-                tool_call_id=call.id,
-                result=None,
-                status=ToolStatus.ERROR,
-                error=error_msg,
-            )
-        call = outcome.value
-
-        result = await self._async_execute_tool(call)
-
-        if not result:
-            result = ToolResult(
-                tool_name=call.name,
-                tool_call_id=call.id,
-                result=None,
-                status=ToolStatus.ERROR,
-                error=f"Tool {call.name} not found or not executable",
-            )
-
-        outcome = await self._run_hooks(
-            AgentEvent.AFTER_TOOL_EXECUTION,
-            current_value=result,
-            iteration=iteration,
-            tool_result=result,
-        )
-        if outcome.decision == HookDecision.FAIL:
-            raise RuntimeError("Hook AFTER_TOOL_EXECUTION requested FAIL")
-        result = outcome.value
-
-        if result.status == ToolStatus.ERROR:
+        try:
             outcome = await self._run_hooks(
-                AgentEvent.ON_TOOL_ERROR,
+                AgentEvent.BEFORE_TOOL_EXECUTION,
+                current_value=call,
+                iteration=iteration,
+                tool_call=call,
+            )
+            if outcome.decision == HookDecision.FAIL:
+                raise RuntimeError("Hook BEFORE_TOOL_EXECUTION requested FAIL")
+            if outcome.decision == HookDecision.RETRY:
+                error_msg = (
+                    str(outcome.value)
+                    if outcome.value
+                    else "Tool execution blocked by hook"
+                )
+                logger.warning(
+                    f"[{self.__class__.__name__}] Hook RETRY — tool skipped | tool={call.name} call_id={call.id[-12:]}"
+                )
+                result = ToolResult(
+                    tool_name=call.name,
+                    tool_call_id=call.id,
+                    result=None,
+                    status=ToolStatus.ERROR,
+                    error=error_msg,
+                )
+                await end_tool_span(self._tracer, result)
+                return result
+            call = outcome.value
+
+            result = await self._async_execute_tool(call)
+
+            if not result:
+                result = ToolResult(
+                    tool_name=call.name,
+                    tool_call_id=call.id,
+                    result=None,
+                    status=ToolStatus.ERROR,
+                    error=f"Tool {call.name} not found or not executable",
+                )
+
+            outcome = await self._run_hooks(
+                AgentEvent.AFTER_TOOL_EXECUTION,
                 current_value=result,
                 iteration=iteration,
                 tool_result=result,
-                error=result.error,
             )
             if outcome.decision == HookDecision.FAIL:
-                raise RuntimeError("Hook ON_TOOL_ERROR requested FAIL")
+                raise RuntimeError("Hook AFTER_TOOL_EXECUTION requested FAIL")
             result = outcome.value
 
-        await end_tool_span(self._tracer, result)
+            if result.status == ToolStatus.ERROR:
+                outcome = await self._run_hooks(
+                    AgentEvent.ON_TOOL_ERROR,
+                    current_value=result,
+                    iteration=iteration,
+                    tool_result=result,
+                    error=result.error,
+                )
+                if outcome.decision == HookDecision.FAIL:
+                    raise RuntimeError("Hook ON_TOOL_ERROR requested FAIL")
+                result = outcome.value
 
-        tool_duration = time.perf_counter() - tool_start_time
-        log_level = "warning" if result.status == ToolStatus.ERROR else "debug"
-        getattr(logger, log_level)(
-            f"[{self.__class__.__name__}] Tool execution completed | tool={result.tool_name} status={result.status} duration_s={tool_duration:.3f} call_id={result.tool_call_id[-12:]}"
-        )
+            await end_tool_span(self._tracer, result)
 
-        return result
+            tool_duration = time.perf_counter() - tool_start_time
+            log_level = "warning" if result.status == ToolStatus.ERROR else "debug"
+            getattr(logger, log_level)(
+                f"[{self.__class__.__name__}] Tool execution completed | tool={result.tool_name} status={result.status} duration_s={tool_duration:.3f} call_id={result.tool_call_id[-12:]}"
+            )
+
+            return result
+
+        except asyncio.CancelledError:
+            # Tool was canceled by the cancel watcher — close span cleanly
+            canceled_result = ToolResult(
+                tool_call_id=call.id,
+                tool_name=call.name,
+                result=None,
+                error=f"Tool '{call.name}' canceled by user",
+                status=ToolStatus.ERROR,
+            )
+            await end_tool_span(self._tracer, canceled_result)
+            logger.info(
+                f"[{self.__class__.__name__}] Tool canceled by user | "
+                f"tool={call.name} call_id={call.id[-12:]}"
+            )
+            raise
 
     def _find_tool(self, name: str) -> Tool | None:
         """Find a registered tool by name."""

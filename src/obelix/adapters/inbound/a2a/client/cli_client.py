@@ -26,6 +26,7 @@ from a2a.types import (
     Part,
     PushNotificationConfig,
     Role,
+    TaskIdParams,
     TextPart,
 )
 from rich.markdown import Markdown
@@ -213,6 +214,8 @@ def _build_help_table() -> Table:
     table.add_row("", "")
     table.add_row("@<path>", "Attach a file (image, PDF, ...)")
     table.add_row('@"path with spaces"', "Attach a file with spaces in path")
+    table.add_row("", "")
+    table.add_row("ESC", "Cancel the active task for the current agent")
     return table
 
 
@@ -585,6 +588,24 @@ class CLIClient(App):
                 event.stop()
             return
 
+        # -- ESC: cancel current task --
+        if event.key == "escape":
+            # If a deferred handler is waiting for input, cancel it
+            if self._input_future and not self._input_future.done():
+                self._input_future.set_result(None)  # sentinel: canceled
+                event.prevent_default()
+                event.stop()
+            # Cancel active (non-terminal) task for current agent
+            agent = self.agents[self.current]
+            if agent.last_task_id:
+                info = self.tracker.get(agent.last_task_id)
+                if info and not info.is_terminal:
+                    self._cancel_current_task()
+                    event.prevent_default()
+                    event.stop()
+                    return
+            return
+
         # -- Enter agent selector (up arrow, empty input, multiple agents) --
         if event.key == "up" and len(self.agents) > 1:
             inp = self.query_one("#input", Input)
@@ -695,6 +716,27 @@ class CLIClient(App):
 
         self._send_message(text)
 
+    @work(thread=False, group="cancel")
+    async def _cancel_current_task(self) -> None:
+        """Cancel the active task for the current agent via A2A cancel_task."""
+        agent = self.agents[self.current]
+        task_id = agent.last_task_id
+        if not task_id:
+            return
+
+        chat = self.query_one("#chat", RichLog)
+        chat.write(Text(f"  Canceling task {task_id[:12]}...", style="yellow italic"))
+
+        try:
+            await agent.client.cancel_task(TaskIdParams(id=task_id))
+            self.tracker.force_terminal(task_id, "canceled")
+            chat.write(Text("  Task canceled.", style="yellow"))
+            self._handling_deferred = False
+        except Exception as e:
+            chat.write(Text(f"  Cancel failed: {e}", style="red bold"))
+
+        self._update_status_bar()
+
     @work(exclusive=True, group="send")
     async def _send_message(self, text: str) -> None:
         agent = self.agents[self.current]
@@ -763,7 +805,12 @@ class CLIClient(App):
             chat = self.query_one("#chat", RichLog)
             agent = self.agents[self.current]
 
-            result = await self._dispatch_deferred(data, chat)
+            try:
+                result = await self._dispatch_deferred(data, chat)
+            except asyncio.CancelledError:
+                # User pressed ESC during deferred input — task cancel
+                # already handled by _cancel_current_task
+                return
 
             msg = _make_data_message(
                 result,
@@ -807,11 +854,18 @@ class CLIClient(App):
         return await handler.handle(args, console_adapter, self._wait_for_input)
 
     async def _wait_for_input(self) -> str:
-        """Wait for the next Input submission. Used by deferred handlers."""
+        """Wait for the next Input submission. Used by deferred handlers.
+
+        Returns the user's input string, or raises asyncio.CancelledError
+        if the user pressed ESC to cancel the task.
+        """
         loop = asyncio.get_event_loop()
         self._input_future = loop.create_future()
         result = await self._input_future
         self._input_future = None
+        if result is None:
+            # Sentinel from ESC cancel — abort deferred handler
+            raise asyncio.CancelledError("User canceled via ESC")
         return result
 
     # -- Command handlers ----------------------------------------------------
