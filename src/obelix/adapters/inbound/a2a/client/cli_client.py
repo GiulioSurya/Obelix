@@ -485,7 +485,7 @@ class CLIClient(App):
                     self._unseen_by_agent.setdefault(t.agent_name, []).append(t.task_id)
 
         # Check for input-required on current agent
-        if self.agents and not self._handling_deferred:
+        if self.agents and not self._handling_deferred and not self._canceling:
             pending = self.tracker.get_pending_input(current_name)
             if pending and pending.task_data:
                 self._handling_deferred = True
@@ -665,21 +665,28 @@ class CLIClient(App):
 
         # -- ESC: cancel current task --
         if event.key == "escape":
+            if self._canceling:
+                return
+            # Set canceling flag immediately to prevent _poll_tasks from
+            # re-dispatching the deferred panel during the cancel window.
+            self._canceling = True
             # If a deferred handler is waiting for input, cancel it
             if self._input_future and not self._input_future.done():
                 self._input_future.set_result(None)  # sentinel: canceled
                 event.prevent_default()
                 event.stop()
             # Cancel active (non-terminal) task for current agent
-            if not self._canceling and self.agents:
+            if self.agents:
                 agent = self.agents[self.current]
                 if agent.last_task_id:
                     info = self.tracker.get(agent.last_task_id)
                     if info and not info.is_terminal:
                         self._cancel_current_task()
-                    event.prevent_default()
-                    event.stop()
-                    return
+                        event.prevent_default()
+                        event.stop()
+                        return
+            # No task to cancel — clear the flag
+            self._canceling = False
             return
 
         # -- Enter agent selector (up arrow, empty input, multiple agents) --
