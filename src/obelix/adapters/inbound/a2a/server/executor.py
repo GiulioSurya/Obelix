@@ -133,7 +133,8 @@ class ObelixAgentExecutor(AgentExecutor):
 
         try:
             # RESUME PATH: if we have deferred tool calls, inject response
-            if entry.deferred_tool_calls:
+            is_resume = bool(entry.deferred_tool_calls)
+            if is_resume:
                 inject_deferred_response(entry, message)
 
             await self._run_agent(
@@ -143,6 +144,7 @@ class ObelixAgentExecutor(AgentExecutor):
                 attachments=attachments,
                 entry=entry,
                 event_queue=event_queue,
+                is_resume=is_resume,
             )
         finally:
             entry.active_agent = None
@@ -157,9 +159,9 @@ class ObelixAgentExecutor(AgentExecutor):
         attachments: list,
         entry,
         event_queue: EventQueue,
+        is_resume: bool = False,
     ) -> None:
         """Run the agent with isolated context and persist history."""
-        is_resume = bool(entry.history and isinstance(entry.history[-1], ToolMessage))
 
         logger.info(
             f"[A2A] Executing agent | task_id={task_id} context_id={context_id} "
@@ -423,7 +425,12 @@ class ObelixAgentExecutor(AgentExecutor):
             # (tracer span closing, resource release) in base_agent's
             # _execute_loop finally block.
             if stream is not None:
-                await stream.aclose()
+                aclose = getattr(stream, "aclose", None)
+                if aclose and callable(aclose):
+                    try:
+                        await aclose()
+                    except TypeError:
+                        pass  # not a real async generator (e.g. mock)
 
     @staticmethod
     def _inject_client_info(agent: BaseAgent, client_info: dict) -> None:
