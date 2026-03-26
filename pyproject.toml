@@ -28,6 +28,7 @@ vllm = ["vllm>=0.13.0; sys_platform == 'linux'"]
 litellm = ["litellm>=1.82.1"]
 mcp = ["mcp>=1.25.0"]
 tracer = ["httpx>=0.28.0"]
+openshell = ["openshell>=0.0.16; sys_platform != 'win32'"]
 serve = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
