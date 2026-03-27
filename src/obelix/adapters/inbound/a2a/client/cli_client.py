@@ -20,13 +20,18 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
+from a2a.client import (
+    A2ACardResolver,
+    A2AClientHTTPError,
+    A2AClientJSONError,
+    A2AClientTimeoutError,
+    ClientConfig,
+    ClientFactory,
+)
 from a2a.types import (
-    CancelTaskRequest,
     DataPart,
     FilePart,
     FileWithBytes,
-    GetTaskRequest,
     Message,
     Part,
     PushNotificationConfig,
@@ -383,6 +388,7 @@ class CLIClient(App):
         self._httpx_client: httpx.AsyncClient | None = None
         self._shown_results: set[str] = set()
         self._poll_warned: set[str] = set()  # task IDs already warned about
+        self._last_poll: dict[str, float] = {}  # task_id -> last poll timestamp
         self._unseen_by_agent: dict[str, list[str]] = {}
         self._input_future: asyncio.Future | None = None
         self._handling_deferred: bool = False
@@ -540,9 +546,13 @@ class CLIClient(App):
         # Polling fallback for tasks stuck in non-terminal state
         now = time.time()
         _POLL_AFTER_SECONDS = 3.0
+        _POLL_INTERVAL_SECONDS = 2.0
         for t in self.tracker.get_active():
             if now - t.timestamp > _POLL_AFTER_SECONDS:
-                self._polling_fallback(t.task_id, t.agent_name)
+                last = self._last_poll.get(t.task_id, 0.0)
+                if now - last >= _POLL_INTERVAL_SECONDS:
+                    self._last_poll[t.task_id] = now
+                    self._polling_fallback(t.task_id, t.agent_name)
 
         # Show completed results for current agent
         current_name = self.agents[self.current].name if self.agents else ""
@@ -577,20 +587,28 @@ class CLIClient(App):
         if not agent:
             return
 
+        chat = self.query_one("#chat", RichLog)
         try:
-            request = GetTaskRequest(
-                id=str(uuid.uuid4()),
-                params=TaskQueryParams(id=task_id),
+            task = await agent.client.get_task(TaskQueryParams(id=task_id))
+        except A2AClientHTTPError as exc:
+            if exc.status_code >= 500:
+                return  # retriable — server error, will retry next cycle
+            # 4xx = client error, stop retrying this task
+            chat.write(
+                Text(f"  [poll] HTTP {exc.status_code}: {exc.message}", style="dim red")
             )
-            response = await agent.client.get_task(request)
-            # Unwrap JSON-RPC response: success has .result (Task), error has .error
-            inner = response.root
-            if hasattr(inner, "result"):
-                task = inner.result
-            else:
-                return  # JSON-RPC error response
-        except Exception:
-            return  # Server unreachable; will retry on next poll cycle
+            self._last_poll[task_id] = float("inf")  # never retry
+            return
+        except A2AClientTimeoutError:
+            return  # retriable — will retry next cycle
+        except A2AClientJSONError as exc:
+            chat.write(Text(f"  [poll] bad response: {exc.message}", style="dim red"))
+            self._last_poll[task_id] = float("inf")  # never retry
+            return
+        except Exception as exc:
+            chat.write(Text(f"  [poll] unexpected error: {exc}", style="dim red"))
+            self._last_poll[task_id] = float("inf")
+            return
 
         if task is None:
             return
@@ -941,16 +959,16 @@ class CLIClient(App):
         chat.write(Text(f"  Canceling task {task_id[:12]}...", style="yellow italic"))
 
         try:
-            cancel_req = CancelTaskRequest(
-                id=str(uuid.uuid4()),
-                params=TaskIdParams(id=task_id),
-            )
-            await agent.client.cancel_task(cancel_req)
+            await agent.client.cancel_task(TaskIdParams(id=task_id))
             self.tracker.force_terminal(task_id, "canceled")
             chat.write(Text("  Task canceled.", style="yellow"))
             # NOTE: do NOT reset _handling_deferred here — the running
             # _handle_pending_input work resets it in its finally block.
             # Resetting early causes _poll_tasks to re-dispatch the panel.
+        except A2AClientHTTPError as e:
+            chat.write(Text(f"  Cancel failed: HTTP {e.status_code}", style="red bold"))
+        except (A2AClientTimeoutError, A2AClientJSONError) as e:
+            chat.write(Text(f"  Cancel failed: {e}", style="red bold"))
         except Exception as e:
             chat.write(Text(f"  Cancel failed: {e}", style="red bold"))
         finally:
@@ -991,6 +1009,17 @@ class CLIClient(App):
 
         try:
             task = await _collect_task(agent.client.send_message(msg))
+        except A2AClientHTTPError as e:
+            chat.write(Text(f"✗ HTTP {e.status_code}: {e.message}", style="bold red"))
+            return
+        except A2AClientTimeoutError:
+            chat.write(Text("✗ Request timed out — try again", style="bold red"))
+            return
+        except A2AClientJSONError as e:
+            chat.write(
+                Text(f"✗ Bad response from server: {e.message}", style="bold red")
+            )
+            return
         except Exception as e:
             chat.write(Text(f"✗ Error: {e}", style="bold red"))
             return
@@ -1067,6 +1096,16 @@ class CLIClient(App):
                     await self.tracker.update(
                         task.model_dump(mode="json", exclude_none=True)
                     )
+            except A2AClientHTTPError as e:
+                chat.write(
+                    Text(f"✗ HTTP {e.status_code}: {e.message}", style="bold red")
+                )
+            except A2AClientTimeoutError:
+                chat.write(Text("✗ Deferred response timed out", style="bold red"))
+            except A2AClientJSONError as e:
+                chat.write(
+                    Text(f"✗ Bad server response: {e.message}", style="bold red")
+                )
             except Exception as e:
                 chat.write(
                     Text(f"✗ Error sending deferred response: {e}", style="bold red")
