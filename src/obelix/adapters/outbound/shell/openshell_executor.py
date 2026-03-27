@@ -11,6 +11,7 @@ Requires: ``uv sync --extra openshell`` (Linux/macOS only, no Windows wheel).
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
 
 from obelix.infrastructure.logging import get_logger
@@ -19,9 +20,10 @@ from obelix.ports.outbound.shell_executor import AbstractShellExecutor
 logger = get_logger(__name__)
 
 try:
-    from openshell import SandboxClient
+    from openshell import SandboxClient, TlsConfig
 except ImportError:
     SandboxClient = None
+    TlsConfig = None
 
 _MAX_OUTPUT_CHARS = 50_000
 _TRUNCATION_MSG = "\n\n... [output truncated at {limit} chars — {total} total]"
@@ -61,14 +63,19 @@ class OpenShellExecutor(AbstractShellExecutor):
     Args:
         sandbox_name: Name of an existing sandbox. If ``None``, a temporary
             sandbox is auto-created on first use.
-        gateway: Gateway endpoint URL. If ``None``, uses the active cluster
-            from ``~/.config/openshell/``.
+        gateway: Gateway endpoint (``host:port``). If ``None``, uses the
+            active cluster from ``~/.config/openshell/``.
+        tls_cert_dir: Path to directory containing ``ca.crt``, ``tls.crt``,
+            ``tls.key`` for mTLS. Required when ``gateway`` is set and
+            the endpoint differs from the locally registered gateway.
     """
 
     def __init__(
         self,
+        policy: str | None = None,
         sandbox_name: str | None = None,
         gateway: str | None = None,
+        tls_cert_dir: str | None = None,
     ):
         if SandboxClient is None:
             raise ImportError(
@@ -77,8 +84,10 @@ class OpenShellExecutor(AbstractShellExecutor):
                 "Note: openshell is only available on Linux and macOS."
             )
 
+        self._policy_path = policy
         self._sandbox_name = sandbox_name
-        self._gateway = gateway
+        self._gateway = gateway or os.environ.get("OPENSHELL_GATEWAY")
+        self._tls_cert_dir = tls_cert_dir or os.environ.get("OPENSHELL_TLS_CERT_DIR")
 
         self._client: SandboxClient | None = None
         self._sandbox_id: str | None = None
@@ -86,6 +95,7 @@ class OpenShellExecutor(AbstractShellExecutor):
         self._initialized: bool = False
         self._closed: bool = False
         self._shell_info: dict = {}
+        self._policy_watcher_task: asyncio.Task | None = None
 
     async def _ensure_sandbox(self) -> None:
         """Lazy initialization: create client and connect/create sandbox.
@@ -99,9 +109,17 @@ class OpenShellExecutor(AbstractShellExecutor):
 
         # 1. Create client
         if self._gateway:
-            self._client = await asyncio.to_thread(
-                SandboxClient, endpoint=self._gateway
-            )
+            kwargs: dict = {"endpoint": self._gateway}
+            if self._tls_cert_dir:
+                from pathlib import Path
+
+                cert_dir = Path(self._tls_cert_dir)
+                kwargs["tls"] = TlsConfig(
+                    ca_path=cert_dir / "ca.crt",
+                    cert_path=cert_dir / "tls.crt",
+                    key_path=cert_dir / "tls.key",
+                )
+            self._client = await asyncio.to_thread(lambda: SandboxClient(**kwargs))
         else:
             self._client = await asyncio.to_thread(SandboxClient.from_active_cluster)
 

@@ -434,6 +434,66 @@ class TestContextManager:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Env var resolution
+# ---------------------------------------------------------------------------
+
+
+class TestEnvVarResolution:
+    """Tests for gateway/tls_cert_dir env var fallback."""
+
+    def test_gateway_from_explicit_param(self) -> None:
+        OpenShellExecutor = _import_executor()
+        mock_client = _make_mock_client()
+        with _patch_sdk(mock_client):
+            executor = OpenShellExecutor(gateway="explicit:443")
+        assert executor._gateway == "explicit:443"
+
+    def test_gateway_from_env_var(self, monkeypatch) -> None:
+        monkeypatch.setenv("OPENSHELL_GATEWAY", "env-gw:443")
+        OpenShellExecutor = _import_executor()
+        mock_client = _make_mock_client()
+        with _patch_sdk(mock_client):
+            executor = OpenShellExecutor()
+        assert executor._gateway == "env-gw:443"
+
+    def test_gateway_none_when_no_param_no_env(self, monkeypatch) -> None:
+        monkeypatch.delenv("OPENSHELL_GATEWAY", raising=False)
+        OpenShellExecutor = _import_executor()
+        mock_client = _make_mock_client()
+        with _patch_sdk(mock_client):
+            executor = OpenShellExecutor()
+        assert executor._gateway is None
+
+    def test_tls_cert_dir_from_explicit_param(self) -> None:
+        OpenShellExecutor = _import_executor()
+        mock_client = _make_mock_client()
+        with _patch_sdk(mock_client):
+            executor = OpenShellExecutor(tls_cert_dir="/explicit/certs")
+        assert executor._tls_cert_dir == "/explicit/certs"
+
+    def test_tls_cert_dir_from_env_var(self, monkeypatch) -> None:
+        monkeypatch.setenv("OPENSHELL_TLS_CERT_DIR", "/env/certs")
+        OpenShellExecutor = _import_executor()
+        mock_client = _make_mock_client()
+        with _patch_sdk(mock_client):
+            executor = OpenShellExecutor()
+        assert executor._tls_cert_dir == "/env/certs"
+
+    def test_tls_cert_dir_none_when_no_param_no_env(self, monkeypatch) -> None:
+        monkeypatch.delenv("OPENSHELL_TLS_CERT_DIR", raising=False)
+        OpenShellExecutor = _import_executor()
+        mock_client = _make_mock_client()
+        with _patch_sdk(mock_client):
+            executor = OpenShellExecutor()
+        assert executor._tls_cert_dir is None
+
+
+# ---------------------------------------------------------------------------
+# Import guard
+# ---------------------------------------------------------------------------
+
+
 class TestImportGuard:
     """Verify behavior when openshell SDK is not installed."""
 
