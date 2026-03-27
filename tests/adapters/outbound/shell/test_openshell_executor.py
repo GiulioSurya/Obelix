@@ -5,6 +5,7 @@ All tests mock the openshell SDK — no real Gateway or sandbox is required.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from unittest.mock import MagicMock, patch
 
@@ -592,6 +593,165 @@ class TestPolicyApply:
 
         assert result["exit_code"] == 0
         assert result["stdout"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Policy watcher
+# ---------------------------------------------------------------------------
+
+
+class TestPolicyWatcher:
+    """Tests for the background policy file watcher."""
+
+    @pytest.mark.asyncio
+    async def test_watcher_starts_when_policy_provided(self, tmp_path) -> None:
+        """After execute with policy, _policy_watcher_task is not None."""
+        policy_file = tmp_path / "policy.yaml"
+        policy_file.write_text("allow_all: true")
+
+        OpenShellExecutor = _import_executor()
+        probe_result = FakeExecResult(exit_code=0, stdout="CWD=/sandbox\n", stderr="")
+        exec_result = FakeExecResult(exit_code=0, stdout="ok", stderr="")
+        mock_client = _make_mock_client()
+        mock_client.exec.side_effect = [probe_result, exec_result]
+
+        with (
+            _patch_sdk(mock_client),
+            patch(
+                "obelix.adapters.outbound.shell.openshell_executor._run_policy_set",
+                return_value=True,
+            ),
+        ):
+            executor = OpenShellExecutor(policy=str(policy_file))
+            await executor.execute("echo ok")
+
+            assert executor._policy_watcher_task is not None
+            assert not executor._policy_watcher_task.done()
+
+            await executor.close()
+
+    @pytest.mark.asyncio
+    async def test_watcher_not_started_without_policy(self) -> None:
+        """When no policy, _policy_watcher_task is None."""
+        OpenShellExecutor = _import_executor()
+        probe_result = FakeExecResult(exit_code=0, stdout="CWD=/sandbox\n", stderr="")
+        exec_result = FakeExecResult(exit_code=0, stdout="ok", stderr="")
+        mock_client = _make_mock_client()
+        mock_client.exec.side_effect = [probe_result, exec_result]
+
+        with _patch_sdk(mock_client):
+            executor = OpenShellExecutor(sandbox_name="test")
+            await executor.execute("echo ok")
+
+            assert executor._policy_watcher_task is None
+
+            await executor.close()
+
+    @pytest.mark.asyncio
+    async def test_watcher_detects_file_change(self, tmp_path) -> None:
+        """Watcher detects mtime change and calls _run_policy_set again."""
+        policy_file = tmp_path / "policy.yaml"
+        policy_file.write_text("allow_all: true")
+
+        OpenShellExecutor = _import_executor()
+        probe_result = FakeExecResult(exit_code=0, stdout="CWD=/sandbox\n", stderr="")
+        exec_result = FakeExecResult(exit_code=0, stdout="ok", stderr="")
+        mock_client = _make_mock_client()
+        mock_client.exec.side_effect = [probe_result, exec_result]
+
+        with (
+            _patch_sdk(mock_client),
+            patch(
+                "obelix.adapters.outbound.shell.openshell_executor._run_policy_set",
+                return_value=True,
+            ) as mock_policy,
+            patch(
+                "obelix.adapters.outbound.shell.openshell_executor._POLICY_POLL_INTERVAL",
+                0.1,
+            ),
+        ):
+            executor = OpenShellExecutor(policy=str(policy_file))
+            await executor.execute("echo ok")
+
+            # Modify the file — ensure mtime changes
+            import time
+
+            time.sleep(0.05)
+            policy_file.write_text("allow_all: false")
+
+            # Wait for watcher to detect change
+            await asyncio.sleep(0.3)
+
+            # 1 from init + 1 from watcher
+            assert mock_policy.call_count == 2
+
+            await executor.close()
+
+    @pytest.mark.asyncio
+    async def test_watcher_stops_on_close(self, tmp_path) -> None:
+        """After close, watcher task is cancelled or done."""
+        policy_file = tmp_path / "policy.yaml"
+        policy_file.write_text("allow_all: true")
+
+        OpenShellExecutor = _import_executor()
+        probe_result = FakeExecResult(exit_code=0, stdout="CWD=/sandbox\n", stderr="")
+        exec_result = FakeExecResult(exit_code=0, stdout="ok", stderr="")
+        mock_client = _make_mock_client()
+        mock_client.exec.side_effect = [probe_result, exec_result]
+
+        with (
+            _patch_sdk(mock_client),
+            patch(
+                "obelix.adapters.outbound.shell.openshell_executor._run_policy_set",
+                return_value=True,
+            ),
+        ):
+            executor = OpenShellExecutor(policy=str(policy_file))
+            await executor.execute("echo ok")
+
+            watcher = executor._policy_watcher_task
+            assert watcher is not None
+
+            await executor.close()
+
+            assert watcher.done() or watcher.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_watcher_survives_file_temporarily_missing(self, tmp_path) -> None:
+        """If file is deleted, watcher keeps running (FileNotFoundError caught)."""
+        policy_file = tmp_path / "policy.yaml"
+        policy_file.write_text("allow_all: true")
+
+        OpenShellExecutor = _import_executor()
+        probe_result = FakeExecResult(exit_code=0, stdout="CWD=/sandbox\n", stderr="")
+        exec_result = FakeExecResult(exit_code=0, stdout="ok", stderr="")
+        mock_client = _make_mock_client()
+        mock_client.exec.side_effect = [probe_result, exec_result]
+
+        with (
+            _patch_sdk(mock_client),
+            patch(
+                "obelix.adapters.outbound.shell.openshell_executor._run_policy_set",
+                return_value=True,
+            ),
+            patch(
+                "obelix.adapters.outbound.shell.openshell_executor._POLICY_POLL_INTERVAL",
+                0.1,
+            ),
+        ):
+            executor = OpenShellExecutor(policy=str(policy_file))
+            await executor.execute("echo ok")
+
+            # Delete the file
+            policy_file.unlink()
+
+            # Wait for watcher to attempt a poll
+            await asyncio.sleep(0.2)
+
+            # Watcher should still be running
+            assert not executor._policy_watcher_task.done()
+
+            await executor.close()
 
 
 class TestImportGuard:

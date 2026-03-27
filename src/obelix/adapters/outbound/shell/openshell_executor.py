@@ -28,6 +28,7 @@ except ImportError:
 
 _MAX_OUTPUT_CHARS = 50_000
 _TRUNCATION_MSG = "\n\n... [output truncated at {limit} chars — {total} total]"
+_POLICY_POLL_INTERVAL = 60  # seconds between policy file checks
 
 
 def _truncate(text: str) -> str:
@@ -196,8 +197,41 @@ class OpenShellExecutor(AbstractShellExecutor):
         # 4. Apply policy if provided
         if self._policy_path:
             await _run_policy_set(self._sandbox_name, self._policy_path)
+            self._policy_watcher_task = asyncio.create_task(self._watch_policy())
 
         self._initialized = True
+
+    async def _watch_policy(self) -> None:
+        """Poll the policy file for changes and hot-reload via CLI.
+
+        Runs as a background asyncio task. Checks file mtime every
+        _POLICY_POLL_INTERVAL seconds. On change, calls openshell policy set.
+        Only network_policies are hot-reloadable.
+        """
+        try:
+            last_mtime = os.path.getmtime(self._policy_path)
+        except OSError:
+            logger.warning(
+                f"[OpenShell] Policy watcher could not read initial mtime | "
+                f"path={self._policy_path}"
+            )
+            return
+
+        while True:
+            await asyncio.sleep(_POLICY_POLL_INTERVAL)
+            try:
+                current_mtime = os.path.getmtime(self._policy_path)
+                if current_mtime != last_mtime:
+                    last_mtime = current_mtime
+                    logger.info(
+                        f"[OpenShell] Policy file changed, reloading | "
+                        f"path={self._policy_path}"
+                    )
+                    await _run_policy_set(self._sandbox_name, self._policy_path)
+            except FileNotFoundError:
+                pass  # file temporarily removed, skip this cycle
+            except OSError as e:
+                logger.warning(f"[OpenShell] Policy watcher error | error={e}")
 
     async def _probe(self) -> None:
         """Probe the sandbox to discover its environment.
@@ -342,6 +376,14 @@ class OpenShellExecutor(AbstractShellExecutor):
         if self._closed:
             return
         self._closed = True
+
+        # Stop policy watcher
+        if self._policy_watcher_task and not self._policy_watcher_task.done():
+            self._policy_watcher_task.cancel()
+            try:
+                await self._policy_watcher_task
+            except asyncio.CancelledError:
+                pass
 
         if self._auto_created and self._sandbox_name and self._client:
             try:
