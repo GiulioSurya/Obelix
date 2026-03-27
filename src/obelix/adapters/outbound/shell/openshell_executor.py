@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 import uuid
 
 from obelix.infrastructure.logging import get_logger
@@ -36,6 +37,46 @@ def _truncate(text: str) -> str:
     return text[:_MAX_OUTPUT_CHARS] + _TRUNCATION_MSG.format(
         limit=_MAX_OUTPUT_CHARS, total=len(text)
     )
+
+
+async def _run_policy_set(sandbox_name: str, policy_path: str) -> bool:
+    """Apply a policy YAML to a sandbox via the openshell CLI.
+
+    Returns True on success, False on failure. Never raises.
+    """
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            [
+                "openshell",
+                "policy",
+                "set",
+                sandbox_name,
+                "--policy",
+                policy_path,
+                "--wait",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode == 0:
+            logger.info(
+                f"[OpenShell] Policy applied | sandbox={sandbox_name} "
+                f"policy={policy_path}"
+            )
+            return True
+        else:
+            logger.warning(
+                f"[OpenShell] Policy apply failed | sandbox={sandbox_name} "
+                f"returncode={result.returncode} stderr={result.stderr.strip()}"
+            )
+            return False
+    except Exception as e:
+        logger.warning(
+            f"[OpenShell] Policy apply error | sandbox={sandbox_name} error={e}"
+        )
+        return False
 
 
 class OpenShellExecutor(AbstractShellExecutor):
@@ -151,6 +192,11 @@ class OpenShellExecutor(AbstractShellExecutor):
 
         # 3. Probe sandbox environment
         await self._probe()
+
+        # 4. Apply policy if provided
+        if self._policy_path:
+            await _run_policy_set(self._sandbox_name, self._policy_path)
+
         self._initialized = True
 
     async def _probe(self) -> None:

@@ -494,6 +494,106 @@ class TestEnvVarResolution:
 # ---------------------------------------------------------------------------
 
 
+class TestPolicyApply:
+    """Tests for policy YAML application at sandbox creation."""
+
+    @pytest.mark.asyncio
+    async def test_policy_applied_on_auto_create(self, tmp_path) -> None:
+        """When policy provided + auto-create, _run_policy_set is called."""
+        policy_file = tmp_path / "policy.yaml"
+        policy_file.write_text("allow_all: true")
+
+        OpenShellExecutor = _import_executor()
+        probe_result = FakeExecResult(exit_code=0, stdout="CWD=/sandbox\n", stderr="")
+        exec_result = FakeExecResult(exit_code=0, stdout="ok", stderr="")
+        mock_client = _make_mock_client()
+        mock_client.exec.side_effect = [probe_result, exec_result]
+
+        with (
+            _patch_sdk(mock_client),
+            patch(
+                "obelix.adapters.outbound.shell.openshell_executor._run_policy_set",
+                return_value=True,
+            ) as mock_policy,
+        ):
+            executor = OpenShellExecutor(policy=str(policy_file))
+            await executor.execute("echo ok")
+
+        mock_policy.assert_called_once_with("test-sandbox", str(policy_file))
+
+    @pytest.mark.asyncio
+    async def test_policy_applied_on_pre_existing(self, tmp_path) -> None:
+        """When policy provided + pre-existing sandbox, _run_policy_set is called."""
+        policy_file = tmp_path / "policy.yaml"
+        policy_file.write_text("allow_all: true")
+
+        OpenShellExecutor = _import_executor()
+        probe_result = FakeExecResult(exit_code=0, stdout="CWD=/sandbox\n", stderr="")
+        exec_result = FakeExecResult(exit_code=0, stdout="ok", stderr="")
+        mock_client = _make_mock_client()
+        mock_client.exec.side_effect = [probe_result, exec_result]
+
+        with (
+            _patch_sdk(mock_client),
+            patch(
+                "obelix.adapters.outbound.shell.openshell_executor._run_policy_set",
+                return_value=True,
+            ) as mock_policy,
+        ):
+            executor = OpenShellExecutor(
+                policy=str(policy_file), sandbox_name="my-sandbox"
+            )
+            await executor.execute("echo ok")
+
+        mock_policy.assert_called_once_with("my-sandbox", str(policy_file))
+
+    @pytest.mark.asyncio
+    async def test_no_policy_no_apply(self) -> None:
+        """When no policy, _run_policy_set is never called."""
+        OpenShellExecutor = _import_executor()
+        probe_result = FakeExecResult(exit_code=0, stdout="CWD=/sandbox\n", stderr="")
+        exec_result = FakeExecResult(exit_code=0, stdout="ok", stderr="")
+        mock_client = _make_mock_client()
+        mock_client.exec.side_effect = [probe_result, exec_result]
+
+        with (
+            _patch_sdk(mock_client),
+            patch(
+                "obelix.adapters.outbound.shell.openshell_executor._run_policy_set",
+                return_value=True,
+            ) as mock_policy,
+        ):
+            executor = OpenShellExecutor(sandbox_name="test")
+            await executor.execute("echo ok")
+
+        mock_policy.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_policy_apply_failure_logged_not_fatal(self, tmp_path) -> None:
+        """When _run_policy_set returns False, execution still works."""
+        policy_file = tmp_path / "policy.yaml"
+        policy_file.write_text("allow_all: true")
+
+        OpenShellExecutor = _import_executor()
+        probe_result = FakeExecResult(exit_code=0, stdout="CWD=/sandbox\n", stderr="")
+        exec_result = FakeExecResult(exit_code=0, stdout="ok", stderr="")
+        mock_client = _make_mock_client()
+        mock_client.exec.side_effect = [probe_result, exec_result]
+
+        with (
+            _patch_sdk(mock_client),
+            patch(
+                "obelix.adapters.outbound.shell.openshell_executor._run_policy_set",
+                return_value=False,
+            ),
+        ):
+            executor = OpenShellExecutor(policy=str(policy_file))
+            result = await executor.execute("echo ok")
+
+        assert result["exit_code"] == 0
+        assert result["stdout"] == "ok"
+
+
 class TestImportGuard:
     """Verify behavior when openshell SDK is not installed."""
 
