@@ -545,15 +545,18 @@ class AgentFactory:
         from a2a.server.request_handlers.default_request_handler import (
             DefaultRequestHandler,
         )
-        from a2a.server.tasks.base_push_notification_sender import (
-            BasePushNotificationSender,
-        )
-        from a2a.server.tasks.inmemory_push_notification_config_store import (
-            InMemoryPushNotificationConfigStore,
-        )
         from a2a.server.tasks.inmemory_task_store import InMemoryTaskStore
 
         from obelix.adapters.inbound.a2a.server.executor import ObelixAgentExecutor
+        from obelix.adapters.inbound.a2a.server.middleware import (
+            ClientIPMiddleware,
+        )
+        from obelix.adapters.inbound.a2a.server.push_config_store import (
+            SmartPushNotificationConfigStore,
+        )
+        from obelix.adapters.inbound.a2a.server.push_sender import (
+            SmartPushNotificationSender,
+        )
 
         agent_card = self._build_agent_card(
             agent_instance=agent_instance,
@@ -568,8 +571,8 @@ class AgentFactory:
         )
 
         task_store = InMemoryTaskStore()
-        push_config_store = InMemoryPushNotificationConfigStore()
-        push_sender = BasePushNotificationSender(
+        push_config_store = SmartPushNotificationConfigStore()
+        push_sender = SmartPushNotificationSender(
             httpx_client=httpx.AsyncClient(),
             config_store=push_config_store,
         )
@@ -586,7 +589,11 @@ class AgentFactory:
             http_handler=request_handler,
         )
 
-        return a2a_app.build(title=f"Obelix A2A — {agent_name}")
+        fastapi_app = a2a_app.build(title=f"Obelix A2A — {agent_name}")
+        # ClientIPMiddleware captures client IP for webhook URL rewriting.
+        fastapi_app.add_middleware(ClientIPMiddleware)
+
+        return fastapi_app
 
     def _build_agent_card(
         self,

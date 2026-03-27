@@ -32,7 +32,7 @@ openshell = ["openshell>=0.0.16; sys_platform != 'win32'"]
 serve = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
-    "a2a-sdk>=0.3.10",
+    "a2a-sdk[http-server]>=0.3.25",
     "textual>=3.0.0",
 ]
 

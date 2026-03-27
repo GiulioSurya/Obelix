@@ -22,6 +22,13 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/bd/f9/6a62520b7ecb945188a6e1192275f4732ff9341cd4629bc975a6c146aeab/a2a_sdk-0.3.25-py3-none-any.whl", hash = "sha256:2fce38faea82eb0b6f9f9c2bcf761b0d78612c80ef0e599b50d566db1b2654b5", size = 149609, upload-time = "2026-03-10T13:08:44.7Z" },
 ]
 
+[package.optional-dependencies]
+http-server = [
+    { name = "fastapi" },
+    { name = "sse-starlette" },
+    { name = "starlette" },
+]
+
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.6.1"
@@ -2091,7 +2098,7 @@ openshell = [
     { name = "openshell", marker = "sys_platform != 'win32'" },
 ]
 serve = [
-    { name = "a2a-sdk" },
+    { name = "a2a-sdk", extra = ["http-server"] },
     { name = "fastapi" },
     { name = "textual" },
     { name = "uvicorn", extra = ["standard"] },
@@ -2118,7 +2125,7 @@ dev = [
 requires-dist = [
     { name = "a2a-sdk", specifier = ">=0.3.25" },
     { name = "a2a-sdk", marker = "extra == 'all'", specifier = ">=0.3.25" },
-    { name = "a2a-sdk", marker = "extra == 'serve'", specifier = ">=0.3.10" },
+    { name = "a2a-sdk", extras = ["http-server"], marker = "extra == 'serve'", specifier = ">=0.3.25" },
     { name = "anthropic", specifier = ">=0.71.0" },
     { name = "anthropic", marker = "extra == 'all'", specifier = ">=0.71.0" },
     { name = "anthropic", marker = "extra == 'all-llm'", specifier = ">=0.71.0" },

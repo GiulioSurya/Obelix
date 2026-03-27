@@ -22,14 +22,17 @@ from typing import Any
 import httpx
 from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
 from a2a.types import (
+    CancelTaskRequest,
     DataPart,
     FilePart,
     FileWithBytes,
+    GetTaskRequest,
     Message,
     Part,
     PushNotificationConfig,
     Role,
     TaskIdParams,
+    TaskQueryParams,
     TextPart,
 )
 from rich.markdown import Markdown
@@ -366,10 +369,12 @@ class CLIClient(App):
         self,
         dispatcher: HandlerDispatcher,
         urls: list[str] | None = None,
+        webhook_host: str | None = None,
     ):
         super().__init__()
         self.dispatcher = dispatcher
         self.urls = urls or []
+        self._webhook_host = webhook_host
         self.tracker = TaskTracker()
         self.agents: list[AgentConnection] = []
         self.current = 0
@@ -377,6 +382,7 @@ class CLIClient(App):
         self._webhook_url: str | None = None
         self._httpx_client: httpx.AsyncClient | None = None
         self._shown_results: set[str] = set()
+        self._poll_warned: set[str] = set()  # task IDs already warned about
         self._unseen_by_agent: dict[str, list[str]] = {}
         self._input_future: asyncio.Future | None = None
         self._handling_deferred: bool = False
@@ -385,6 +391,54 @@ class CLIClient(App):
         self._agent_select_mode: bool = False
         self._agent_select_idx: int = 0
         self._shell_info: dict = _probe_shell_info()
+
+    @classmethod
+    def from_cli(cls, argv: list[str] | None = None) -> CLIClient:
+        """Create a CLIClient from command-line arguments.
+
+        Args:
+            argv: Argument list (defaults to ``sys.argv[1:]``).
+
+        Usage::
+
+            CLIClient.from_cli().run()
+        """
+        import argparse
+        import sys
+
+        from obelix.adapters.inbound.a2a.client.handlers import (
+            default_dispatcher,
+        )
+
+        parser = argparse.ArgumentParser(
+            description="Interactive CLI client for A2A agents",
+        )
+        parser.add_argument(
+            "urls",
+            nargs="*",
+            help="A2A server URLs (e.g. http://localhost:8002)",
+        )
+        parser.add_argument(
+            "--webhook-host",
+            default=None,
+            help=(
+                "Hostname for the push notification webhook. "
+                "Use when the server can't reach 127.0.0.1 "
+                "(e.g. server in Docker/K8s). "
+                "Also settable via OBELIX_WEBHOOK_HOST env var."
+            ),
+        )
+        args = parser.parse_args(argv if argv is not None else sys.argv[1:])
+
+        if not args.urls:
+            parser.print_help()
+            sys.exit(1)
+
+        return cls(
+            dispatcher=default_dispatcher(),
+            urls=args.urls,
+            webhook_host=args.webhook_host,
+        )
 
     # -- Layout --------------------------------------------------------------
 
@@ -414,7 +468,9 @@ class CLIClient(App):
         chat = self.query_one("#chat", RichLog)
 
         # Webhook server
-        self._webhook_server = WebhookServer(self.tracker)
+        self._webhook_server = WebhookServer(
+            self.tracker, webhook_host=self._webhook_host
+        )
         await self._webhook_server.start()
         self._webhook_url = self._webhook_server.get_url()
         chat.write(Text(f"  Webhook: {self._webhook_url}", style="dim cyan"))
@@ -470,9 +526,23 @@ class CLIClient(App):
     # -- Background task polling ---------------------------------------------
 
     def _poll_tasks(self) -> None:
-        """Called periodically. Updates status bar and shows completed results."""
+        """Called periodically. Updates status bar and shows completed results.
+
+        Includes a **polling fallback**: if a task has been non-terminal for
+        more than 3 seconds (suggesting push notification didn't arrive),
+        actively polls the server via ``get_task()`` to retrieve the current
+        state.  This ensures the client always gets results, even when the
+        server can't reach the webhook endpoint (e.g. Docker networking).
+        """
         # Update status bar
         self._update_status_bar()
+
+        # Polling fallback for tasks stuck in non-terminal state
+        now = time.time()
+        _POLL_AFTER_SECONDS = 3.0
+        for t in self.tracker.get_active():
+            if now - t.timestamp > _POLL_AFTER_SECONDS:
+                self._polling_fallback(t.task_id, t.agent_name)
 
         # Show completed results for current agent
         current_name = self.agents[self.current].name if self.agents else ""
@@ -490,6 +560,63 @@ class CLIClient(App):
             if pending and pending.task_data:
                 self._handling_deferred = True
                 self._handle_pending_input(pending)
+
+    @work(exclusive=False, group="polling")
+    async def _polling_fallback(self, task_id: str, agent_name: str) -> None:
+        """Poll the server for a task's current state (fallback for failed push).
+
+        Called when a task has been non-terminal for longer than expected,
+        suggesting the push notification didn't reach the client.
+        """
+        # Find the agent connection
+        agent = None
+        for a in self.agents:
+            if a.name == agent_name:
+                agent = a
+                break
+        if not agent:
+            return
+
+        try:
+            request = GetTaskRequest(
+                id=str(uuid.uuid4()),
+                params=TaskQueryParams(id=task_id),
+            )
+            response = await agent.client.get_task(request)
+            # Unwrap JSON-RPC response: success has .result (Task), error has .error
+            inner = response.root
+            if hasattr(inner, "result"):
+                task = inner.result
+            else:
+                return  # JSON-RPC error response
+        except Exception:
+            return  # Server unreachable; will retry on next poll cycle
+
+        if task is None:
+            return
+
+        task_data = task.model_dump(mode="json", exclude_none=True)
+        status = task_data.get("status", {})
+        state = status.get("state", "unknown")
+
+        # Only update if the server has a newer state
+        tracked = self.tracker.get(task_id)
+        if tracked and tracked.state == state:
+            return  # No change
+
+        # Log warning on first poll recovery for this task
+        if task_id not in self._poll_warned:
+            self._poll_warned.add(task_id)
+            chat = self.query_one("#chat", RichLog)
+            chat.write(
+                Text(
+                    f"  ⚠ Push notification not received for task {task_id[:8]}… "
+                    f"— recovered via polling (state: {state})",
+                    style="dim yellow",
+                )
+            )
+
+        await self.tracker.update(task_data)
 
     def _update_status_bar(self) -> None:
         if self._agent_select_mode:
@@ -814,7 +941,11 @@ class CLIClient(App):
         chat.write(Text(f"  Canceling task {task_id[:12]}...", style="yellow italic"))
 
         try:
-            await agent.client.cancel_task(TaskIdParams(id=task_id))
+            cancel_req = CancelTaskRequest(
+                id=str(uuid.uuid4()),
+                params=TaskIdParams(id=task_id),
+            )
+            await agent.client.cancel_task(cancel_req)
             self.tracker.force_terminal(task_id, "canceled")
             chat.write(Text("  Task canceled.", style="yellow"))
             # NOTE: do NOT reset _handling_deferred here — the running

@@ -5,21 +5,18 @@ Connect to one or more A2A agent servers and chat interactively.
 Usage:
     uv run python examples/cli_client.py http://localhost:8002
     uv run python examples/cli_client.py http://localhost:8001 http://localhost:8002
-
-Commands:
-    /agents         List connected agents
-    /switch <n>     Switch to agent n
-    /clear          Clear conversation context
-    /quit           Exit
+    uv run python examples/cli_client.py http://localhost:8002 --webhook-host host.docker.internal
 """
 
 from __future__ import annotations
 
-import sys
+from pathlib import Path
 
-from obelix.adapters.inbound.a2a.client import CLIClient
-from obelix.adapters.inbound.a2a.client.handlers import default_dispatcher
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent / "shell-demo" / ".env")
+
+from obelix.adapters.inbound.a2a.client import CLIClient  # noqa: E402
 
 if __name__ == "__main__":
-    app = CLIClient(dispatcher=default_dispatcher(), urls=sys.argv[1:])
-    app.run()
+    CLIClient.from_cli().run()

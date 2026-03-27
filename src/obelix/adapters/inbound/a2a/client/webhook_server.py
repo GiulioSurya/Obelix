@@ -8,6 +8,7 @@ the TaskTracker keeps the latest state for each task.
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
 import time
 from dataclasses import dataclass, field
@@ -136,10 +137,40 @@ def _find_free_port() -> int:
 
 
 class WebhookServer:
-    """Lightweight Starlette server for receiving push notifications."""
+    """Lightweight Starlette server for receiving push notifications.
 
-    def __init__(self, tracker: TaskTracker) -> None:
+    The webhook host (used in the URL sent to the A2A server) is resolved as:
+        1. Explicit ``webhook_host`` parameter
+        2. ``OBELIX_WEBHOOK_HOST`` environment variable
+        3. ``127.0.0.1`` (default — assumes server is on the same host)
+
+    The webhook port is resolved as:
+        1. Explicit ``webhook_port`` parameter
+        2. ``OBELIX_WEBHOOK_PORT`` environment variable
+        3. Random free port (default)
+
+    Use a fixed port when the client runs in a Kubernetes pod and the A2A server
+    needs a stable Service endpoint to POST back to, or when a specific firewall
+    rule must be opened (e.g. Docker Desktop on Windows).
+
+    The server always binds on ``0.0.0.0`` so it accepts connections from any
+    interface (needed when the A2A server rewrites the URL to a non-loopback IP).
+    """
+
+    def __init__(
+        self,
+        tracker: TaskTracker,
+        webhook_host: str | None = None,
+        webhook_port: int | None = None,
+    ) -> None:
         self._tracker = tracker
+        self._webhook_host = (
+            webhook_host or os.environ.get("OBELIX_WEBHOOK_HOST") or "127.0.0.1"
+        )
+        _env_port = os.environ.get("OBELIX_WEBHOOK_PORT")
+        self._fixed_port: int | None = webhook_port or (
+            int(_env_port) if _env_port else None
+        )
         self._port: int = 0
         self._task: asyncio.Task | None = None
 
@@ -159,17 +190,21 @@ class WebhookServer:
     def port(self) -> int:
         return self._port
 
+    @property
+    def webhook_host(self) -> str:
+        return self._webhook_host
+
     def get_url(self) -> str:
-        return f"http://127.0.0.1:{self._port}/webhook"
+        return f"http://{self._webhook_host}:{self._port}/webhook"
 
     async def start(self) -> None:
         """Start the webhook server in a background task."""
         import uvicorn
 
-        self._port = _find_free_port()
+        self._port = self._fixed_port if self._fixed_port else _find_free_port()
         config = uvicorn.Config(
             self._app,
-            host="127.0.0.1",
+            host="0.0.0.0",
             port=self._port,
             log_level="error",
         )

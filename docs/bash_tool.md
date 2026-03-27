@@ -131,7 +131,29 @@ agent = BaseAgent(
 )
 ```
 
-**3. Use hooks to block dangerous commands**
+**3. Use OpenShell sandbox (recommended for production)**
+
+OpenShell provides kernel-level isolation: filesystem, network, and process controls enforced by policy YAML. The LLM's commands execute in a sandboxed container — no breakout possible.
+
+```python
+from obelix.plugins.builtin import BashTool
+from obelix.adapters.outbound.shell import OpenShellExecutor
+
+executor = OpenShellExecutor(policy="./policy.yaml")
+agent = BaseAgent(
+    system_message="You are a helpful assistant.",
+    provider=provider,
+    tools=[BashTool(executor=executor)],
+)
+```
+
+The executor connects to an OpenShell gateway (via `OPENSHELL_GATEWAY` env var), creates a sandbox, applies the policy, and watches the policy file for hot-reload.
+
+**Requires:** Linux or macOS (no Windows wheel), Docker, an OpenShell gateway running.
+
+See [OpenShell Setup Guide](openshell_setup.md) for complete deployment instructions (Docker Compose, CI/CD, Kubernetes).
+
+**4. Use hooks to block dangerous commands**
 
 ```python
 from obelix.core.agent.hooks import AgentEvent, HookDecision
@@ -146,7 +168,7 @@ agent.on(AgentEvent.BEFORE_TOOL_EXECUTION).when(
 ).handle(decision=HookDecision.FAIL)
 ```
 
-**4. Limit iterations and timeout**
+**5. Limit iterations and timeout**
 
 ```python
 agent = BaseAgent(
@@ -159,7 +181,7 @@ agent = BaseAgent(
 
 BashTool enforces `timeout` per command (1-600 seconds, default 120). Processes that exceed it are killed.
 
-**5. Restrict the system message**
+**6. Restrict the system message**
 
 Be explicit about what the agent should and should not do:
 
@@ -452,3 +474,4 @@ print(response.content)
 - [Tools Guide](tools.md) — tool system overview, OutputSchema, system_prompt_fragment
 - [BaseAgent Guide](base_agent.md) — hooks, streaming, deferred tools
 - [Agent Factory](agent_factory.md) — a2a_serve(), tracer integration
+- [OpenShell Setup Guide](openshell_setup.md) — deploying agents with sandboxed shell (Docker Compose, CI/CD, k8s)
