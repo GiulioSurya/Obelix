@@ -701,6 +701,7 @@ class AgentFactory:
         gateway: str | None = None,
         tls_cert_dir: str | None = None,
         endpoint: str | None = None,
+        entrypoint: str | None = None,
         version: str = "0.1.0",
         description: str | None = None,
         provider_name: str = "Obelix",
@@ -715,13 +716,12 @@ class AgentFactory:
         import asyncio
 
         if OpenShellDeployer is None:
-            from obelix.adapters.outbound.openshell.deployer import (
-                OpenShellDeployer as _OpenShellDeployer,
+            raise ImportError(
+                "The 'openshell' package is required for a2a_openshell_deploy(). "
+                "Install it with: uv sync --extra openshell"
             )
-        else:
-            _OpenShellDeployer = OpenShellDeployer  # type: ignore[assignment]
 
-        deployer = _OpenShellDeployer(
+        deployer = OpenShellDeployer(
             self,
             agent,
             port=port,
@@ -732,6 +732,7 @@ class AgentFactory:
             gateway=gateway,
             tls_cert_dir=tls_cert_dir,
             endpoint=endpoint,
+            entrypoint=entrypoint,
             version=version,
             description=description,
             provider_name=provider_name,

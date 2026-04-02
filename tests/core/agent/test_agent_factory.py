@@ -508,7 +508,9 @@ class TestA2AOpenShellDeploy:
             # Simulate SIGINT by making deploy raise KeyboardInterrupt
             mock_deployer_instance.deploy.side_effect = KeyboardInterrupt
 
-            factory.a2a_openshell_deploy("my_agent", port=9000, policy="p.yaml")
+            factory.a2a_openshell_deploy(
+                "my_agent", port=9000, policy="p.yaml", entrypoint="test_module"
+            )
 
             mock_cls.assert_called_once()
             call_kwargs = mock_cls.call_args
@@ -516,6 +518,7 @@ class TestA2AOpenShellDeploy:
             assert call_kwargs[0][1] == "my_agent"  # agent_name
             assert call_kwargs[1]["port"] == 9000
             assert call_kwargs[1]["policy"] == "p.yaml"
+            assert call_kwargs[1]["entrypoint"] == "test_module"
 
             # destroy called on KeyboardInterrupt
             mock_deployer_instance.destroy.assert_called_once()
@@ -555,6 +558,7 @@ class TestA2AOpenShellDeploy:
                 gateway="gw:8080",
                 tls_cert_dir="/certs",
                 endpoint="https://prod.example.com",
+                entrypoint="test_module",
                 version="2.0.0",
                 description="My agent",
                 provider_name="Acme",
@@ -569,6 +573,7 @@ class TestA2AOpenShellDeploy:
             assert kwargs["dockerfile"] == "Dockerfile"
             assert kwargs["gateway"] == "gw:8080"
             assert kwargs["endpoint"] == "https://prod.example.com"
+            assert kwargs["entrypoint"] == "test_module"
             assert kwargs["version"] == "2.0.0"
             assert kwargs["description"] == "My agent"
             assert kwargs["provider_name"] == "Acme"

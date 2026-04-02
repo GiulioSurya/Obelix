@@ -134,32 +134,32 @@ class TestValidation:
             factory, "test_agent", dockerfile="Dockerfile", image="my-image"
         )
         with pytest.raises(ValueError, match="mutually exclusive"):
-            asyncio.get_event_loop().run_until_complete(deployer._validate())
+            asyncio.run(deployer._validate())
 
     def test_sdk_not_installed(self):
         from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
 
         factory = _make_factory()
-        deployer = OpenShellDeployer(factory, "test_agent")
+        deployer = OpenShellDeployer(factory, "test_agent", entrypoint="test_mod")
         with patch("obelix.adapters.outbound.openshell.deployer.SandboxClient", None):
             with pytest.raises(ImportError, match="openshell"):
-                asyncio.get_event_loop().run_until_complete(deployer._validate())
+                asyncio.run(deployer._validate())
 
     def test_cli_not_in_path(self):
         from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
 
         factory = _make_factory()
-        deployer = OpenShellDeployer(factory, "test_agent")
+        deployer = OpenShellDeployer(factory, "test_agent", entrypoint="test_mod")
         mock_client = _make_mock_client()
         with _patch_sdk(mock_client), patch("shutil.which", return_value=None):
             with pytest.raises(RuntimeError, match="CLI"):
-                asyncio.get_event_loop().run_until_complete(deployer._validate())
+                asyncio.run(deployer._validate())
 
     def test_gateway_unreachable(self):
         from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
 
         factory = _make_factory()
-        deployer = OpenShellDeployer(factory, "test_agent")
+        deployer = OpenShellDeployer(factory, "test_agent", entrypoint="test_mod")
         mock_client = _make_mock_client()
         mock_client.health.side_effect = Exception("connection refused")
         with (
@@ -167,9 +167,22 @@ class TestValidation:
             patch("shutil.which", return_value="/usr/bin/openshell"),
         ):
             with pytest.raises(RuntimeError, match="gateway"):
-                asyncio.get_event_loop().run_until_complete(deployer._validate())
+                asyncio.run(deployer._validate())
 
     def test_validation_passes(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        factory = _make_factory()
+        deployer = OpenShellDeployer(factory, "test_agent", entrypoint="test_mod")
+        mock_client = _make_mock_client()
+        with (
+            _patch_sdk(mock_client),
+            patch("shutil.which", return_value="/usr/bin/openshell"),
+        ):
+            asyncio.run(deployer._validate())
+            assert deployer._client is not None
+
+    def test_no_entrypoint_without_image_or_dockerfile(self):
         from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
 
         factory = _make_factory()
@@ -179,8 +192,38 @@ class TestValidation:
             _patch_sdk(mock_client),
             patch("shutil.which", return_value="/usr/bin/openshell"),
         ):
-            asyncio.get_event_loop().run_until_complete(deployer._validate())
-            assert deployer._client is not None
+            with pytest.raises(ValueError, match="entrypoint is required"):
+                asyncio.run(deployer._validate())
+
+    def test_gateway_with_tls(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        factory = _make_factory()
+        deployer = OpenShellDeployer(
+            factory,
+            "test_agent",
+            gateway="gw:8080",
+            tls_cert_dir="/certs",
+            entrypoint="test_mod",
+        )
+        mock_client = _make_mock_client()
+
+        mock_tls_config = MagicMock()
+        with (
+            _patch_sdk(mock_client),
+            patch("shutil.which", return_value="/usr/bin/openshell"),
+            patch(
+                "obelix.adapters.outbound.openshell.deployer.TlsConfig",
+                mock_tls_config,
+            ),
+        ):
+            asyncio.run(deployer._validate())
+
+        mock_tls_config.assert_called_once()
+        call_kwargs = mock_tls_config.call_args[1]
+        assert call_kwargs["ca_path"] == Path("/certs/ca.crt")
+        assert call_kwargs["cert_path"] == Path("/certs/tls.crt")
+        assert call_kwargs["key_path"] == Path("/certs/tls.key")
 
 
 class TestRunCli:
@@ -198,9 +241,7 @@ class TestRunCli:
         mock_result.stdout = "ok"
         mock_result.stderr = ""
         with patch("subprocess.run", return_value=mock_result) as mock_run:
-            result = asyncio.get_event_loop().run_until_complete(
-                deployer._run_cli(["provider", "get", "anthropic"])
-            )
+            result = asyncio.run(deployer._run_cli(["provider", "get", "anthropic"]))
         mock_run.assert_called_once()
         cmd = mock_run.call_args[0][0]
         assert cmd[0] == "openshell"
@@ -214,16 +255,14 @@ class TestRunCli:
         mock_result.stderr = "not found"
         with patch("subprocess.run", return_value=mock_result):
             with pytest.raises(RuntimeError, match="not found"):
-                asyncio.get_event_loop().run_until_complete(
-                    deployer._run_cli(["provider", "get", "missing"])
-                )
+                asyncio.run(deployer._run_cli(["provider", "get", "missing"]))
 
     def test_failure_check_false(self, deployer):
         mock_result = MagicMock()
         mock_result.returncode = 1
         mock_result.stderr = "not found"
         with patch("subprocess.run", return_value=mock_result):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 deployer._run_cli(["provider", "get", "x"], check=False)
             )
         assert result.returncode == 1
@@ -242,7 +281,7 @@ class TestEnsureProviders:
         """If 'openshell provider get <name>' succeeds, skip create."""
         get_result = MagicMock(returncode=0, stdout="anthropic", stderr="")
         with patch("subprocess.run", return_value=get_result) as mock_run:
-            asyncio.get_event_loop().run_until_complete(deployer._ensure_providers())
+            asyncio.run(deployer._ensure_providers())
         calls = mock_run.call_args_list
         assert len(calls) == 1
         assert "get" in calls[0][0][0]
@@ -262,7 +301,7 @@ class TestEnsureProviders:
             return create_result
 
         with patch("subprocess.run", side_effect=side_effect):
-            asyncio.get_event_loop().run_until_complete(deployer._ensure_providers())
+            asyncio.run(deployer._ensure_providers())
         assert call_count == 2
 
     def test_no_providers_is_noop(self):
@@ -270,7 +309,7 @@ class TestEnsureProviders:
 
         deployer = OpenShellDeployer(_make_factory(), "test_agent", providers=None)
         with patch("subprocess.run") as mock_run:
-            asyncio.get_event_loop().run_until_complete(deployer._ensure_providers())
+            asyncio.run(deployer._ensure_providers())
         mock_run.assert_not_called()
 
     def test_create_failure_raises(self, deployer):
@@ -279,9 +318,7 @@ class TestEnsureProviders:
 
         with patch("subprocess.run", return_value=fail):
             with pytest.raises(RuntimeError, match="auth error"):
-                asyncio.get_event_loop().run_until_complete(
-                    deployer._ensure_providers()
-                )
+                asyncio.run(deployer._ensure_providers())
 
 
 class TestBuildImage:
@@ -293,7 +330,7 @@ class TestBuildImage:
         deployer = OpenShellDeployer(
             _make_factory(), "test_agent", image="registry.io/agent:v1"
         )
-        result = asyncio.get_event_loop().run_until_complete(deployer._build_image())
+        result = asyncio.run(deployer._build_image())
         assert result == "registry.io/agent:v1"
 
     def test_custom_dockerfile_returns_path(self):
@@ -302,14 +339,16 @@ class TestBuildImage:
         deployer = OpenShellDeployer(
             _make_factory(), "test_agent", dockerfile="/app/Dockerfile"
         )
-        result = asyncio.get_event_loop().run_until_complete(deployer._build_image())
+        result = asyncio.run(deployer._build_image())
         assert result == "/app/Dockerfile"
 
     def test_auto_generate_creates_temp_dockerfile(self):
         from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
 
-        deployer = OpenShellDeployer(_make_factory(), "test_agent")
-        result = asyncio.get_event_loop().run_until_complete(deployer._build_image())
+        deployer = OpenShellDeployer(
+            _make_factory(), "test_agent", entrypoint="my_app.serve"
+        )
+        result = asyncio.run(deployer._build_image())
         assert Path(result).name == "Dockerfile"
         content = Path(result).read_text()
         assert "python:3.13" in content
@@ -319,11 +358,12 @@ class TestBuildImage:
     def test_auto_generate_includes_entrypoint(self):
         from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
 
-        deployer = OpenShellDeployer(_make_factory(), "test_agent", port=9000)
-        result = asyncio.get_event_loop().run_until_complete(deployer._build_image())
+        deployer = OpenShellDeployer(
+            _make_factory(), "test_agent", port=9000, entrypoint="examples.my_server"
+        )
+        result = asyncio.run(deployer._build_image())
         content = Path(result).read_text()
-        assert "test_agent" in content
-        assert "9000" in content
+        assert "examples.my_server" in content
 
 
 class TestCreateSandbox:
@@ -338,9 +378,7 @@ class TestCreateSandbox:
 
         create_result = MagicMock(returncode=0, stdout="sandbox-abc created", stderr="")
         with patch("subprocess.run", return_value=create_result):
-            asyncio.get_event_loop().run_until_complete(
-                deployer._create_sandbox("/tmp/Dockerfile")
-            )
+            asyncio.run(deployer._create_sandbox("/tmp/Dockerfile"))
 
         assert deployer._sandbox_name is not None
         mock_client.wait_ready.assert_called_once()
@@ -354,9 +392,7 @@ class TestCreateSandbox:
 
         create_result = MagicMock(returncode=0, stdout="", stderr="")
         with patch("subprocess.run", return_value=create_result):
-            asyncio.get_event_loop().run_until_complete(
-                deployer._create_sandbox("my-image:latest")
-            )
+            asyncio.run(deployer._create_sandbox("my-image:latest"))
 
         assert deployer._sandbox_name.startswith("obelix-")
 
@@ -374,9 +410,7 @@ class TestCreateSandbox:
 
         create_result = MagicMock(returncode=0, stdout="", stderr="")
         with patch("subprocess.run", return_value=create_result) as mock_run:
-            asyncio.get_event_loop().run_until_complete(
-                deployer._create_sandbox("my-image:latest")
-            )
+            asyncio.run(deployer._create_sandbox("my-image:latest"))
 
         cmd = mock_run.call_args[0][0]
         assert "--provider" in cmd
@@ -393,9 +427,7 @@ class TestCreateSandbox:
 
         create_result = MagicMock(returncode=0, stdout="", stderr="")
         with patch("subprocess.run", return_value=create_result):
-            asyncio.get_event_loop().run_until_complete(
-                deployer._create_sandbox("my-image")
-            )
+            asyncio.run(deployer._create_sandbox("my-image"))
 
     def test_create_failure_raises(self):
         from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
@@ -407,9 +439,7 @@ class TestCreateSandbox:
         fail = MagicMock(returncode=1, stdout="", stderr="spec invalid")
         with patch("subprocess.run", return_value=fail):
             with pytest.raises(RuntimeError, match="spec invalid"):
-                asyncio.get_event_loop().run_until_complete(
-                    deployer._create_sandbox("bad-image")
-                )
+                asyncio.run(deployer._create_sandbox("bad-image"))
 
 
 class TestStartServer:
@@ -418,14 +448,16 @@ class TestStartServer:
     def test_exec_called_with_correct_command(self):
         from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
 
-        deployer = OpenShellDeployer(_make_factory(), "test_agent", port=8002)
+        deployer = OpenShellDeployer(
+            _make_factory(), "test_agent", port=8002, entrypoint="examples.serve"
+        )
         mock_client = _make_mock_client()
         ref = FakeSandboxRef(id="sb-123", name="obelix-abc")
         mock_client.get.return_value = ref
         deployer._client = mock_client
         deployer._sandbox_name = "obelix-abc"
 
-        asyncio.get_event_loop().run_until_complete(deployer._start_server())
+        asyncio.run(deployer._start_server())
 
         mock_client.exec.assert_called_once()
         call_args = mock_client.exec.call_args
@@ -433,13 +465,14 @@ class TestStartServer:
         cmd = call_args.kwargs["command"]
         assert cmd[0] == "bash"
         assert cmd[1] == "-c"
-        assert "test_agent" in cmd[2]
-        assert "8002" in cmd[2]
+        assert "examples.serve" in cmd[2]
 
     def test_exec_failure_raises(self):
         from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
 
-        deployer = OpenShellDeployer(_make_factory(), "test_agent")
+        deployer = OpenShellDeployer(
+            _make_factory(), "test_agent", entrypoint="test_mod"
+        )
         mock_client = _make_mock_client()
         mock_client.get.return_value = FakeSandboxRef(id="sb-123", name="obelix-abc")
         mock_client.exec.side_effect = Exception("entrypoint failed")
@@ -447,7 +480,7 @@ class TestStartServer:
         deployer._sandbox_name = "obelix-abc"
 
         with pytest.raises(RuntimeError, match="entrypoint failed"):
-            asyncio.get_event_loop().run_until_complete(deployer._start_server())
+            asyncio.run(deployer._start_server())
 
 
 class TestPortForwarding:
@@ -464,7 +497,7 @@ class TestPortForwarding:
     def test_start_forward(self, deployer):
         result = MagicMock(returncode=0, stdout="", stderr="")
         with patch("subprocess.run", return_value=result) as mock_run:
-            asyncio.get_event_loop().run_until_complete(deployer._start_forward())
+            asyncio.run(deployer._start_forward())
         cmd = mock_run.call_args[0][0]
         assert cmd == [
             "openshell",
@@ -478,7 +511,7 @@ class TestPortForwarding:
     def test_stop_forward(self, deployer):
         result = MagicMock(returncode=0, stdout="", stderr="")
         with patch("subprocess.run", return_value=result) as mock_run:
-            asyncio.get_event_loop().run_until_complete(deployer._stop_forward())
+            asyncio.run(deployer._stop_forward())
         cmd = mock_run.call_args[0][0]
         assert cmd == [
             "openshell",
@@ -492,7 +525,7 @@ class TestPortForwarding:
         """Cleanup is best-effort — stop_forward should not raise."""
         fail = MagicMock(returncode=1, stdout="", stderr="no forward found")
         with patch("subprocess.run", return_value=fail):
-            asyncio.get_event_loop().run_until_complete(deployer._stop_forward())
+            asyncio.run(deployer._stop_forward())
 
 
 class TestDestroy:
@@ -508,7 +541,7 @@ class TestDestroy:
 
         result = MagicMock(returncode=0, stdout="", stderr="")
         with patch("subprocess.run", return_value=result):
-            asyncio.get_event_loop().run_until_complete(deployer.destroy())
+            asyncio.run(deployer.destroy())
 
         mock_client.delete.assert_called_once_with("obelix-abc")
         mock_client.wait_deleted.assert_called_once_with("obelix-abc")
@@ -525,8 +558,8 @@ class TestDestroy:
 
         result = MagicMock(returncode=0, stdout="", stderr="")
         with patch("subprocess.run", return_value=result):
-            asyncio.get_event_loop().run_until_complete(deployer.destroy())
-            asyncio.get_event_loop().run_until_complete(deployer.destroy())
+            asyncio.run(deployer.destroy())
+            asyncio.run(deployer.destroy())
 
         assert mock_client.delete.call_count == 1
 
@@ -537,7 +570,7 @@ class TestDestroy:
         deployer._client = None
         deployer._sandbox_name = None
 
-        asyncio.get_event_loop().run_until_complete(deployer.destroy())
+        asyncio.run(deployer.destroy())
         assert deployer._destroyed is True
 
     def test_delete_failure_still_closes_client(self):
@@ -551,7 +584,7 @@ class TestDestroy:
 
         result = MagicMock(returncode=0, stdout="", stderr="")
         with patch("subprocess.run", return_value=result):
-            asyncio.get_event_loop().run_until_complete(deployer.destroy())
+            asyncio.run(deployer.destroy())
 
         mock_client.close.assert_called_once()
 
@@ -565,7 +598,9 @@ class TestDeploy:
             OpenShellDeployer,
         )
 
-        deployer = OpenShellDeployer(_make_factory(), "test_agent", port=8002)
+        deployer = OpenShellDeployer(
+            _make_factory(), "test_agent", port=8002, entrypoint="test_module"
+        )
         mock_client = _make_mock_client()
 
         cli_result = MagicMock(returncode=0, stdout="", stderr="")
@@ -574,7 +609,7 @@ class TestDeploy:
             patch("shutil.which", return_value="/usr/bin/openshell"),
             patch("subprocess.run", return_value=cli_result),
         ):
-            info = asyncio.get_event_loop().run_until_complete(deployer.deploy())
+            info = asyncio.run(deployer.deploy())
 
         assert isinstance(info, DeploymentInfo)
         assert info.endpoint == "http://localhost:8002"
@@ -589,6 +624,7 @@ class TestDeploy:
             "test_agent",
             port=8002,
             endpoint="https://prod.example.com",
+            entrypoint="test_module",
         )
         mock_client = _make_mock_client()
 
@@ -598,7 +634,7 @@ class TestDeploy:
             patch("shutil.which", return_value="/usr/bin/openshell"),
             patch("subprocess.run", return_value=cli_result),
         ):
-            info = asyncio.get_event_loop().run_until_complete(deployer.deploy())
+            info = asyncio.run(deployer.deploy())
 
         assert info.endpoint == "https://prod.example.com"
 
@@ -606,7 +642,9 @@ class TestDeploy:
         """If _create_sandbox fails after validation, destroy is called."""
         from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
 
-        deployer = OpenShellDeployer(_make_factory(), "test_agent")
+        deployer = OpenShellDeployer(
+            _make_factory(), "test_agent", entrypoint="test_module"
+        )
         mock_client = _make_mock_client()
 
         call_count = 0
@@ -624,9 +662,30 @@ class TestDeploy:
             patch("subprocess.run", side_effect=subprocess_side_effect),
         ):
             with pytest.raises(RuntimeError, match="disk full"):
-                asyncio.get_event_loop().run_until_complete(deployer.deploy())
+                asyncio.run(deployer.deploy())
 
         assert deployer._destroyed is True
+
+    def test_provider_error_does_not_cleanup(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        deployer = OpenShellDeployer(
+            _make_factory(),
+            "test_agent",
+            providers=["bad"],
+            entrypoint="test_mod",
+        )
+        mock_client = _make_mock_client()
+        fail = MagicMock(returncode=1, stdout="", stderr="provider error")
+        with (
+            _patch_sdk(mock_client),
+            patch("shutil.which", return_value="/usr/bin/openshell"),
+            patch("subprocess.run", return_value=fail),
+        ):
+            with pytest.raises(RuntimeError, match="provider error"):
+                asyncio.run(deployer.deploy())
+        # destroy NOT called — no sandbox was created
+        assert deployer._destroyed is False
 
 
 class TestContextManager:
@@ -638,7 +697,9 @@ class TestContextManager:
             OpenShellDeployer,
         )
 
-        deployer = OpenShellDeployer(_make_factory(), "test_agent", port=8002)
+        deployer = OpenShellDeployer(
+            _make_factory(), "test_agent", port=8002, entrypoint="test_module"
+        )
         mock_client = _make_mock_client()
         cli_result = MagicMock(returncode=0, stdout="", stderr="")
 
@@ -652,12 +713,14 @@ class TestContextManager:
                     assert isinstance(info, DeploymentInfo)
                     assert info.port == 8002
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     def test_exit_calls_destroy(self):
         from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
 
-        deployer = OpenShellDeployer(_make_factory(), "test_agent")
+        deployer = OpenShellDeployer(
+            _make_factory(), "test_agent", entrypoint="test_module"
+        )
         mock_client = _make_mock_client()
         cli_result = MagicMock(returncode=0, stdout="", stderr="")
 
@@ -671,12 +734,14 @@ class TestContextManager:
                     pass
             assert deployer._destroyed is True
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     def test_exit_on_exception_still_destroys(self):
         from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
 
-        deployer = OpenShellDeployer(_make_factory(), "test_agent")
+        deployer = OpenShellDeployer(
+            _make_factory(), "test_agent", entrypoint="test_module"
+        )
         mock_client = _make_mock_client()
         cli_result = MagicMock(returncode=0, stdout="", stderr="")
 
@@ -691,7 +756,7 @@ class TestContextManager:
                         raise ValueError("boom")
             assert deployer._destroyed is True
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
 
 class TestUpdatePolicy:
@@ -708,9 +773,7 @@ class TestUpdatePolicy:
     def test_success_returns_true(self, deployer):
         result = MagicMock(returncode=0, stdout="", stderr="")
         with patch("subprocess.run", return_value=result) as mock_run:
-            ok = asyncio.get_event_loop().run_until_complete(
-                deployer.update_policy("new-policy.yaml")
-            )
+            ok = asyncio.run(deployer.update_policy("new-policy.yaml"))
         assert ok is True
         cmd = mock_run.call_args[0][0]
         assert cmd == [
@@ -726,9 +789,7 @@ class TestUpdatePolicy:
     def test_failure_returns_false(self, deployer):
         result = MagicMock(returncode=1, stdout="", stderr="invalid policy")
         with patch("subprocess.run", return_value=result):
-            ok = asyncio.get_event_loop().run_until_complete(
-                deployer.update_policy("bad-policy.yaml")
-            )
+            ok = asyncio.run(deployer.update_policy("bad-policy.yaml"))
         assert ok is False
 
     def test_no_sandbox_returns_false(self):
@@ -736,9 +797,7 @@ class TestUpdatePolicy:
 
         deployer = OpenShellDeployer(_make_factory(), "test_agent")
         deployer._sandbox_name = None
-        ok = asyncio.get_event_loop().run_until_complete(
-            deployer.update_policy("policy.yaml")
-        )
+        ok = asyncio.run(deployer.update_policy("policy.yaml"))
         assert ok is False
 
 

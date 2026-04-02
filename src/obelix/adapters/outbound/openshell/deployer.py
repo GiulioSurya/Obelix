@@ -50,6 +50,7 @@ class OpenShellDeployer:
         gateway: str | None = None,
         tls_cert_dir: str | None = None,
         endpoint: str | None = None,
+        entrypoint: str | None = None,
         version: str = "0.1.0",
         description: str | None = None,
         provider_name: str = "Obelix",
@@ -66,6 +67,7 @@ class OpenShellDeployer:
         self._gateway = gateway or os.environ.get("OPENSHELL_GATEWAY")
         self._tls_cert_dir = tls_cert_dir or os.environ.get("OPENSHELL_TLS_CERT_DIR")
         self._endpoint = endpoint
+        self._entrypoint = entrypoint
         self._version = version
         self._description = description
         self._provider_name = provider_name
@@ -74,6 +76,7 @@ class OpenShellDeployer:
 
         self._client = None
         self._sandbox_name: str | None = None
+        self._tmpdir: str | None = None
         self._destroyed = False
 
     async def _validate(self) -> None:
@@ -81,6 +84,12 @@ class OpenShellDeployer:
         # 1. Param conflicts
         if self._dockerfile and self._image:
             raise ValueError("dockerfile and image are mutually exclusive")
+
+        if not self._image and not self._dockerfile and not self._entrypoint:
+            raise ValueError(
+                "entrypoint is required when using auto-generated Dockerfile. "
+                "Pass the Python module that sets up the factory and calls a2a_serve()."
+            )
 
         # 2. SDK available
         if SandboxClient is None:
@@ -172,8 +181,6 @@ class OpenShellDeployer:
                     "create",
                     "--name",
                     name,
-                    "--type",
-                    "claude",
                     "--from-existing",
                 ]
             )
@@ -221,13 +228,11 @@ class OpenShellDeployer:
             f"EXPOSE {self._port}\n"
             "\n"
             "# Entrypoint: start A2A server for the agent\n"
-            f'CMD ["uv", "run", "python", "-c", '
-            f'"from obelix.core.agent.agent_factory import AgentFactory; '
-            f"# agent={self._agent_name} port={self._port}"
-            f'"]\n'
+            f'CMD ["uv", "run", "python", "-m", "{self._entrypoint}"]\n'
         )
 
         tmpdir = tempfile.mkdtemp(prefix="obelix-deployer-")
+        self._tmpdir = tmpdir
         dockerfile_path = os.path.join(tmpdir, "Dockerfile")
         with open(dockerfile_path, "w") as f:
             f.write(dockerfile_content)
@@ -285,11 +290,7 @@ class OpenShellDeployer:
         ref = await asyncio.to_thread(self._client.get, sandbox_name=self._sandbox_name)
 
         server_cmd = (
-            f'nohup uv run python -c "'
-            f"from obelix.core.agent.agent_factory import AgentFactory; "
-            f"# Placeholder: real entrypoint is baked into the container image. "
-            f"# agent={self._agent_name} port={self._port}"
-            f'" > /tmp/a2a-server.log 2>&1 &'
+            f"nohup uv run python -m {self._entrypoint} > /tmp/a2a-server.log 2>&1 &"
         )
 
         logger.info(
@@ -355,10 +356,11 @@ class OpenShellDeployer:
         On failure after sandbox creation, calls destroy() before re-raising.
         """
         await self._validate()
+        await self._ensure_providers()
+        image_source = await self._build_image()
 
+        # From here on, cleanup on failure (sandbox exists or is being created)
         try:
-            await self._ensure_providers()
-            image_source = await self._build_image()
             await self._create_sandbox(image_source)
             await self._start_server()
             await self._start_forward()
@@ -438,5 +440,11 @@ class OpenShellDeployer:
                 await asyncio.to_thread(self._client.close)
             except Exception as e:
                 logger.warning(f"[Deployer] Failed to close client: {e}")
+
+        # 4. Clean up temp directory
+        if self._tmpdir:
+            import shutil as _shutil
+
+            _shutil.rmtree(self._tmpdir, ignore_errors=True)
 
         logger.info("[Deployer] Cleanup complete")
