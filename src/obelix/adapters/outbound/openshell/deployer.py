@@ -425,6 +425,7 @@ class OpenShellDeployer:
         if self._sandbox_name and self._client:
             try:
                 await asyncio.to_thread(self._client.delete, self._sandbox_name)
+                await asyncio.to_thread(self._client.wait_deleted, self._sandbox_name)
                 logger.info(f"[Deployer] Sandbox deleted: {self._sandbox_name}")
             except Exception as e:
                 logger.warning(

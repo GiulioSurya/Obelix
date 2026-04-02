@@ -511,6 +511,7 @@ class TestDestroy:
             asyncio.get_event_loop().run_until_complete(deployer.destroy())
 
         mock_client.delete.assert_called_once_with("obelix-abc")
+        mock_client.wait_deleted.assert_called_once_with("obelix-abc")
         mock_client.close.assert_called_once()
         assert deployer._destroyed is True
 
