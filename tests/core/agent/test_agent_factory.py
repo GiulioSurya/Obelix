@@ -475,6 +475,111 @@ class TestFactoryWithMemoryGraph:
 # ---------------------------------------------------------------------------
 
 
+class TestA2AOpenShellDeploy:
+    """a2a_openshell_deploy() creates deployer and blocks until interrupted."""
+
+    def test_creates_deployer_and_calls_deploy(self):
+        """Verify the method creates an OpenShellDeployer and calls deploy()."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from obelix.core.agent.agent_factory import AgentFactory
+        from obelix.core.agent.base_agent import BaseAgent
+        from obelix.core.model import SystemMessage
+
+        class DummyAgent(BaseAgent):
+            def __init__(self, **kwargs):
+                super().__init__(
+                    system_message=SystemMessage(content="test"),
+                    provider=MagicMock(),
+                    **kwargs,
+                )
+
+        factory = AgentFactory()
+        factory.register("my_agent", DummyAgent)
+
+        mock_deployer_instance = MagicMock()
+        mock_deployer_instance.deploy = AsyncMock()
+        mock_deployer_instance.destroy = AsyncMock()
+
+        with patch(
+            "obelix.core.agent.agent_factory.OpenShellDeployer",
+            return_value=mock_deployer_instance,
+        ) as mock_cls:
+            # Simulate SIGINT by making deploy raise KeyboardInterrupt
+            mock_deployer_instance.deploy.side_effect = KeyboardInterrupt
+
+            factory.a2a_openshell_deploy("my_agent", port=9000, policy="p.yaml")
+
+            mock_cls.assert_called_once()
+            call_kwargs = mock_cls.call_args
+            assert call_kwargs[0][0] is factory  # agent_factory
+            assert call_kwargs[0][1] == "my_agent"  # agent_name
+            assert call_kwargs[1]["port"] == 9000
+            assert call_kwargs[1]["policy"] == "p.yaml"
+
+            # destroy called on KeyboardInterrupt
+            mock_deployer_instance.destroy.assert_called_once()
+
+    def test_passes_all_params(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from obelix.core.agent.agent_factory import AgentFactory
+        from obelix.core.agent.base_agent import BaseAgent
+        from obelix.core.model import SystemMessage
+
+        class DummyAgent(BaseAgent):
+            def __init__(self, **kwargs):
+                super().__init__(
+                    system_message=SystemMessage(content="test"),
+                    provider=MagicMock(),
+                    **kwargs,
+                )
+
+        factory = AgentFactory()
+        factory.register("agent", DummyAgent)
+
+        mock_deployer = MagicMock()
+        mock_deployer.deploy = AsyncMock(side_effect=KeyboardInterrupt)
+        mock_deployer.destroy = AsyncMock()
+
+        with patch(
+            "obelix.core.agent.agent_factory.OpenShellDeployer",
+            return_value=mock_deployer,
+        ) as mock_cls:
+            factory.a2a_openshell_deploy(
+                "agent",
+                port=9000,
+                policy="p.yaml",
+                providers=["anthropic"],
+                dockerfile="Dockerfile",
+                gateway="gw:8080",
+                tls_cert_dir="/certs",
+                endpoint="https://prod.example.com",
+                version="2.0.0",
+                description="My agent",
+                provider_name="Acme",
+                subagents=["sub1"],
+                subagent_config={"sub1": {}},
+            )
+
+            kwargs = mock_cls.call_args[1]
+            assert kwargs["port"] == 9000
+            assert kwargs["policy"] == "p.yaml"
+            assert kwargs["providers"] == ["anthropic"]
+            assert kwargs["dockerfile"] == "Dockerfile"
+            assert kwargs["gateway"] == "gw:8080"
+            assert kwargs["endpoint"] == "https://prod.example.com"
+            assert kwargs["version"] == "2.0.0"
+            assert kwargs["description"] == "My agent"
+            assert kwargs["provider_name"] == "Acme"
+            assert kwargs["subagents"] == ["sub1"]
+
+
+# ---------------------------------------------------------------------------
+# AgentSpec dataclass
+# ---------------------------------------------------------------------------
+
+
 class TestAgentSpec:
     """Tests for AgentSpec dataclass."""
 

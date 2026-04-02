@@ -10,6 +10,11 @@ from typing import TYPE_CHECKING, Any, Union
 
 from obelix.infrastructure.logging import get_logger
 
+try:
+    from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+except ImportError:
+    OpenShellDeployer = None  # type: ignore[assignment,misc]
+
 if TYPE_CHECKING:
     from a2a.types import AgentCard
 
@@ -681,3 +686,75 @@ class AgentFactory:
             f"AgentFactory: Agent Card built | name={card.name} skills={len(skills)}"
         )
         return card
+
+    # --- A2A OpenShell Deploy ---------------------------------------------------
+
+    def a2a_openshell_deploy(
+        self,
+        agent: str,
+        *,
+        port: int = 8002,
+        policy: str | None = None,
+        providers: list[str] | None = None,
+        dockerfile: str | None = None,
+        image: str | None = None,
+        gateway: str | None = None,
+        tls_cert_dir: str | None = None,
+        endpoint: str | None = None,
+        version: str = "0.1.0",
+        description: str | None = None,
+        provider_name: str = "Obelix",
+        subagents: list[str] | None = None,
+        subagent_config: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
+        """Deploy agent in OpenShell sandbox and block until interrupted.
+
+        Like a2a_serve() but runs inside an OpenShell sandbox.
+        On Ctrl+C / SIGTERM, destroys the sandbox and exits.
+        """
+        import asyncio
+
+        if OpenShellDeployer is None:
+            from obelix.adapters.outbound.openshell.deployer import (
+                OpenShellDeployer as _OpenShellDeployer,
+            )
+        else:
+            _OpenShellDeployer = OpenShellDeployer  # type: ignore[assignment]
+
+        deployer = _OpenShellDeployer(
+            self,
+            agent,
+            port=port,
+            policy=policy,
+            providers=providers,
+            dockerfile=dockerfile,
+            image=image,
+            gateway=gateway,
+            tls_cert_dir=tls_cert_dir,
+            endpoint=endpoint,
+            version=version,
+            description=description,
+            provider_name=provider_name,
+            subagents=subagents,
+            subagent_config=subagent_config,
+        )
+
+        async def _run() -> None:
+            try:
+                info = await deployer.deploy()
+                logger.info(
+                    f"AgentFactory: agent deployed in sandbox | "
+                    f"endpoint={info.endpoint} sandbox={info.sandbox_name}"
+                )
+                logger.info("AgentFactory: press Ctrl+C to stop and destroy sandbox")
+                # Block forever until interrupted
+                await asyncio.Event().wait()
+            except KeyboardInterrupt:
+                logger.info("AgentFactory: interrupted, destroying sandbox...")
+            finally:
+                await deployer.destroy()
+
+        try:
+            asyncio.run(_run())
+        except KeyboardInterrupt:
+            pass
