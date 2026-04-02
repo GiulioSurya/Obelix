@@ -555,6 +555,79 @@ class TestDestroy:
         mock_client.close.assert_called_once()
 
 
+class TestDeploy:
+    """deploy() chains all steps and returns DeploymentInfo."""
+
+    def test_happy_path_returns_deployment_info(self):
+        from obelix.adapters.outbound.openshell.deployer import (
+            DeploymentInfo,
+            OpenShellDeployer,
+        )
+
+        deployer = OpenShellDeployer(_make_factory(), "test_agent", port=8002)
+        mock_client = _make_mock_client()
+
+        cli_result = MagicMock(returncode=0, stdout="", stderr="")
+        with (
+            _patch_sdk(mock_client),
+            patch("shutil.which", return_value="/usr/bin/openshell"),
+            patch("subprocess.run", return_value=cli_result),
+        ):
+            info = asyncio.get_event_loop().run_until_complete(deployer.deploy())
+
+        assert isinstance(info, DeploymentInfo)
+        assert info.endpoint == "http://localhost:8002"
+        assert info.port == 8002
+        assert info.sandbox_name.startswith("obelix-")
+
+    def test_custom_endpoint(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        deployer = OpenShellDeployer(
+            _make_factory(),
+            "test_agent",
+            port=8002,
+            endpoint="https://prod.example.com",
+        )
+        mock_client = _make_mock_client()
+
+        cli_result = MagicMock(returncode=0, stdout="", stderr="")
+        with (
+            _patch_sdk(mock_client),
+            patch("shutil.which", return_value="/usr/bin/openshell"),
+            patch("subprocess.run", return_value=cli_result),
+        ):
+            info = asyncio.get_event_loop().run_until_complete(deployer.deploy())
+
+        assert info.endpoint == "https://prod.example.com"
+
+    def test_sandbox_error_triggers_cleanup(self):
+        """If _create_sandbox fails after validation, destroy is called."""
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        deployer = OpenShellDeployer(_make_factory(), "test_agent")
+        mock_client = _make_mock_client()
+
+        call_count = 0
+
+        def subprocess_side_effect(cmd, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if "sandbox" in cmd and "create" in cmd:
+                return MagicMock(returncode=1, stdout="", stderr="disk full")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with (
+            _patch_sdk(mock_client),
+            patch("shutil.which", return_value="/usr/bin/openshell"),
+            patch("subprocess.run", side_effect=subprocess_side_effect),
+        ):
+            with pytest.raises(RuntimeError, match="disk full"):
+                asyncio.get_event_loop().run_until_complete(deployer.deploy())
+
+        assert deployer._destroyed is True
+
+
 class TestDeploymentInfo:
     """DeploymentInfo is a frozen dataclass with sandbox_name, endpoint, port."""
 

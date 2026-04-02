@@ -349,6 +349,36 @@ class OpenShellDeployer:
         except Exception as e:
             logger.warning(f"[Deployer] Failed to stop forward: {e}")
 
+    async def deploy(self) -> DeploymentInfo:
+        """Full deploy: validate -> providers -> image -> sandbox -> server -> forward.
+
+        On failure after sandbox creation, calls destroy() before re-raising.
+        """
+        await self._validate()
+
+        try:
+            await self._ensure_providers()
+            image_source = await self._build_image()
+            await self._create_sandbox(image_source)
+            await self._start_server()
+            await self._start_forward()
+        except Exception:
+            await self.destroy()
+            raise
+
+        endpoint = self._endpoint or f"http://localhost:{self._port}"
+
+        info = DeploymentInfo(
+            sandbox_name=self._sandbox_name,
+            endpoint=endpoint,
+            port=self._port,
+        )
+        logger.info(
+            f"[Deployer] Deploy complete | sandbox={info.sandbox_name} "
+            f"endpoint={info.endpoint}"
+        )
+        return info
+
     async def destroy(self) -> None:
         """Stop forward, delete sandbox, close client. Idempotent."""
         if self._destroyed:
