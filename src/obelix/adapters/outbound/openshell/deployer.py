@@ -279,3 +279,34 @@ class OpenShellDeployer:
             timeout_seconds=120,
         )
         logger.info(f"[Deployer] Sandbox ready: {self._sandbox_name}")
+
+    async def _start_server(self) -> None:
+        """Start the A2A server inside the sandbox via SDK exec()."""
+        ref = await asyncio.to_thread(self._client.get, sandbox_name=self._sandbox_name)
+
+        server_cmd = (
+            f'nohup uv run python -c "'
+            f"from obelix.core.agent.agent_factory import AgentFactory; "
+            f"# Placeholder: real entrypoint is baked into the container image. "
+            f"# agent={self._agent_name} port={self._port}"
+            f'" > /tmp/a2a-server.log 2>&1 &'
+        )
+
+        logger.info(
+            f"[Deployer] Starting A2A server | sandbox={self._sandbox_name} "
+            f"port={self._port}"
+        )
+
+        try:
+            await asyncio.to_thread(
+                self._client.exec,
+                sandbox_id=ref.id,
+                command=["bash", "-c", server_cmd],
+                timeout_seconds=30,
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to start A2A server in sandbox '{self._sandbox_name}': {e}"
+            ) from e
+
+        logger.info(f"[Deployer] A2A server started in sandbox '{self._sandbox_name}'")

@@ -412,6 +412,44 @@ class TestCreateSandbox:
                 )
 
 
+class TestStartServer:
+    """_start_server starts the A2A server inside the sandbox via SDK exec."""
+
+    def test_exec_called_with_correct_command(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        deployer = OpenShellDeployer(_make_factory(), "test_agent", port=8002)
+        mock_client = _make_mock_client()
+        ref = FakeSandboxRef(id="sb-123", name="obelix-abc")
+        mock_client.get.return_value = ref
+        deployer._client = mock_client
+        deployer._sandbox_name = "obelix-abc"
+
+        asyncio.get_event_loop().run_until_complete(deployer._start_server())
+
+        mock_client.exec.assert_called_once()
+        call_args = mock_client.exec.call_args
+        assert call_args.kwargs["sandbox_id"] == "sb-123"
+        cmd = call_args.kwargs["command"]
+        assert cmd[0] == "bash"
+        assert cmd[1] == "-c"
+        assert "test_agent" in cmd[2]
+        assert "8002" in cmd[2]
+
+    def test_exec_failure_raises(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        deployer = OpenShellDeployer(_make_factory(), "test_agent")
+        mock_client = _make_mock_client()
+        mock_client.get.return_value = FakeSandboxRef(id="sb-123", name="obelix-abc")
+        mock_client.exec.side_effect = Exception("entrypoint failed")
+        deployer._client = mock_client
+        deployer._sandbox_name = "obelix-abc"
+
+        with pytest.raises(RuntimeError, match="entrypoint failed"):
+            asyncio.get_event_loop().run_until_complete(deployer._start_server())
+
+
 class TestDeploymentInfo:
     """DeploymentInfo is a frozen dataclass with sandbox_name, endpoint, port."""
 
