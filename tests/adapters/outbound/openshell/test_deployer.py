@@ -181,6 +181,52 @@ class TestValidation:
             assert deployer._client is not None
 
 
+class TestRunCli:
+    """_run_cli wraps openshell CLI calls as async subprocess."""
+
+    @pytest.fixture
+    def deployer(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        return OpenShellDeployer(_make_factory(), "test_agent")
+
+    def test_success(self, deployer):
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "ok"
+        mock_result.stderr = ""
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            result = asyncio.get_event_loop().run_until_complete(
+                deployer._run_cli(["provider", "get", "anthropic"])
+            )
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "openshell"
+        assert cmd[1:] == ["provider", "get", "anthropic"]
+        assert result == mock_result
+
+    def test_failure_raises(self, deployer):
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = ""
+        mock_result.stderr = "not found"
+        with patch("subprocess.run", return_value=mock_result):
+            with pytest.raises(RuntimeError, match="not found"):
+                asyncio.get_event_loop().run_until_complete(
+                    deployer._run_cli(["provider", "get", "missing"])
+                )
+
+    def test_failure_check_false(self, deployer):
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stderr = "not found"
+        with patch("subprocess.run", return_value=mock_result):
+            result = asyncio.get_event_loop().run_until_complete(
+                deployer._run_cli(["provider", "get", "x"], check=False)
+            )
+        assert result.returncode == 1
+
+
 class TestDeploymentInfo:
     """DeploymentInfo is a frozen dataclass with sandbox_name, endpoint, port."""
 

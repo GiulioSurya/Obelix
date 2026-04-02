@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import subprocess
 from dataclasses import dataclass
 
 from obelix.infrastructure.logging import get_logger
@@ -121,3 +122,26 @@ class OpenShellDeployer:
             ) from e
 
         logger.info("[Deployer] Validation passed")
+
+    async def _run_cli(
+        self, args: list[str], *, check: bool = True, timeout: int = 120
+    ) -> subprocess.CompletedProcess:
+        """Run an openshell CLI command as async subprocess."""
+        cmd = ["openshell", *args]
+        logger.debug(f"[Deployer] CLI: {' '.join(cmd)}")
+
+        result = await asyncio.to_thread(
+            subprocess.run,
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+
+        if check and result.returncode != 0:
+            raise RuntimeError(
+                f"openshell CLI failed: {' '.join(cmd)}\n"
+                f"exit={result.returncode} stderr={result.stderr.strip()}"
+            )
+
+        return result
