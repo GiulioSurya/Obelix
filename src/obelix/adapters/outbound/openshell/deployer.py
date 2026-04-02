@@ -177,3 +177,60 @@ class OpenShellDeployer:
                     "--from-existing",
                 ]
             )
+
+    async def _build_image(self) -> str:
+        """Prepare the container image source for sandbox creation.
+
+        Returns:
+            A string suitable for ``openshell sandbox create --from <value>``:
+            - Pre-built image reference (e.g. "registry.io/agent:v1")
+            - Path to a user-provided Dockerfile
+            - Path to a generated Dockerfile (auto mode)
+        """
+        if self._image:
+            logger.info(f"[Deployer] Using pre-built image: {self._image}")
+            return self._image
+
+        if self._dockerfile:
+            logger.info(f"[Deployer] Using custom Dockerfile: {self._dockerfile}")
+            return self._dockerfile
+
+        # Auto-generate a Dockerfile
+        logger.info("[Deployer] Generating Dockerfile")
+        return self._generate_dockerfile()
+
+    def _generate_dockerfile(self) -> str:
+        """Generate a minimal Dockerfile for the agent."""
+        import tempfile
+
+        dockerfile_content = (
+            "FROM python:3.13-slim\n"
+            "\n"
+            "# Install uv\n"
+            "COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv\n"
+            "\n"
+            "WORKDIR /app\n"
+            "\n"
+            "# Copy project files\n"
+            "COPY pyproject.toml uv.lock ./\n"
+            "COPY src/ ./src/\n"
+            "\n"
+            "# Install dependencies\n"
+            "RUN uv sync --no-dev --extra serve --extra openshell --link-mode=copy\n"
+            "\n"
+            f"EXPOSE {self._port}\n"
+            "\n"
+            "# Entrypoint: start A2A server for the agent\n"
+            f'CMD ["uv", "run", "python", "-c", '
+            f'"from obelix.core.agent.agent_factory import AgentFactory; '
+            f"# agent={self._agent_name} port={self._port}"
+            f'"]\n'
+        )
+
+        tmpdir = tempfile.mkdtemp(prefix="obelix-deployer-")
+        dockerfile_path = os.path.join(tmpdir, "Dockerfile")
+        with open(dockerfile_path, "w") as f:
+            f.write(dockerfile_content)
+
+        logger.info(f"[Deployer] Generated Dockerfile: {dockerfile_path}")
+        return dockerfile_path

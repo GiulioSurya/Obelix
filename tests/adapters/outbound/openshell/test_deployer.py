@@ -6,7 +6,9 @@ All tests mock the openshell SDK and CLI — no real Gateway or sandbox required
 from __future__ import annotations
 
 import asyncio
+import tempfile  # noqa: F401  (used in TestBuildImage)
 from dataclasses import FrozenInstanceError, dataclass
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -280,6 +282,48 @@ class TestEnsureProviders:
                 asyncio.get_event_loop().run_until_complete(
                     deployer._ensure_providers()
                 )
+
+
+class TestBuildImage:
+    """_build_image generates or uses a Dockerfile, returns the --from arg."""
+
+    def test_prebuilt_image_returns_image_ref(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        deployer = OpenShellDeployer(
+            _make_factory(), "test_agent", image="registry.io/agent:v1"
+        )
+        result = asyncio.get_event_loop().run_until_complete(deployer._build_image())
+        assert result == "registry.io/agent:v1"
+
+    def test_custom_dockerfile_returns_path(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        deployer = OpenShellDeployer(
+            _make_factory(), "test_agent", dockerfile="/app/Dockerfile"
+        )
+        result = asyncio.get_event_loop().run_until_complete(deployer._build_image())
+        assert result == "/app/Dockerfile"
+
+    def test_auto_generate_creates_temp_dockerfile(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        deployer = OpenShellDeployer(_make_factory(), "test_agent")
+        result = asyncio.get_event_loop().run_until_complete(deployer._build_image())
+        assert Path(result).name == "Dockerfile"
+        content = Path(result).read_text()
+        assert "python:3.13" in content
+        assert "uv" in content
+        assert "pyproject.toml" in content
+
+    def test_auto_generate_includes_entrypoint(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        deployer = OpenShellDeployer(_make_factory(), "test_agent", port=9000)
+        result = asyncio.get_event_loop().run_until_complete(deployer._build_image())
+        content = Path(result).read_text()
+        assert "test_agent" in content
+        assert "9000" in content
 
 
 class TestDeploymentInfo:
