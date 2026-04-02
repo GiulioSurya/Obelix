@@ -326,6 +326,92 @@ class TestBuildImage:
         assert "9000" in content
 
 
+class TestCreateSandbox:
+    """_create_sandbox creates a sandbox via CLI with --from and waits via SDK."""
+
+    def test_creates_sandbox_with_from_arg(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        deployer = OpenShellDeployer(_make_factory(), "test_agent")
+        mock_client = _make_mock_client()
+        deployer._client = mock_client
+
+        create_result = MagicMock(returncode=0, stdout="sandbox-abc created", stderr="")
+        with patch("subprocess.run", return_value=create_result):
+            asyncio.get_event_loop().run_until_complete(
+                deployer._create_sandbox("/tmp/Dockerfile")
+            )
+
+        assert deployer._sandbox_name is not None
+        mock_client.wait_ready.assert_called_once()
+
+    def test_sandbox_name_includes_obelix_prefix(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        deployer = OpenShellDeployer(_make_factory(), "test_agent")
+        mock_client = _make_mock_client()
+        deployer._client = mock_client
+
+        create_result = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=create_result):
+            asyncio.get_event_loop().run_until_complete(
+                deployer._create_sandbox("my-image:latest")
+            )
+
+        assert deployer._sandbox_name.startswith("obelix-")
+
+    def test_with_provider_and_policy(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        deployer = OpenShellDeployer(
+            _make_factory(),
+            "test_agent",
+            providers=["anthropic"],
+            policy="policy.yaml",
+        )
+        mock_client = _make_mock_client()
+        deployer._client = mock_client
+
+        create_result = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=create_result) as mock_run:
+            asyncio.get_event_loop().run_until_complete(
+                deployer._create_sandbox("my-image:latest")
+            )
+
+        cmd = mock_run.call_args[0][0]
+        assert "--provider" in cmd
+        assert "anthropic" in cmd
+        assert "--policy" in cmd
+        assert "policy.yaml" in cmd
+
+    def test_no_policy_warning(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        deployer = OpenShellDeployer(_make_factory(), "test_agent", policy=None)
+        mock_client = _make_mock_client()
+        deployer._client = mock_client
+
+        create_result = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=create_result):
+            asyncio.get_event_loop().run_until_complete(
+                deployer._create_sandbox("my-image")
+            )
+
+    def test_create_failure_raises(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        deployer = OpenShellDeployer(_make_factory(), "test_agent")
+        mock_client = _make_mock_client()
+        deployer._client = mock_client
+
+        fail = MagicMock(returncode=1, stdout="", stderr="spec invalid")
+        with patch("subprocess.run", return_value=fail):
+            with pytest.raises(RuntimeError, match="spec invalid"):
+                asyncio.get_event_loop().run_until_complete(
+                    deployer._create_sandbox("bad-image")
+                )
+
+
 class TestDeploymentInfo:
     """DeploymentInfo is a frozen dataclass with sandbox_name, endpoint, port."""
 

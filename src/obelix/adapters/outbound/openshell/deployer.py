@@ -234,3 +234,48 @@ class OpenShellDeployer:
 
         logger.info(f"[Deployer] Generated Dockerfile: {dockerfile_path}")
         return dockerfile_path
+
+    async def _create_sandbox(self, image_source: str) -> None:
+        """Create an OpenShell sandbox from an image or Dockerfile.
+
+        Uses CLI for --from (BYOC not in SDK), then SDK wait_ready.
+
+        # TODO: replace with SDK if SandboxSpec adds image/dockerfile support
+        """
+        import uuid
+
+        self._sandbox_name = f"obelix-{uuid.uuid4().hex[:8]}"
+
+        if not self._policy:
+            logger.warning(
+                "[Deployer] No policy specified — sandbox runs without "
+                "security restrictions. Consider passing policy='path/to/policy.yaml'."
+            )
+
+        # Build CLI command
+        cmd = [
+            "sandbox",
+            "create",
+            "--name",
+            self._sandbox_name,
+            "--from",
+            image_source,
+        ]
+        if self._providers:
+            for p in self._providers:
+                cmd.extend(["--provider", p])
+        if self._policy:
+            cmd.extend(["--policy", self._policy])
+
+        await self._run_cli(cmd)
+
+        # Wait for sandbox to be ready (SDK)
+        logger.info(
+            f"[Deployer] Waiting for sandbox '{self._sandbox_name}' to be ready"
+        )
+        await asyncio.to_thread(
+            self._client.wait_ready,
+            self._sandbox_name,
+            timeout_seconds=120,
+        )
+        logger.info(f"[Deployer] Sandbox ready: {self._sandbox_name}")
