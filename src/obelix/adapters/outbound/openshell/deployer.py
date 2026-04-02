@@ -379,6 +379,12 @@ class OpenShellDeployer:
         )
         return info
 
+    async def __aenter__(self) -> DeploymentInfo:
+        return await self.deploy()
+
+    async def __aexit__(self, *exc) -> None:
+        await self.destroy()
+
     async def destroy(self) -> None:
         """Stop forward, delete sandbox, close client. Idempotent."""
         if self._destroyed:

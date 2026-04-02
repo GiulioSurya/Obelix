@@ -628,6 +628,71 @@ class TestDeploy:
         assert deployer._destroyed is True
 
 
+class TestContextManager:
+    """OpenShellDeployer works as async context manager."""
+
+    def test_enter_returns_deployment_info(self):
+        from obelix.adapters.outbound.openshell.deployer import (
+            DeploymentInfo,
+            OpenShellDeployer,
+        )
+
+        deployer = OpenShellDeployer(_make_factory(), "test_agent", port=8002)
+        mock_client = _make_mock_client()
+        cli_result = MagicMock(returncode=0, stdout="", stderr="")
+
+        async def run():
+            with (
+                _patch_sdk(mock_client),
+                patch("shutil.which", return_value="/usr/bin/openshell"),
+                patch("subprocess.run", return_value=cli_result),
+            ):
+                async with deployer as info:
+                    assert isinstance(info, DeploymentInfo)
+                    assert info.port == 8002
+
+        asyncio.get_event_loop().run_until_complete(run())
+
+    def test_exit_calls_destroy(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        deployer = OpenShellDeployer(_make_factory(), "test_agent")
+        mock_client = _make_mock_client()
+        cli_result = MagicMock(returncode=0, stdout="", stderr="")
+
+        async def run():
+            with (
+                _patch_sdk(mock_client),
+                patch("shutil.which", return_value="/usr/bin/openshell"),
+                patch("subprocess.run", return_value=cli_result),
+            ):
+                async with deployer:
+                    pass
+            assert deployer._destroyed is True
+
+        asyncio.get_event_loop().run_until_complete(run())
+
+    def test_exit_on_exception_still_destroys(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        deployer = OpenShellDeployer(_make_factory(), "test_agent")
+        mock_client = _make_mock_client()
+        cli_result = MagicMock(returncode=0, stdout="", stderr="")
+
+        async def run():
+            with (
+                _patch_sdk(mock_client),
+                patch("shutil.which", return_value="/usr/bin/openshell"),
+                patch("subprocess.run", return_value=cli_result),
+            ):
+                with pytest.raises(ValueError, match="boom"):
+                    async with deployer:
+                        raise ValueError("boom")
+            assert deployer._destroyed is True
+
+        asyncio.get_event_loop().run_until_complete(run())
+
+
 class TestDeploymentInfo:
     """DeploymentInfo is a frozen dataclass with sandbox_name, endpoint, port."""
 
