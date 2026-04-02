@@ -495,6 +495,66 @@ class TestPortForwarding:
             asyncio.get_event_loop().run_until_complete(deployer._stop_forward())
 
 
+class TestDestroy:
+    """destroy() stops forward, deletes sandbox, closes client. Idempotent."""
+
+    def test_full_cleanup_sequence(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        deployer = OpenShellDeployer(_make_factory(), "test_agent", port=8002)
+        mock_client = _make_mock_client()
+        deployer._client = mock_client
+        deployer._sandbox_name = "obelix-abc"
+
+        result = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=result):
+            asyncio.get_event_loop().run_until_complete(deployer.destroy())
+
+        mock_client.delete.assert_called_once_with("obelix-abc")
+        mock_client.close.assert_called_once()
+        assert deployer._destroyed is True
+
+    def test_idempotent(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        deployer = OpenShellDeployer(_make_factory(), "test_agent")
+        mock_client = _make_mock_client()
+        deployer._client = mock_client
+        deployer._sandbox_name = "obelix-abc"
+
+        result = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=result):
+            asyncio.get_event_loop().run_until_complete(deployer.destroy())
+            asyncio.get_event_loop().run_until_complete(deployer.destroy())
+
+        assert mock_client.delete.call_count == 1
+
+    def test_no_sandbox_created_skips_cleanup(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        deployer = OpenShellDeployer(_make_factory(), "test_agent")
+        deployer._client = None
+        deployer._sandbox_name = None
+
+        asyncio.get_event_loop().run_until_complete(deployer.destroy())
+        assert deployer._destroyed is True
+
+    def test_delete_failure_still_closes_client(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        deployer = OpenShellDeployer(_make_factory(), "test_agent")
+        mock_client = _make_mock_client()
+        mock_client.delete.side_effect = Exception("delete failed")
+        deployer._client = mock_client
+        deployer._sandbox_name = "obelix-abc"
+
+        result = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=result):
+            asyncio.get_event_loop().run_until_complete(deployer.destroy())
+
+        mock_client.close.assert_called_once()
+
+
 class TestDeploymentInfo:
     """DeploymentInfo is a frozen dataclass with sandbox_name, endpoint, port."""
 

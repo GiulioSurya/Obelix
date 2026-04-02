@@ -348,3 +348,32 @@ class OpenShellDeployer:
             logger.info(f"[Deployer] Port forward stopped | port={self._port}")
         except Exception as e:
             logger.warning(f"[Deployer] Failed to stop forward: {e}")
+
+    async def destroy(self) -> None:
+        """Stop forward, delete sandbox, close client. Idempotent."""
+        if self._destroyed:
+            return
+        self._destroyed = True
+
+        # 1. Stop port forwarding (best-effort)
+        if self._sandbox_name:
+            await self._stop_forward()
+
+        # 2. Delete sandbox (SDK)
+        if self._sandbox_name and self._client:
+            try:
+                await asyncio.to_thread(self._client.delete, self._sandbox_name)
+                logger.info(f"[Deployer] Sandbox deleted: {self._sandbox_name}")
+            except Exception as e:
+                logger.warning(
+                    f"[Deployer] Failed to delete sandbox '{self._sandbox_name}': {e}"
+                )
+
+        # 3. Close SDK client
+        if self._client:
+            try:
+                await asyncio.to_thread(self._client.close)
+            except Exception as e:
+                logger.warning(f"[Deployer] Failed to close client: {e}")
+
+        logger.info("[Deployer] Cleanup complete")
