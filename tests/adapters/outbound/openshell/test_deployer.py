@@ -227,6 +227,61 @@ class TestRunCli:
         assert result.returncode == 1
 
 
+class TestEnsureProviders:
+    """_ensure_providers registers LLM providers in the OpenShell gateway."""
+
+    @pytest.fixture
+    def deployer(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        return OpenShellDeployer(_make_factory(), "test_agent", providers=["anthropic"])
+
+    def test_provider_already_exists_skips_create(self, deployer):
+        """If 'openshell provider get <name>' succeeds, skip create."""
+        get_result = MagicMock(returncode=0, stdout="anthropic", stderr="")
+        with patch("subprocess.run", return_value=get_result) as mock_run:
+            asyncio.get_event_loop().run_until_complete(deployer._ensure_providers())
+        calls = mock_run.call_args_list
+        assert len(calls) == 1
+        assert "get" in calls[0][0][0]
+
+    def test_provider_not_found_creates(self, deployer):
+        """If 'get' fails, 'create --from-existing' is called."""
+        get_result = MagicMock(returncode=1, stdout="", stderr="not found")
+        create_result = MagicMock(returncode=0, stdout="created", stderr="")
+
+        call_count = 0
+
+        def side_effect(cmd, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if "get" in cmd:
+                return get_result
+            return create_result
+
+        with patch("subprocess.run", side_effect=side_effect):
+            asyncio.get_event_loop().run_until_complete(deployer._ensure_providers())
+        assert call_count == 2
+
+    def test_no_providers_is_noop(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        deployer = OpenShellDeployer(_make_factory(), "test_agent", providers=None)
+        with patch("subprocess.run") as mock_run:
+            asyncio.get_event_loop().run_until_complete(deployer._ensure_providers())
+        mock_run.assert_not_called()
+
+    def test_create_failure_raises(self, deployer):
+        """If create also fails, RuntimeError is raised."""
+        fail = MagicMock(returncode=1, stdout="", stderr="auth error")
+
+        with patch("subprocess.run", return_value=fail):
+            with pytest.raises(RuntimeError, match="auth error"):
+                asyncio.get_event_loop().run_until_complete(
+                    deployer._ensure_providers()
+                )
+
+
 class TestDeploymentInfo:
     """DeploymentInfo is a frozen dataclass with sandbox_name, endpoint, port."""
 

@@ -145,3 +145,35 @@ class OpenShellDeployer:
             )
 
         return result
+
+    async def _ensure_providers(self) -> None:
+        """Register LLM providers in the OpenShell gateway.
+
+        For each provider name, checks if it exists (get). If not,
+        creates it with --from-existing (auto-detect from local env).
+
+        # TODO: replace with SDK when Provider CRUD is available
+        """
+        if not self._providers:
+            return
+
+        for name in self._providers:
+            # Check if already registered
+            result = await self._run_cli(["provider", "get", name], check=False)
+            if result.returncode == 0:
+                logger.info(f"[Deployer] Provider '{name}' already registered")
+                continue
+
+            # Create from local environment
+            logger.info(f"[Deployer] Creating provider '{name}' from local env")
+            await self._run_cli(
+                [
+                    "provider",
+                    "create",
+                    "--name",
+                    name,
+                    "--type",
+                    "claude",
+                    "--from-existing",
+                ]
+            )
