@@ -450,6 +450,51 @@ class TestStartServer:
             asyncio.get_event_loop().run_until_complete(deployer._start_server())
 
 
+class TestPortForwarding:
+    """_start_forward and _stop_forward manage port forwarding via CLI."""
+
+    @pytest.fixture
+    def deployer(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        d = OpenShellDeployer(_make_factory(), "test_agent", port=8002)
+        d._sandbox_name = "obelix-abc"
+        return d
+
+    def test_start_forward(self, deployer):
+        result = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=result) as mock_run:
+            asyncio.get_event_loop().run_until_complete(deployer._start_forward())
+        cmd = mock_run.call_args[0][0]
+        assert cmd == [
+            "openshell",
+            "forward",
+            "start",
+            "8002",
+            "obelix-abc",
+            "-d",
+        ]
+
+    def test_stop_forward(self, deployer):
+        result = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=result) as mock_run:
+            asyncio.get_event_loop().run_until_complete(deployer._stop_forward())
+        cmd = mock_run.call_args[0][0]
+        assert cmd == [
+            "openshell",
+            "forward",
+            "stop",
+            "8002",
+            "obelix-abc",
+        ]
+
+    def test_stop_forward_failure_does_not_raise(self, deployer):
+        """Cleanup is best-effort — stop_forward should not raise."""
+        fail = MagicMock(returncode=1, stdout="", stderr="no forward found")
+        with patch("subprocess.run", return_value=fail):
+            asyncio.get_event_loop().run_until_complete(deployer._stop_forward())
+
+
 class TestDeploymentInfo:
     """DeploymentInfo is a frozen dataclass with sandbox_name, endpoint, port."""
 

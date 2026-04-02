@@ -310,3 +310,41 @@ class OpenShellDeployer:
             ) from e
 
         logger.info(f"[Deployer] A2A server started in sandbox '{self._sandbox_name}'")
+
+    async def _start_forward(self) -> None:
+        """Start port forwarding from localhost to sandbox.
+
+        # TODO: replace with SDK when port forwarding is available
+        """
+        await self._run_cli(
+            [
+                "forward",
+                "start",
+                str(self._port),
+                self._sandbox_name,
+                "-d",
+            ]
+        )
+        logger.info(
+            f"[Deployer] Port forward started | "
+            f"localhost:{self._port} -> {self._sandbox_name}"
+        )
+
+    async def _stop_forward(self) -> None:
+        """Stop port forwarding. Best-effort — does not raise on failure.
+
+        # TODO: replace with SDK when port forwarding is available
+        """
+        try:
+            await self._run_cli(
+                [
+                    "forward",
+                    "stop",
+                    str(self._port),
+                    self._sandbox_name,
+                ],
+                check=False,
+            )
+            logger.info(f"[Deployer] Port forward stopped | port={self._port}")
+        except Exception as e:
+            logger.warning(f"[Deployer] Failed to stop forward: {e}")
