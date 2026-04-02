@@ -693,6 +693,54 @@ class TestContextManager:
         asyncio.get_event_loop().run_until_complete(run())
 
 
+class TestUpdatePolicy:
+    """update_policy() hot-reloads network_policies via CLI."""
+
+    @pytest.fixture
+    def deployer(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        d = OpenShellDeployer(_make_factory(), "test_agent")
+        d._sandbox_name = "obelix-abc"
+        return d
+
+    def test_success_returns_true(self, deployer):
+        result = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=result) as mock_run:
+            ok = asyncio.get_event_loop().run_until_complete(
+                deployer.update_policy("new-policy.yaml")
+            )
+        assert ok is True
+        cmd = mock_run.call_args[0][0]
+        assert cmd == [
+            "openshell",
+            "policy",
+            "set",
+            "obelix-abc",
+            "--policy",
+            "new-policy.yaml",
+            "--wait",
+        ]
+
+    def test_failure_returns_false(self, deployer):
+        result = MagicMock(returncode=1, stdout="", stderr="invalid policy")
+        with patch("subprocess.run", return_value=result):
+            ok = asyncio.get_event_loop().run_until_complete(
+                deployer.update_policy("bad-policy.yaml")
+            )
+        assert ok is False
+
+    def test_no_sandbox_returns_false(self):
+        from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
+
+        deployer = OpenShellDeployer(_make_factory(), "test_agent")
+        deployer._sandbox_name = None
+        ok = asyncio.get_event_loop().run_until_complete(
+            deployer.update_policy("policy.yaml")
+        )
+        assert ok is False
+
+
 class TestDeploymentInfo:
     """DeploymentInfo is a frozen dataclass with sandbox_name, endpoint, port."""
 

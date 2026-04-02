@@ -385,6 +385,32 @@ class OpenShellDeployer:
     async def __aexit__(self, *exc) -> None:
         await self.destroy()
 
+    async def update_policy(self, policy_path: str) -> bool:
+        """Hot-reload network_policies via CLI. Returns True on success.
+
+        # TODO: replace with SDK when openshell Python SDK exposes policy set
+        """
+        if not self._sandbox_name:
+            logger.warning("[Deployer] Cannot update policy — no sandbox deployed")
+            return False
+
+        result = await self._run_cli(
+            ["policy", "set", self._sandbox_name, "--policy", policy_path, "--wait"],
+            check=False,
+        )
+
+        if result.returncode == 0:
+            logger.info(
+                f"[Deployer] Policy updated | sandbox={self._sandbox_name} "
+                f"policy={policy_path}"
+            )
+            return True
+        else:
+            logger.warning(
+                f"[Deployer] Policy update failed | stderr={result.stderr.strip()}"
+            )
+            return False
+
     async def destroy(self) -> None:
         """Stop forward, delete sandbox, close client. Idempotent."""
         if self._destroyed:
