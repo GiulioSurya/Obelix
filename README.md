@@ -52,7 +52,7 @@ Create agents with tools and hooks, orchestrate them with shared memory, deploy 
 
 - **Build agents** with tools, hooks, streaming, and planning mode
 - **Compose** multi-agent systems with the Agent Factory and shared memory graphs
-- **Deploy** agents as HTTP services via the [A2A protocol](https://a2a-protocol.org/)
+- **Deploy** agents as HTTP services via the [A2A protocol](https://a2a-protocol.org/), optionally inside [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) sandboxes with kernel-level security
 - **Interact** via the built-in Rich CLI client with multimodal attachments and permission-controlled tool execution
 - **Connect** to 100+ LLM providers: Anthropic, OpenAI, OCI, IBM, Ollama, vLLM, and LiteLLM
 
@@ -71,7 +71,7 @@ uv sync --extra serve              # + A2A server (FastAPI, Uvicorn)
 uv sync --all-extras --group dev   # everything + dev tools
 ```
 
-Available extras: `anthropic`, `openai`, `oci`, `ibm`, `ollama`, `vllm`, `litellm`, `mcp`, `serve`, `all-llm`, `all`.
+Available extras: `anthropic`, `openai`, `oci`, `ibm`, `ollama`, `vllm`, `litellm`, `mcp`, `serve`, `openshell`, `all-llm`, `all`.
 
 pip is also supported: `pip install ".[litellm,serve]"`.
 
@@ -164,7 +164,42 @@ The server exposes `GET /.well-known/agent.json` (Agent Card) and `POST /` (JSON
 
 > Streaming, input-required, deferred tools over A2A: [A2A Server Guide](docs/a2a_server.md)
 
-### 5. Connect with the CLI Client
+### 5. Deploy in an OpenShell Sandbox
+
+Run any agent inside an [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) sandbox with kernel-level security policies (filesystem, network, process isolation). From the outside it looks exactly like `a2a_serve()` — same protocol, same CLI client:
+
+```python
+factory.a2a_openshell_deploy(
+    "my_agent",
+    port=8002,
+    entrypoint="myapp.serve",       # module that calls a2a_serve()
+    policy="policy.yaml",           # security policy
+    providers=["anthropic"],        # LLM credentials (injected by gateway)
+)
+```
+
+The deployer builds a container image, creates a sandbox with the policy, starts the A2A server inside it, and forwards the port to localhost. On exit (Ctrl+C), the sandbox is destroyed.
+
+```
+Host                                    OpenShell Sandbox
++-----------------+                     +----------------------------+
+| cli_client.py   | --- A2A / HTTP ---> | A2A server (your agent)    |
+| localhost:8002  |     SSH tunnel      | BashTool + LocalShellExec  |
++-----------------+                     +----------------------------+
+                                        | Policy Engine (landlock,   |
+                                        | network proxy, user jail)  |
+                                        +----------------------------+
+```
+
+Requires Docker + OpenShell CLI. See [`examples/deploy_demo/`](examples/deploy_demo/) for a complete working example and the [OpenShell Deployer Guide](docs/openshell_deployer.md) for all options.
+
+```bash
+uv sync --extra litellm --extra serve --extra openshell
+openshell gateway start
+uv run python examples/deploy_demo/deploy.py
+```
+
+### 6. Connect with the CLI Client
 
 ```bash
 uv run python examples/cli_client.py http://localhost:8000
@@ -246,6 +281,7 @@ The client resolves both Agent Cards, shows the table above, and you can chat wi
 |---------|-------------|------|
 | `examples/bash_server.py` | Single agent with BashTool (deferred or local mode) | 8002 |
 | `examples/factory_server.py` | Coordinator + math_agent + report_agent with shared memory | 8001 |
+| `examples/deploy_demo/` | BashTool agent inside an OpenShell sandbox with security policy | 8002 |
 | `examples/cli_client.py` | Rich CLI client — multimodal, deferred tools, multi-agent | — |
 
 ---
@@ -275,6 +311,7 @@ LiteLLM routes to Azure, Bedrock, Vertex AI, Groq, Mistral, Together AI, DeepSee
 | [Agent Factory](docs/agent_factory.md) | Registration, composition, shared memory, tracer, A2A serve |
 | [BashTool](docs/bash_tool.md) | Shell execution modes, security, permission policies, LocalShellExecutor |
 | [A2A Server](docs/a2a_server.md) | HTTP deployment, JSON-RPC, streaming SSE, input-required flow |
+| [OpenShell Deployer](docs/openshell_deployer.md) | Sandboxed deployment with NVIDIA OpenShell — security policies, BYOC |
 | [Hooks](docs/hooks.md) | Lifecycle events, conditions, decisions, effects |
 
 ---
