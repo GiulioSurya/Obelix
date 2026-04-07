@@ -1,0 +1,100 @@
+version: 1
+
+# ── STATIC (locked at sandbox creation) ──────────────────────────
+
+# 1. FILESYSTEM — what the sandbox can read and write
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /usr
+    - /lib
+    - /lib64
+    - /bin
+    - /sbin
+    - /proc
+    - /dev/urandom
+    - /etc
+    - /var/log
+  read_write:
+    - /sandbox
+    - /tmp
+    - /dev/null
+
+landlock:
+  compatibility: best_effort
+
+# 2. PROCESS — sandbox runs as unprivileged user (no root)
+process:
+  run_as_user: sandbox
+  run_as_group: sandbox
+
+# ── DYNAMIC (hot-reloadable via `openshell policy set`) ──────────
+
+# 3. NETWORK — default deny-all, whitelist only what we need
+network_policies:
+
+  # LLM provider — Anthropic API (used via LiteLLM)
+  anthropic_api:
+    name: anthropic-api
+    endpoints:
+      - host: api.anthropic.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-write
+    binaries:
+      - path: /usr/bin/python*
+      - path: /usr/local/bin/python*
+      - path: /sandbox/.uv/python/*/bin/python*
+      - path: /usr/bin/curl
+
+  # Obelix Tracer — backend API for trace ingestion (runs on Windows host)
+  tracer_backend:
+    name: obelix-tracer-ingest
+    endpoints:
+      - host: host.docker.internal
+        port: 8100
+        protocol: rest
+        enforcement: enforce
+        access: read-write
+        allowed_ips:
+          - "192.168.0.0/16"
+          - "172.16.0.0/12"
+          - "10.0.0.0/8"
+    binaries:
+      - path: /usr/bin/python*
+      - path: /usr/local/bin/python*
+      - path: /sandbox/.uv/python/*/bin/python*
+
+  # A2A client webhook — push notifications back to the CLI client (runs on Windows host)
+  # No protocol specified → L4 (TCP passthrough), needed because the webhook is plain HTTP
+  client_webhook:
+    name: a2a-client-webhook
+    endpoints:
+      - host: host.docker.internal
+        port: 8010
+        allowed_ips:
+          - "192.168.0.0/16"
+          - "172.16.0.0/12"
+          - "10.0.0.0/8"
+    binaries:
+      - path: /usr/bin/python*
+      - path: /usr/local/bin/python*
+      - path: /sandbox/.uv/python/*/bin/python*
+
+  # DNS resolution (needed for hostname lookups)
+  dns:
+    name: dns-resolution
+    endpoints:
+      - host: "*.dns.google"
+        port: 53
+      - host: "*.dns.google"
+        port: 443
+    binaries:
+      - path: /usr/bin/python*
+      - path: /usr/local/bin/python*
+      - path: /sandbox/.uv/python/*/bin/python*
+      - path: /usr/bin/curl
+
+# 4. INFERENCE — not configured here (use `openshell inference set` at runtime)
+#    Example: openshell inference set --provider anthropic --model claude-haiku-4-5-20251001

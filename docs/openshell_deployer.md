@@ -1,37 +1,31 @@
 # OpenShell Deployer
 
-> Status: DESIGN IN PROGRESS — non ancora implementato
+The OpenShell Deployer runs an Obelix agent **inside an OpenShell sandbox**, exposing it as an A2A server. From the outside it is indistinguishable from a server started with `a2a_serve()` — same protocol, same Agent Card, same CLI client.
 
-## Cos'e'
+The difference is that the agent runs in an isolated environment with kernel-level security policies (filesystem, network, processes).
 
-Il Deployer esegue un agente Obelix **dentro una sandbox OpenShell**, esponendolo
-come server A2A. Da fuori e' indistinguibile da un server avviato con `a2a_serve()`:
-stesso protocollo, stessa Agent Card, stesso CLI client.
+---
 
-La differenza e' che l'agente gira in un ambiente isolato con policy di sicurezza
-a livello kernel (filesystem, network, processi).
-
-## Confronto con a2a_serve()
-
-```
-a2a_serve()    →  server A2A nel tuo processo locale
-a2a_openshell_deploy()   →  server A2A dentro una sandbox OpenShell
-```
+## Comparison with a2a_serve()
 
 | | a2a_serve() | a2a_openshell_deploy() |
 |---|---|---|
-| Dove gira | Processo locale | Sandbox OpenShell |
-| Sicurezza | Nessuna (permessi OS) | Policy kernel (filesystem, network, processi) |
-| BashTool | Qualsiasi executor | LocalShellExecutor (protetto da policy) |
-| API key | Nel tuo .env / environment | Iniettate dal gateway OpenShell (non nel filesystem) |
-| Requisiti | `uv sync --extra serve` | Docker + Gateway OpenShell |
-| Client A2A | `localhost:<port>` | `localhost:<port>` (via port forwarding) |
+| Where it runs | Local process | OpenShell sandbox (K8s pod) |
+| Security | OS permissions only | Kernel-level policy (landlock, network namespaces) |
+| BashTool | Any executor | LocalShellExecutor (protected by policy) |
+| API keys | In your .env / environment | Injected by the OpenShell gateway (never on filesystem) |
+| Requirements | `uv sync --extra serve` | Docker + OpenShell gateway |
+| Client access | `localhost:<port>` | `localhost:<port>` (via SSH tunnel) |
 
-## Prerequisiti
+---
 
-- Docker attivo (Docker Desktop su Windows/Mac, Docker Engine su Linux)
-- Gateway OpenShell avviato: `openshell gateway start`
-- Dipendenze: `uv sync --extra serve --extra openshell`
+## Prerequisites
+
+- **Docker** running (Docker Desktop on Windows/Mac, Docker Engine on Linux)
+- **OpenShell gateway** started: `openshell gateway start`
+- **Dependencies**: `uv sync --extra serve --extra openshell`
+
+---
 
 ## Quick Start
 
@@ -39,73 +33,85 @@ a2a_openshell_deploy()   →  server A2A dentro una sandbox OpenShell
 from obelix.core.agent.agent_factory import AgentFactory
 
 factory = AgentFactory()
-factory.register(name="my_agent", cls=MyAgent)
 
-# Deploy in sandbox (invece di a2a_serve)
-factory.a2a_deploy(
+factory.a2a_openshell_deploy(
     "my_agent",
     port=8002,
-    policy="policy.yaml",       # policy di sicurezza OpenShell
-    providers=["anthropic"],    # credenziali LLM (auto-detect da env locale)
+    entrypoint="myapp.serve",       # Python module that calls a2a_serve()
+    policy="policy.yaml",           # OpenShell security policy
+    providers=["anthropic"],        # LLM credentials (auto-detected from local env)
+    extras=["litellm"],             # additional pyproject extras for the Docker build
 )
 ```
 
-Poi connettiti normalmente:
+Then connect normally:
 ```bash
-uv run python examples/cli_client.py --url http://localhost:8002
+uv run python examples/cli_client.py http://localhost:8002
 ```
 
-## Come funziona
+The deployer blocks waiting for Ctrl+C. On exit, the sandbox is destroyed automatically.
+
+---
+
+## How It Works
 
 ```
-1. Provider setup    openshell provider create --from-existing
-                     (registra le API key nel gateway)
-
-2. Image build       Docker build dell'immagine con codice + dipendenze
-                     (o genera Dockerfile automaticamente se non fornito)
-
-3. Sandbox create    openshell sandbox create --from <image>
-                     --provider anthropic --policy policy.yaml
-                     (crea sandbox con policy e credenziali)
-
-4. Server start      Avvia a2a_serve() dentro la sandbox via exec()
-                     (uvicorn + FastAPI + A2A protocol)
-
-5. Port forward      openshell forward start <port> <sandbox>
-                     (rende il server raggiungibile su localhost)
+1. Validate        Check SDK, CLI, gateway reachability, provider names
+2. Providers       openshell provider create --from-existing
+                   (registers API keys in the gateway from local env)
+3. Image build     Docker build with project code + targeted dependencies
+                   (or use a custom Dockerfile / pre-built image)
+4. Sandbox create  openshell sandbox create --from <image> --provider ... --policy ...
+                   (creates K8s pod with security policy)
+5. Server start    Exec /app/.venv/bin/python -m <entrypoint> inside the sandbox
+                   (starts uvicorn + FastAPI + A2A protocol)
+6. Port forward    openshell forward start -d <port> <sandbox>
+                   (SSH tunnel makes the server reachable on localhost)
 ```
 
-## Immagine Docker
+---
 
-Il Deployer supporta tre modalita':
+## Docker Image
 
-### 1. Generazione automatica (default)
+The deployer supports three modes:
 
-Se non passi `dockerfile` ne' `image`, il Deployer genera un Dockerfile
-minimale basato sul progetto corrente:
+### 1. Auto-generated (default)
 
-```python
-factory.a2a_openshell_deploy("my_agent", port=8002, policy="policy.yaml")
-# → genera Dockerfile temporaneo, builda, passa a OpenShell
-```
-
-Il Dockerfile generato contiene: Python 3.13, uv, il tuo codice (`src/`,
-`pyproject.toml`, `uv.lock`), e le dipendenze installate. L'entrypoint
-avvia `a2a_serve()` con la configurazione passata a `a2a_openshell_deploy()`.
-
-### 2. Dockerfile custom
-
-Per immagini con requisiti particolari (pacchetti di sistema, tool extra):
+When neither `dockerfile` nor `image` is provided, the deployer generates a minimal Dockerfile:
 
 ```python
 factory.a2a_openshell_deploy("my_agent", port=8002,
-    dockerfile="examples/shell-demo/Dockerfile",
+    entrypoint="myapp.serve",
+    policy="policy.yaml",
+    providers=["anthropic"],
 )
 ```
 
-### 3. Immagine pre-buildata
+The generated Dockerfile:
+- Base image: `python:3.13-slim`
+- Installs `uv`, `iproute2` (required by OpenShell for network namespaces)
+- Creates a `sandbox` user (required by the policy `run_as_user`)
+- Copies the project and runs `uv sync` with targeted extras
+- Uses `/app/.venv/bin/python` as runtime (no network access needed at runtime)
 
-Per deploy rapidi o immagini da registry:
+### 2. Custom Dockerfile
+
+For images with special requirements (system packages, extra tools):
+
+```python
+factory.a2a_openshell_deploy("my_agent", port=8002,
+    dockerfile="path/to/Dockerfile",
+)
+```
+
+**Important**: your custom Dockerfile must include:
+- `useradd -m sandbox` (or whatever user the policy's `run_as_user` requires)
+- `iproute2` package (the OpenShell supervisor needs `ip` for network namespaces)
+- Use `/app/.venv/bin/python` in CMD, not `uv run` (the sandbox may not have network access to PyPI)
+
+### 3. Pre-built image
+
+For fast deploys or images from a registry:
 
 ```python
 factory.a2a_openshell_deploy("my_agent", port=8002,
@@ -113,123 +119,195 @@ factory.a2a_openshell_deploy("my_agent", port=8002,
 )
 ```
 
-## Parametri a2a_openshell_deploy()
+---
+
+## Provider Extras Mapping
+
+The deployer maps provider names to `pyproject.toml` optional-dependency groups for the Docker build. Only the required extras are installed:
+
+| Provider | Extra | Notes |
+|---|---|---|
+| `anthropic` | *(base dep)* | Always installed |
+| `openai` | *(base dep)* | Always installed |
+| `litellm` | `litellm` | |
+| `oci` | `oci` | |
+| `ibm_watson` | `ibm` | |
+| `ollama` | `ollama` | |
+| `vllm` | `vllm` | |
+
+`serve` and `openshell` extras are always included.
+
+If the automatic mapping is not sufficient (e.g., you use `litellm` to wrap Anthropic), pass `extras` explicitly:
 
 ```python
-factory.a2a_deploy(
-    agent: str,                      # nome dell'agente registrato
-    *,
-    port: int = 8002,                # porta del server A2A
-    policy: str | None = None,       # path a policy YAML OpenShell
-    providers: list[str] | None,     # nomi provider (auto-create con --from-existing)
-    dockerfile: str | None = None,   # path a Dockerfile custom
-    image: str | None = None,        # immagine pre-buildata
-    # ... stessi parametri di a2a_serve per Agent Card:
-    endpoint: str | None = None,
-    version: str = "0.1.0",
-    description: str | None = None,
+factory.a2a_openshell_deploy(
+    "my_agent",
+    providers=["anthropic"],   # for the gateway (API key injection)
+    extras=["litellm"],        # for the Docker build (Python dependencies)
 )
 ```
 
-## Logging
+Unknown provider names are rejected at validation time with a clear error message.
 
-I log del Deployer (creazione sandbox, policy, forwarding, cleanup) appaiono
-nel terminale dove hai lanciato `a2a_openshell_deploy()`.
+---
 
-I log dell'agente nella sandbox (uvicorn, Obelix, tool execution) sono
-separati. Per vederli, apri un altro terminale:
-
-```bash
-# Log in tempo reale
-openshell logs <sandbox-name> --tail
-
-# Filtra per livello
-openshell logs <sandbox-name> --tail --level warn
-```
-
-## Policy hot-reload
-
-Le `network_policies` possono essere aggiornate a runtime senza ricreare
-la sandbox:
+## Parameters
 
 ```python
-# Da codice, tramite il deployment object
-await deployment.update_policy("new-policy.yaml")
-
-# Oppure da CLI
-openshell policy set <sandbox-name> --policy new-policy.yaml --wait
+factory.a2a_openshell_deploy(
+    agent: str,                          # agent name (registered or defined in entrypoint)
+    *,
+    port: int = 8002,                    # A2A server port
+    entrypoint: str | None = None,       # Python module to run inside the sandbox
+    policy: str | None = None,           # path to OpenShell policy YAML
+    providers: list[str] | None = None,  # provider names for gateway credential injection
+    extras: list[str] | None = None,     # additional pyproject extras for Docker build
+    dockerfile: str | None = None,       # path to custom Dockerfile
+    image: str | None = None,            # pre-built image reference
+    gateway: str | None = None,          # gateway endpoint (default: auto-detect)
+    endpoint: str | None = None,         # override Agent Card URL
+    version: str = "0.1.0",             # Agent Card version
+    description: str | None = None,      # Agent Card description
+)
 ```
 
-I campi statici (`filesystem_policy`, `process`, `landlock`) sono immutabili
-dopo la creazione — per cambiarli serve un nuovo deploy.
-
-## BashTool dentro la sandbox
-
-Quando l'agente gira nella sandbox, il BashTool usa automaticamente
-`LocalShellExecutor` — i comandi eseguono come subprocess normali, ma il
-Policy Engine di OpenShell li intercetta a livello kernel:
-
-```
-LLM genera: bash(command="rm -rf /etc")
-    → LocalShellExecutor → subprocess.run("rm -rf /etc")
-        → Policy Engine (kernel): /etc e' deny → EPERM
-            → exit_code: 1, stderr: "Permission denied"
-```
-
-L'agente non sa di essere in una sandbox. Prova, fallisce, gestisce l'errore.
+---
 
 ## Policy
 
-La policy controlla cosa l'agente puo' fare nel sandbox.
-Vedi `docs/openshell_integration.md` per il formato e gli esempi.
+The policy controls what the agent can do inside the sandbox. It has **static** fields (immutable after creation) and **dynamic** fields (hot-reloadable at runtime).
 
-Campi statici (immutabili dopo creazione):
-- `filesystem_policy` — path read-only / read-write
-- `process` — run_as_user/group
-- `landlock` — compatibility mode
+### Static fields
 
-Campo dinamico (aggiornabile a runtime):
-- `network_policies` — endpoint whitelist, binary matching
+- **`filesystem_policy`** — read-only and read-write paths. `include_workdir: true` adds the container's WORKDIR as read-only.
+- **`process`** — `run_as_user` / `run_as_group`. The user must exist in the image.
+- **`landlock`** — kernel-level filesystem enforcement. Use `compatibility: best_effort`.
 
-## Provider e credenziali
+### Dynamic fields (hot-reloadable)
 
-Le API key non sono mai nel filesystem della sandbox. Il gateway OpenShell
-le inietta come variabili d'ambiente nel processo del sandbox.
+- **`network_policies`** — endpoint whitelist with binary matching.
+
+### Network policy tips
+
+- **HTTPS endpoints**: set `protocol: rest` for L7 inspection (HTTP method/path filtering)
+- **Plain HTTP endpoints**: omit `protocol` for L4 passthrough (TCP only). Using `protocol: rest` on plain HTTP causes the proxy to reject FORWARD requests
+- **`tls: terminate`** is deprecated — TLS termination is now automatic. Remove it from policies
+- **DNS**: always include a DNS rule, or hostname resolution will fail
+
+### Hot-reload
+
+```bash
+openshell policy set <sandbox-name> --policy new-policy.yaml --wait
+```
+
+Or from code:
+```python
+await deployer.update_policy("new-policy.yaml")
+```
+
+---
+
+## BashTool Inside the Sandbox
+
+When the agent runs inside the sandbox, BashTool uses `LocalShellExecutor` — commands execute as normal subprocesses, but the OpenShell Policy Engine intercepts them at the kernel level:
+
+```
+LLM generates: bash(command="rm -rf /etc")
+    -> LocalShellExecutor -> subprocess.run("rm -rf /etc")
+        -> Policy Engine (kernel): /etc is read-only -> EPERM
+            -> exit_code: 1, stderr: "Permission denied"
+```
+
+The agent does not know it is in a sandbox. It tries, fails, handles the error.
+
+---
+
+## Provider Credentials
+
+API keys are never on the sandbox filesystem. The OpenShell gateway injects them as environment variables into the sandbox process:
 
 ```python
-# Automatico: legge dal tuo environment locale
+# Automatic: reads from your local environment
 factory.a2a_openshell_deploy("agent", providers=["anthropic"])
 
-# Manuale: usa provider gia' registrati in OpenShell
-# (creati con: openshell provider create --name my-key --type generic --credential API_KEY=sk-...)
-factory.a2a_openshell_deploy("agent", providers=["my-key"])
+# Manual: use providers already registered in OpenShell
+factory.a2a_openshell_deploy("agent", providers=["my-custom-key"])
 ```
+
+---
 
 ## Cleanup
 
-Il Deployer resta vivo e gestisce il lifecycle della sandbox.
-Su Ctrl+C, SIGTERM o uscita dal context manager, la sandbox viene distrutta automaticamente.
+The deployer manages the full sandbox lifecycle. On Ctrl+C, SIGTERM, or context manager exit:
+
+1. Port forwarding is stopped via `openshell forward stop`
+2. The sandbox is deleted via SDK
+3. Generated files (`.Dockerfile.openshell`, `.dockerignore`) are cleaned up
 
 ```python
-# Context manager (raccomandato)
-async with factory.a2a_openshell_deploy("agent", port=8002, policy="p.yaml") as deployment:
-    print(f"Agent running at {deployment.endpoint}")
-# sandbox distrutto automaticamente
+# Blocking mode (deploy.py style)
+factory.a2a_openshell_deploy("agent", port=8002, ...)
+# blocks until Ctrl+C, then cleans up
 
-# Oppure: gestione manuale
-deployment = await factory.a2a_openshell_deploy("agent", port=8002, policy="p.yaml")
-# ...
-await deployment.destroy()  # cleanup esplicito
+# Context manager
+async with OpenShellDeployer(...) as info:
+    print(f"Agent at {info.endpoint}")
+# sandbox destroyed automatically
 ```
 
-Non richiede containerizzazione — funziona da qualsiasi processo Python
-che possa raggiungere il gateway OpenShell e abbia il CLI `openshell` nel PATH.
+---
 
-## Limitazioni note
+## Troubleshooting
 
-- **Solo Linux/macOS**: il SDK OpenShell non ha wheel Windows
-- **Docker richiesto**: per build immagine e gateway
-- **Comandi multilinea**: il SDK gRPC rifiuta newline nei comandi
-  (workaround: salvare su file + eseguire)
+### Sandbox stuck in "Provisioning" / CrashLoopBackOff
 
-<!-- TODO: aggiornare man mano che il design si finalizza -->
+Check the previous container logs:
+```bash
+openshell doctor exec -- kubectl -n openshell logs <sandbox-name> --previous
+```
+
+Common causes:
+- **"sandbox user not found"** — add `RUN useradd -m sandbox` to your Dockerfile
+- **"Network namespace creation failed"** — install `iproute2` in your Dockerfile
+- **"No such file or directory (os error 2)"** — same as above, `ip` command is missing
+
+### Server not responding (curl returns empty reply)
+
+Read the server log inside the sandbox:
+```bash
+ssh -o "ProxyCommand=openshell ssh-proxy --gateway-name openshell --name <sandbox>" \
+    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    sandbox@openshell-<sandbox> "cat /tmp/a2a-server.log"
+```
+
+Common causes:
+- **"No module named 'litellm'"** — add `extras=["litellm"]` to `a2a_openshell_deploy()`
+- **"Permission denied: '/app/logs/...'"** — use `log_dir="/tmp/logs"` in `setup_logging()`
+- **"Failed to download ... tunnel error"** — the sandbox has no PyPI access. Use `/app/.venv/bin/python` instead of `uv run`
+- **"missing required argument: 'executor'"** — pass `BashTool(executor=LocalShellExecutor())`
+
+### Push notifications not working (polling fallback)
+
+Check the sandbox proxy logs:
+```bash
+openshell logs <sandbox> | grep webhook
+```
+
+If you see `action=deny ... reason=endpoint has L7 rules; use CONNECT`:
+- The webhook endpoint uses plain HTTP, but the policy has `protocol: rest` (L7)
+- Fix: remove `protocol` from the webhook network policy rule (use L4 passthrough)
+
+### Forward port already in use
+
+```bash
+openshell forward list          # see active forwards
+openshell forward stop <port> <sandbox>   # stop stale forward
+```
+
+---
+
+## Limitations
+
+- **Linux/macOS only**: the OpenShell SDK does not have Windows wheels. Use WSL2 on Windows.
+- **Docker required**: for image build and gateway.
+- **Build time**: first build downloads all dependencies (~60-90s). Subsequent builds use Docker layer cache.

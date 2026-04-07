@@ -1,42 +1,25 @@
-# examples/shell-demo/bash_server_sandboxed.py
-"""A2A server with BashTool running inside an OpenShell sandbox.
+# examples/deploy_demo/serve.py
+"""Entrypoint that runs INSIDE the OpenShell sandbox.
 
-The BashTool uses OpenShellExecutor — commands execute in a policy-governed
-sandbox (filesystem, network, process controls enforced by the kernel).
+This module is specified as `entrypoint` in deploy.py. The deployer
+executes `uv run python -m examples.deploy_demo.serve` inside the
+sandbox container. It registers the agent and starts the A2A server.
 
-Requirements (Linux/macOS only):
-    uv sync --extra litellm --extra serve --extra openshell
-
-Usage:
-    ANTHROPIC_API_KEY=sk-... uv run python examples/shell-demo/bash_server_sandboxed.py
-
-    # Then connect with the CLI client:
-    uv run python examples/cli_client.py --url http://localhost:8002
+Do NOT run this directly — use deploy.py instead.
 """
 
 import os
 
-from dotenv import load_dotenv
-
 from obelix.adapters.outbound.litellm import LiteLLMProvider
-from obelix.adapters.outbound.shell import OpenShellExecutor
+from obelix.adapters.outbound.shell import LocalShellExecutor
 from obelix.core.agent import BaseAgent
 from obelix.core.agent.agent_factory import AgentFactory
-from obelix.core.tracer import HTTPExporter, Tracer
 from obelix.infrastructure.logging import setup_logging
 from obelix.plugins.builtin import BashTool
 
-load_dotenv()
-setup_logging(console_level="INFO")
+setup_logging(console_level="INFO", log_dir="/tmp/logs")
 
 LITELLM_MODEL = os.getenv("LITELLM_MODEL", "anthropic/claude-haiku-4-5-20251001")
-
-tracer = Tracer(
-    exporter=HTTPExporter(
-        endpoint=os.getenv("TRACER_URL", "http://localhost:8100/api/v1/ingest")
-    ),
-    service_name="shell_demo",
-)
 
 # -- Provider ----------------------------------------------------------------
 
@@ -50,13 +33,6 @@ def make_provider() -> LiteLLMProvider:
     )
 
 
-# -- Executor ----------------------------------------------------------------
-
-# Gateway and TLS certs are read from env vars:
-#   OPENSHELL_GATEWAY=host.docker.internal:8080
-#   OPENSHELL_TLS_CERT_DIR=/app/certs
-_executor = OpenShellExecutor(policy="./policy.yaml")
-
 # -- Agent -------------------------------------------------------------------
 
 _SYSTEM_MESSAGE = (
@@ -69,7 +45,12 @@ _SYSTEM_MESSAGE = (
 
 
 class SandboxedBashAgent(BaseAgent):
-    """Agent with shell access via BashTool + OpenShell sandbox."""
+    """Agent with shell access via BashTool.
+
+    Inside the sandbox, BashTool uses the default LocalShellExecutor —
+    commands run as normal subprocesses, but the OpenShell Policy Engine
+    enforces filesystem/network/process restrictions at the kernel level.
+    """
 
     def __init__(self, **kwargs):
         super().__init__(
@@ -77,20 +58,20 @@ class SandboxedBashAgent(BaseAgent):
             provider=make_provider(),
             **kwargs,
         )
-        self.register_tool(BashTool(executor=_executor))
+        # LocalShellExecutor runs commands as subprocesses.
+        # The sandbox policy protects us at the kernel level.
+        self.register_tool(BashTool(executor=LocalShellExecutor()))
 
 
 # -- Serve -------------------------------------------------------------------
 
 if __name__ == "__main__":
-    print("BashTool mode: OpenShell sandbox")
-
     factory = AgentFactory()
-    factory.with_tracer(tracer)
     factory.register(name="sandbox_bash", cls=SandboxedBashAgent)
 
     factory.a2a_serve(
         "sandbox_bash",
         port=8002,
-        description="Agent with sandboxed shell execution via OpenShell",
+        host="0.0.0.0",
+        description="Agent with sandboxed shell execution via OpenShell Deployer",
     )

@@ -349,11 +349,12 @@ class TestBuildImage:
             _make_factory(), "test_agent", entrypoint="my_app.serve"
         )
         result = asyncio.run(deployer._build_image())
-        assert Path(result).name == "Dockerfile"
+        assert Path(result).name == ".Dockerfile.openshell"
         content = Path(result).read_text()
         assert "python:3.13" in content
         assert "uv" in content
-        assert "pyproject.toml" in content
+        assert "iproute2" in content
+        assert "useradd -m sandbox" in content
 
     def test_auto_generate_includes_entrypoint(self):
         from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
@@ -495,17 +496,18 @@ class TestPortForwarding:
         return d
 
     def test_start_forward(self, deployer):
-        result = MagicMock(returncode=0, stdout="", stderr="")
-        with patch("subprocess.run", return_value=result) as mock_run:
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None  # still running
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
             asyncio.run(deployer._start_forward())
-        cmd = mock_run.call_args[0][0]
+        cmd = mock_popen.call_args[0][0]
         assert cmd == [
             "openshell",
             "forward",
             "start",
+            "-d",
             "8002",
             "obelix-abc",
-            "-d",
         ]
 
     def test_stop_forward(self, deployer):
@@ -604,10 +606,13 @@ class TestDeploy:
         mock_client = _make_mock_client()
 
         cli_result = MagicMock(returncode=0, stdout="", stderr="")
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
         with (
             _patch_sdk(mock_client),
             patch("shutil.which", return_value="/usr/bin/openshell"),
             patch("subprocess.run", return_value=cli_result),
+            patch("subprocess.Popen", return_value=mock_proc),
         ):
             info = asyncio.run(deployer.deploy())
 
@@ -629,10 +634,13 @@ class TestDeploy:
         mock_client = _make_mock_client()
 
         cli_result = MagicMock(returncode=0, stdout="", stderr="")
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
         with (
             _patch_sdk(mock_client),
             patch("shutil.which", return_value="/usr/bin/openshell"),
             patch("subprocess.run", return_value=cli_result),
+            patch("subprocess.Popen", return_value=mock_proc),
         ):
             info = asyncio.run(deployer.deploy())
 
@@ -672,15 +680,23 @@ class TestDeploy:
         deployer = OpenShellDeployer(
             _make_factory(),
             "test_agent",
-            providers=["bad"],
+            providers=["anthropic"],
             entrypoint="test_mod",
         )
         mock_client = _make_mock_client()
-        fail = MagicMock(returncode=1, stdout="", stderr="provider error")
+        # Provider get returns not found, then create fails
+        get_fail = MagicMock(returncode=1, stdout="", stderr="not found")
+        create_fail = MagicMock(returncode=1, stdout="", stderr="provider error")
+
+        def side_effect(cmd, **kwargs):
+            if "get" in cmd:
+                return get_fail
+            return create_fail
+
         with (
             _patch_sdk(mock_client),
             patch("shutil.which", return_value="/usr/bin/openshell"),
-            patch("subprocess.run", return_value=fail),
+            patch("subprocess.run", side_effect=side_effect),
         ):
             with pytest.raises(RuntimeError, match="provider error"):
                 asyncio.run(deployer.deploy())
@@ -702,12 +718,15 @@ class TestContextManager:
         )
         mock_client = _make_mock_client()
         cli_result = MagicMock(returncode=0, stdout="", stderr="")
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
 
         async def run():
             with (
                 _patch_sdk(mock_client),
                 patch("shutil.which", return_value="/usr/bin/openshell"),
                 patch("subprocess.run", return_value=cli_result),
+                patch("subprocess.Popen", return_value=mock_proc),
             ):
                 async with deployer as info:
                     assert isinstance(info, DeploymentInfo)
@@ -723,12 +742,15 @@ class TestContextManager:
         )
         mock_client = _make_mock_client()
         cli_result = MagicMock(returncode=0, stdout="", stderr="")
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
 
         async def run():
             with (
                 _patch_sdk(mock_client),
                 patch("shutil.which", return_value="/usr/bin/openshell"),
                 patch("subprocess.run", return_value=cli_result),
+                patch("subprocess.Popen", return_value=mock_proc),
             ):
                 async with deployer:
                     pass
@@ -744,12 +766,15 @@ class TestContextManager:
         )
         mock_client = _make_mock_client()
         cli_result = MagicMock(returncode=0, stdout="", stderr="")
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
 
         async def run():
             with (
                 _patch_sdk(mock_client),
                 patch("shutil.which", return_value="/usr/bin/openshell"),
                 patch("subprocess.run", return_value=cli_result),
+                patch("subprocess.Popen", return_value=mock_proc),
             ):
                 with pytest.raises(ValueError, match="boom"):
                     async with deployer:

@@ -13,8 +13,10 @@ import os
 import shutil
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 from obelix.infrastructure.logging import get_logger
+from obelix.infrastructure.providers import Providers
 
 logger = get_logger(__name__)
 
@@ -23,6 +25,18 @@ try:
 except ImportError:
     SandboxClient = None
     TlsConfig = None
+
+# Mapping from provider name to pyproject.toml optional-dependency group.
+# Providers in base dependencies (anthropic, openai) map to None.
+_PROVIDER_EXTRAS: dict[str, str | None] = {
+    Providers.ANTHROPIC.value: None,  # base dependency
+    Providers.OPENAI.value: None,  # base dependency
+    Providers.OCI_GENERATIVE_AI.value: "oci",
+    Providers.IBM_WATSON.value: "ibm",
+    Providers.OLLAMA.value: "ollama",
+    Providers.VLLM.value: "vllm",
+    Providers.LITELLM.value: "litellm",
+}
 
 
 @dataclass(frozen=True)
@@ -45,6 +59,7 @@ class OpenShellDeployer:
         port: int = 8002,
         policy: str | None = None,
         providers: list[str] | None = None,
+        extras: list[str] | None = None,
         dockerfile: str | None = None,
         image: str | None = None,
         gateway: str | None = None,
@@ -62,6 +77,7 @@ class OpenShellDeployer:
         self._port = port
         self._policy = policy
         self._providers = providers
+        self._extras = extras
         self._dockerfile = dockerfile
         self._image = image
         self._gateway = gateway or os.environ.get("OPENSHELL_GATEWAY")
@@ -76,7 +92,8 @@ class OpenShellDeployer:
 
         self._client = None
         self._sandbox_name: str | None = None
-        self._tmpdir: str | None = None
+        self._generated_dockerfile: Path | None = None
+        self._forward_proc: subprocess.Popen | None = None
         self._destroyed = False
 
     async def _validate(self) -> None:
@@ -91,7 +108,16 @@ class OpenShellDeployer:
                 "Pass the Python module that sets up the factory and calls a2a_serve()."
             )
 
-        # 2. SDK available
+        # 2. Validate provider names
+        if self._providers:
+            valid = set(_PROVIDER_EXTRAS)
+            invalid = [p for p in self._providers if p not in valid]
+            if invalid:
+                raise ValueError(
+                    f"Unknown provider(s): {invalid}. Valid providers: {sorted(valid)}"
+                )
+
+        # 3. SDK available
         if SandboxClient is None:
             raise ImportError(
                 "The 'openshell' package is required for OpenShellDeployer. "
@@ -181,6 +207,8 @@ class OpenShellDeployer:
                     "create",
                     "--name",
                     name,
+                    "--type",
+                    name,
                     "--from-existing",
                 ]
             )
@@ -206,39 +234,76 @@ class OpenShellDeployer:
         logger.info("[Deployer] Generating Dockerfile")
         return self._generate_dockerfile()
 
-    def _generate_dockerfile(self) -> str:
-        """Generate a minimal Dockerfile for the agent."""
-        import tempfile
+    def _build_extras_flags(self) -> str:
+        """Build ``--extra X`` flags for ``uv sync``.
 
+        Always includes ``serve`` and ``openshell``.  If ``extras`` was
+        provided explicitly, those are added as-is.  Otherwise, extras
+        are derived from ``providers`` via ``_PROVIDER_EXTRAS``.
+        """
+        result = {"serve", "openshell"}
+        if self._extras:
+            result.update(self._extras)
+        else:
+            for p in self._providers or []:
+                extra = _PROVIDER_EXTRAS.get(p)
+                if extra is not None:
+                    result.add(extra)
+        return " ".join(f"--extra {e}" for e in sorted(result))
+
+    def _generate_dockerfile(self) -> str:
+        """Generate a minimal Dockerfile in the project root.
+
+        The Dockerfile is placed in cwd so that ``openshell sandbox create
+        --from <path>`` uses the project directory as Docker build context,
+        giving access to all project files (pyproject.toml, src/, etc.).
+        The file is cleaned up in :meth:`destroy`.
+        """
         dockerfile_content = (
             "FROM python:3.13-slim\n"
             "\n"
             "# Install uv\n"
             "COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv\n"
             "\n"
+            "# OpenShell sandbox requirements:\n"
+            "# - iproute2: supervisor creates network namespaces via `ip`\n"
+            "# - sandbox user: policy run_as_user needs this user to exist\n"
+            "RUN apt-get update && apt-get install -y --no-install-recommends iproute2 \\\n"
+            "    && rm -rf /var/lib/apt/lists/*\n"
+            "RUN useradd -m sandbox\n"
+            "\n"
             "WORKDIR /app\n"
             "\n"
             "# Copy project files\n"
-            "COPY pyproject.toml uv.lock ./\n"
-            "COPY src/ ./src/\n"
+            "COPY . .\n"
             "\n"
             "# Install dependencies\n"
-            "RUN uv sync --no-dev --extra serve --extra openshell --link-mode=copy\n"
+            f"RUN uv sync --no-dev {self._build_extras_flags()} --link-mode=copy\n"
             "\n"
             f"EXPOSE {self._port}\n"
             "\n"
-            "# Entrypoint: start A2A server for the agent\n"
-            f'CMD ["uv", "run", "python", "-m", "{self._entrypoint}"]\n'
+            "# Run with the pre-built venv directly — no uv at runtime.\n"
+            "# The sandbox may not have network access to PyPI.\n"
+            f'CMD ["/app/.venv/bin/python", "-m", "{self._entrypoint}"]\n'
         )
 
-        tmpdir = tempfile.mkdtemp(prefix="obelix-deployer-")
-        self._tmpdir = tmpdir
-        dockerfile_path = os.path.join(tmpdir, "Dockerfile")
-        with open(dockerfile_path, "w") as f:
-            f.write(dockerfile_content)
+        project_root = Path.cwd()
+        dockerfile_path = project_root / ".Dockerfile.openshell"
+        dockerfile_path.write_text(dockerfile_content)
+        self._generated_dockerfile = dockerfile_path
+
+        # Ensure .dockerignore excludes heavy/unnecessary dirs
+        dockerignore_path = project_root / ".dockerignore"
+        if not dockerignore_path.exists():
+            dockerignore_path.write_text(
+                ".venv\n.git\n__pycache__\n*.pyc\n.pytest_cache\n.ruff_cache\n"
+            )
+            self._generated_dockerignore = dockerignore_path
+        else:
+            self._generated_dockerignore = None
 
         logger.info(f"[Deployer] Generated Dockerfile: {dockerfile_path}")
-        return dockerfile_path
+        return str(dockerfile_path)
 
     async def _create_sandbox(self, image_source: str) -> None:
         """Create an OpenShell sandbox from an image or Dockerfile.
@@ -272,7 +337,11 @@ class OpenShellDeployer:
         if self._policy:
             cmd.extend(["--policy", self._policy])
 
-        await self._run_cli(cmd)
+        # Without "-- true", the CLI opens an interactive SSH shell that
+        # blocks forever under subprocess.run(capture_output=True).
+        cmd.extend(["--", "true"])
+
+        await self._run_cli(cmd, timeout=600)
 
         # Wait for sandbox to be ready (SDK)
         logger.info(
@@ -290,7 +359,8 @@ class OpenShellDeployer:
         ref = await asyncio.to_thread(self._client.get, sandbox_name=self._sandbox_name)
 
         server_cmd = (
-            f"nohup uv run python -m {self._entrypoint} > /tmp/a2a-server.log 2>&1 &"
+            f"nohup /app/.venv/bin/python -m {self._entrypoint} "
+            f"> /tmp/a2a-server.log 2>&1 &"
         )
 
         logger.info(
@@ -315,40 +385,74 @@ class OpenShellDeployer:
     async def _start_forward(self) -> None:
         """Start port forwarding from localhost to sandbox.
 
+        Uses Popen instead of _run_cli because the forward process is
+        long-running.  The ``-d`` flag makes the CLI daemonize, but the
+        parent may still block when stdout/stderr pipes are inherited by
+        the child.  Using DEVNULL avoids this entirely.
+
         # TODO: replace with SDK when port forwarding is available
         """
-        await self._run_cli(
-            [
-                "forward",
-                "start",
-                str(self._port),
-                self._sandbox_name,
-                "-d",
-            ]
+        cmd = [
+            "openshell",
+            "forward",
+            "start",
+            "-d",
+            str(self._port),
+            self._sandbox_name,
+        ]
+        logger.debug(f"[Deployer] CLI: {' '.join(cmd)}")
+
+        self._forward_proc = await asyncio.to_thread(
+            subprocess.Popen,
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
         )
+
+        # Give the forward a moment to establish
+        await asyncio.sleep(2)
+
+        if self._forward_proc.poll() not in (None, 0):
+            stderr = (
+                self._forward_proc.stderr.read().decode()
+                if self._forward_proc.stderr
+                else ""
+            )
+            raise RuntimeError(
+                f"Port forward exited with code {self._forward_proc.returncode}: "
+                f"{stderr}"
+            )
+
         logger.info(
             f"[Deployer] Port forward started | "
             f"localhost:{self._port} -> {self._sandbox_name}"
         )
 
     async def _stop_forward(self) -> None:
-        """Stop port forwarding. Best-effort — does not raise on failure.
+        """Stop port forwarding via CLI. Best-effort — does not raise on failure.
+
+        Uses ``openshell forward stop`` instead of terminating the Popen
+        process directly, because ``-d`` spawns a separate daemon whose PID
+        is tracked by the CLI, not by our Popen handle.
 
         # TODO: replace with SDK when port forwarding is available
         """
-        try:
-            await self._run_cli(
-                [
-                    "forward",
-                    "stop",
-                    str(self._port),
-                    self._sandbox_name,
-                ],
-                check=False,
-            )
-            logger.info(f"[Deployer] Port forward stopped | port={self._port}")
-        except Exception as e:
-            logger.warning(f"[Deployer] Failed to stop forward: {e}")
+        if self._sandbox_name:
+            try:
+                await self._run_cli(
+                    [
+                        "forward",
+                        "stop",
+                        str(self._port),
+                        self._sandbox_name,
+                    ],
+                    check=False,
+                )
+                logger.info(f"[Deployer] Port forward stopped | port={self._port}")
+            except Exception as e:
+                logger.warning(f"[Deployer] Failed to stop forward: {e}")
+        self._forward_proc = None
 
     async def deploy(self) -> DeploymentInfo:
         """Full deploy: validate -> providers -> image -> sandbox -> server -> forward.
@@ -441,10 +545,13 @@ class OpenShellDeployer:
             except Exception as e:
                 logger.warning(f"[Deployer] Failed to close client: {e}")
 
-        # 4. Clean up temp directory
-        if self._tmpdir:
-            import shutil as _shutil
-
-            _shutil.rmtree(self._tmpdir, ignore_errors=True)
+        # 4. Clean up generated files
+        for attr in ("_generated_dockerfile", "_generated_dockerignore"):
+            f = getattr(self, attr, None)
+            if f:
+                try:
+                    f.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
         logger.info("[Deployer] Cleanup complete")
