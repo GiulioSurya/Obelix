@@ -19,7 +19,14 @@ from obelix.plugins.builtin import BashTool
 
 setup_logging(console_level="INFO", log_dir="/tmp/logs")
 
-LITELLM_MODEL = os.getenv("LITELLM_MODEL", "anthropic/claude-haiku-4-5-20251001")
+LITELLM_MODEL = os.getenv("LITELLM_MODEL")
+if not LITELLM_MODEL:
+    raise RuntimeError(
+        "LITELLM_MODEL env var is required. "
+        "Set it via OpenShell provider credentials: "
+        "openshell provider create --name anthropic --type anthropic "
+        "--from-existing --credential LITELLM_MODEL=anthropic/claude-haiku-4-5-20251001"
+    )
 
 # -- Provider ----------------------------------------------------------------
 
@@ -27,7 +34,6 @@ LITELLM_MODEL = os.getenv("LITELLM_MODEL", "anthropic/claude-haiku-4-5-20251001"
 def make_provider() -> LiteLLMProvider:
     return LiteLLMProvider(
         model_id=LITELLM_MODEL,
-        api_key=os.getenv("ANTHROPIC_API_KEY"),
         max_tokens=4000,
         temperature=1,
     )

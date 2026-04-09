@@ -95,6 +95,6 @@ if __name__ == "__main__":
 
     factory.a2a_serve(
         "bash_agent",
-        port=8002,
+        port=8003,
         description="Agent with shell command execution via BashTool",
     )

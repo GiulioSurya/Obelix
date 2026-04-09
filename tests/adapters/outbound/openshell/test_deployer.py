@@ -269,7 +269,7 @@ class TestRunCli:
 
 
 class TestEnsureProviders:
-    """_ensure_providers registers LLM providers in the OpenShell gateway."""
+    """_ensure_providers verifies that providers exist in the OpenShell gateway."""
 
     @pytest.fixture
     def deployer(self):
@@ -277,8 +277,8 @@ class TestEnsureProviders:
 
         return OpenShellDeployer(_make_factory(), "test_agent", providers=["anthropic"])
 
-    def test_provider_already_exists_skips_create(self, deployer):
-        """If 'openshell provider get <name>' succeeds, skip create."""
+    def test_provider_exists_passes(self, deployer):
+        """If 'openshell provider get <name>' succeeds, no error."""
         get_result = MagicMock(returncode=0, stdout="anthropic", stderr="")
         with patch("subprocess.run", return_value=get_result) as mock_run:
             asyncio.run(deployer._ensure_providers())
@@ -286,23 +286,15 @@ class TestEnsureProviders:
         assert len(calls) == 1
         assert "get" in calls[0][0][0]
 
-    def test_provider_not_found_creates(self, deployer):
-        """If 'get' fails, 'create --from-existing' is called."""
+    def test_provider_not_found_raises(self, deployer):
+        """If 'get' fails, RuntimeError is raised with setup instructions."""
         get_result = MagicMock(returncode=1, stdout="", stderr="not found")
-        create_result = MagicMock(returncode=0, stdout="created", stderr="")
 
-        call_count = 0
-
-        def side_effect(cmd, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if "get" in cmd:
-                return get_result
-            return create_result
-
-        with patch("subprocess.run", side_effect=side_effect):
-            asyncio.run(deployer._ensure_providers())
-        assert call_count == 2
+        with patch("subprocess.run", return_value=get_result):
+            with pytest.raises(
+                RuntimeError, match="not found in the OpenShell gateway"
+            ):
+                asyncio.run(deployer._ensure_providers())
 
     def test_no_providers_is_noop(self):
         from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
@@ -311,14 +303,6 @@ class TestEnsureProviders:
         with patch("subprocess.run") as mock_run:
             asyncio.run(deployer._ensure_providers())
         mock_run.assert_not_called()
-
-    def test_create_failure_raises(self, deployer):
-        """If create also fails, RuntimeError is raised."""
-        fail = MagicMock(returncode=1, stdout="", stderr="auth error")
-
-        with patch("subprocess.run", return_value=fail):
-            with pytest.raises(RuntimeError, match="auth error"):
-                asyncio.run(deployer._ensure_providers())
 
 
 class TestBuildImage:
@@ -674,7 +658,7 @@ class TestDeploy:
 
         assert deployer._destroyed is True
 
-    def test_provider_error_does_not_cleanup(self):
+    def test_provider_missing_does_not_cleanup(self):
         from obelix.adapters.outbound.openshell.deployer import OpenShellDeployer
 
         deployer = OpenShellDeployer(
@@ -684,21 +668,17 @@ class TestDeploy:
             entrypoint="test_mod",
         )
         mock_client = _make_mock_client()
-        # Provider get returns not found, then create fails
+        # Provider get returns not found — deployer should fail immediately
         get_fail = MagicMock(returncode=1, stdout="", stderr="not found")
-        create_fail = MagicMock(returncode=1, stdout="", stderr="provider error")
-
-        def side_effect(cmd, **kwargs):
-            if "get" in cmd:
-                return get_fail
-            return create_fail
 
         with (
             _patch_sdk(mock_client),
             patch("shutil.which", return_value="/usr/bin/openshell"),
-            patch("subprocess.run", side_effect=side_effect),
+            patch("subprocess.run", return_value=get_fail),
         ):
-            with pytest.raises(RuntimeError, match="provider error"):
+            with pytest.raises(
+                RuntimeError, match="not found in the OpenShell gateway"
+            ):
                 asyncio.run(deployer.deploy())
         # destroy NOT called — no sandbox was created
         assert deployer._destroyed is False

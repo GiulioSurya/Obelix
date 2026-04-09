@@ -2,7 +2,7 @@
 """Deploy a sandboxed BashTool agent inside an OpenShell sandbox.
 
 This script uses a2a_openshell_deploy() to:
-1. Register LLM provider credentials in the OpenShell gateway
+1. Verify that LLM provider credentials exist in the OpenShell gateway
 2. Build a container image with the project code
 3. Create a sandbox with the security policy
 4. Start the A2A server inside the sandbox (examples.deploy_demo.serve)
@@ -15,24 +15,15 @@ Requirements (Linux/macOS or WSL2):
     - Docker running
     - OpenShell gateway started: openshell gateway start
     - Dependencies: uv sync --extra litellm --extra serve --extra openshell
-
-Env vars (loaded from examples/shell-demo/.env):
-    - ANTHROPIC_API_KEY: Anthropic API key
-    - LITELLM_MODEL: model to use (default: anthropic/claude-haiku-4-5-20251001)
+    - Provider registered: openshell provider create --name anthropic --type anthropic --from-existing
 
 Usage:
     uv run python examples/deploy_demo/deploy.py
 """
 
-from pathlib import Path
-
-from dotenv import load_dotenv
-
 from obelix.core.agent.agent_factory import AgentFactory
 from obelix.infrastructure.logging import setup_logging
 
-# Load env from shell-demo/.env (ANTHROPIC_API_KEY, LITELLM_MODEL, etc.)
-load_dotenv(Path(__file__).parent.parent / "shell-demo" / ".env")
 setup_logging(console_level="INFO")
 
 if __name__ == "__main__":

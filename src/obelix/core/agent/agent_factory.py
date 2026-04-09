@@ -760,4 +760,7 @@ class AgentFactory:
         try:
             asyncio.run(_run())
         except KeyboardInterrupt:
-            pass
+            # asyncio.run() may shut down the loop before finally runs —
+            # ensure cleanup always happens.
+            if not deployer._destroyed:
+                asyncio.run(deployer.destroy())

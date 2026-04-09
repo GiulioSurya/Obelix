@@ -182,10 +182,10 @@ class OpenShellDeployer:
         return result
 
     async def _ensure_providers(self) -> None:
-        """Register LLM providers in the OpenShell gateway.
+        """Verify that required providers exist in the OpenShell gateway.
 
-        For each provider name, checks if it exists (get). If not,
-        creates it with --from-existing (auto-detect from local env).
+        Fails fast if any provider is missing — providers must be created
+        beforehand via the CLI (e.g. ``openshell provider create``).
 
         # TODO: replace with SDK when Provider CRUD is available
         """
@@ -193,24 +193,19 @@ class OpenShellDeployer:
             return
 
         for name in self._providers:
-            # Check if already registered
             result = await self._run_cli(["provider", "get", name], check=False)
             if result.returncode == 0:
-                logger.info(f"[Deployer] Provider '{name}' already registered")
+                logger.info(f"[Deployer] Provider '{name}' found in gateway")
                 continue
 
-            # Create from local environment
-            logger.info(f"[Deployer] Creating provider '{name}' from local env")
-            await self._run_cli(
-                [
-                    "provider",
-                    "create",
-                    "--name",
-                    name,
-                    "--type",
-                    name,
-                    "--from-existing",
-                ]
+            raise RuntimeError(
+                f"Provider '{name}' not found in the OpenShell gateway.\n"
+                f"Create it first:\n"
+                f"  openshell provider create --name {name} --type {name} --from-existing\n"
+                f"\n"
+                f"Or with explicit credentials:\n"
+                f"  openshell provider create --name {name} --type {name} "
+                f"--credential API_KEY=sk-..."
             )
 
     async def _build_image(self) -> str:
