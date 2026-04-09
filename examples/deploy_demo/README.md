@@ -27,27 +27,18 @@ Windows / Host                          OpenShell Sandbox (K8s pod)
    ```bash
    uv sync --extra litellm --extra serve --extra openshell
    ```
-4. **LLM provider registered** in the gateway (one-time setup):
-
-   **Option A** — auto-detect API key from environment + add model config:
+4. **LLM provider and inference configured** in the gateway (one-time setup):
    ```bash
+   # Register API key (reads from exported env var or Claude config)
    export ANTHROPIC_API_KEY=sk-ant-...
    openshell provider create --name anthropic --type anthropic --from-existing
-   openshell provider update anthropic --config LITELLM_MODEL=anthropic/claude-haiku-4-5-20251001
-   ```
-   `--from-existing` reads exported env vars and tool config (e.g. `~/.config/claude/`), NOT `.env` files.
-   `--from-existing` and `--credential` are mutually exclusive, so the model is added via `update`.
-   The model uses `--config` (not `--credential`) because it's a configuration value, not a secret.
-   `--credential` values are injected as resolver references, `--config` values are injected as plain env vars.
 
-   **Option B** — pass the API key explicitly + model config (no export needed):
-   ```bash
-   openshell provider create --name anthropic --type anthropic --credential ANTHROPIC_API_KEY=sk-ant-...
-   openshell provider update anthropic --config LITELLM_MODEL=anthropic/claude-haiku-4-5-20251001
+   # Point the gateway inference proxy at this provider
+   openshell inference set --provider anthropic --model claude-haiku-4-5-20251001
    ```
-
-   Both options store the API key as a secret and the model as config in the gateway.
-   The sandbox receives them as environment variables at runtime — no `.env` files needed.
+   The sandbox never sees the API key. LLM requests go through `https://inference.local`
+   (a gateway-managed proxy) which injects the real credentials at the network level.
+   See [docs/openshell_deployer.md](../../docs/openshell_deployer.md) for details.
 
 ## Run
 
@@ -92,11 +83,13 @@ The `policy.yaml` defines four security areas:
 - Runs as unprivileged user `sandbox` (no root)
 
 ### Network (default deny-all, whitelist only)
-- `api.anthropic.com:443` — LLM API calls
 - `host.docker.internal:8100` — Obelix tracer (optional)
 - `host.docker.internal:8010` — A2A client webhook (push notifications)
 - `*.dns.google:53/443` — DNS resolution
 - Everything else is blocked (no PyPI, no GitHub, no arbitrary HTTP)
+
+Note: LLM API calls go through `inference.local` (gateway proxy), which does not
+require a network policy rule — it is handled internally by the sandbox.
 
 ### Network policy types
 - **L7 (protocol: rest)** — for HTTPS endpoints. Enables HTTP method/path inspection.
@@ -132,17 +125,23 @@ Ask the agent to run commands that test each security boundary:
 
 To switch from Anthropic to another provider (e.g. OpenAI):
 
-**Step 1** — Register the new provider in the gateway:
+**Step 1** — Register the new provider and update inference:
 ```bash
 export OPENAI_API_KEY=sk-...
 openshell provider create --name openai --type openai --from-existing
-openshell provider update openai --config LITELLM_MODEL=openai/gpt-4o
+openshell inference set --provider openai --model gpt-4o
 ```
 
-`--from-existing` picks up credentials from your local environment (e.g. `OPENAI_API_KEY`).
-The model is added separately via `update` using [LiteLLM's naming convention](https://docs.litellm.ai/docs/providers).
+**Step 2** — Update `serve.py` to use the new model:
+```python
+LiteLLMProvider(
+    model_id="openai/gpt-4o",
+    api_key="placeholder",
+    base_url="https://inference.local",
+)
+```
 
-**Step 2** — Update `deploy.py` to reference the new provider:
+**Step 3** — Update `deploy.py` to reference the new provider:
 ```python
 factory.a2a_openshell_deploy(
     "sandbox_bash",
@@ -151,24 +150,7 @@ factory.a2a_openshell_deploy(
 )
 ```
 
-**Step 3** — Update `policy.yaml` to allow the new API endpoint:
-```yaml
-network_policies:
-  openai_api:
-    name: openai-api
-    endpoints:
-      - host: api.openai.com
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-write
-    binaries:
-      - path: /usr/bin/python*
-      - path: /usr/local/bin/python*
-```
-
-No changes needed in `serve.py` — it reads `LITELLM_MODEL` from the environment
-and LiteLLM routes to the correct provider automatically.
+No network policy changes needed — all LLM traffic goes through `inference.local`.
 
 ### Adding network access
 

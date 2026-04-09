@@ -13,7 +13,7 @@ The difference is that the agent runs in an isolated environment with kernel-lev
 | Where it runs | Local process | OpenShell sandbox (K8s pod) |
 | Security | OS permissions only | Kernel-level policy (landlock, network namespaces) |
 | BashTool | Any executor | LocalShellExecutor (protected by policy) |
-| API keys | In your .env / environment | Injected by the OpenShell gateway (never on filesystem) |
+| API keys | In your .env / environment | Injected by the gateway inference proxy at network level |
 | Requirements | `uv sync --extra serve` | Docker + OpenShell gateway |
 | Client access | `localhost:<port>` | `localhost:<port>` (via SSH tunnel) |
 
@@ -57,8 +57,8 @@ The deployer blocks waiting for Ctrl+C. On exit, the sandbox is destroyed automa
 
 ```
 1. Validate        Check SDK, CLI, gateway reachability, provider names
-2. Providers       openshell provider create --from-existing
-                   (registers API keys in the gateway from local env)
+2. Providers       Verify that required providers exist in the gateway
+                   (must be created beforehand via openshell provider create)
 3. Image build     Docker build with project code + targeted dependencies
                    (or use a custom Dockerfile / pre-built image)
 4. Sandbox create  openshell sandbox create --from <image> --provider ... --policy ...
@@ -222,17 +222,75 @@ The agent does not know it is in a sandbox. It tries, fails, handles the error.
 
 ---
 
-## Provider Credentials
+## LLM Credentials and Inference
 
-API keys are never on the sandbox filesystem. The OpenShell gateway injects them as environment variables into the sandbox process:
+API keys never reach the sandbox. OpenShell uses a **managed inference proxy** (`https://inference.local`) that injects credentials at the network level.
+
+### How it works
+
+1. You register a provider with your API key in the gateway (one-time setup).
+2. You configure `inference.local` to route through that provider.
+3. The agent inside the sandbox calls `https://inference.local` instead of the LLM API directly.
+4. The gateway intercepts the request, injects the real API key, and forwards it to the provider.
+
+The sandbox process never sees the real API key — it uses an arbitrary placeholder.
+
+### Setup (one-time)
+
+```bash
+# Register the API key (--from-existing reads from exported env vars or tool config)
+export ANTHROPIC_API_KEY=sk-ant-...
+openshell provider create --name anthropic --type anthropic --from-existing
+
+# Point the inference proxy at this provider and model
+openshell inference set --provider anthropic --model claude-haiku-4-5-20251001
+```
+
+### Agent code (inside the sandbox)
+
+Use LiteLLM with `base_url` pointing to the inference proxy:
 
 ```python
-# Automatic: reads from your local environment
-factory.a2a_openshell_deploy("agent", providers=["anthropic"])
+from obelix.adapters.outbound.litellm import LiteLLMProvider
 
-# Manual: use providers already registered in OpenShell
-factory.a2a_openshell_deploy("agent", providers=["my-custom-key"])
+provider = LiteLLMProvider(
+    model_id="anthropic/claude-haiku-4-5-20251001",
+    api_key="placeholder",  # real key injected by gateway at network level
+    base_url="https://inference.local",  # gateway-managed inference proxy
+)
 ```
+
+### Why not environment variables?
+
+OpenShell injects provider credentials into sandbox env vars as opaque resolver
+references (e.g. `openshell:resolve:env:ANTHROPIC_API_KEY`), not as actual secret
+values. These references are resolved by the gateway's network proxy, not by the
+sandbox process. Reading them with `os.getenv()` returns the resolver string, not
+the real key.
+
+This is by design — it prevents credentials from leaking through process environment,
+logs, or `/proc`. The managed inference proxy (`inference.local`) is the intended way
+to consume LLM credentials inside a sandbox.
+
+### Switching providers
+
+To change the LLM provider, update the gateway inference config and the model in your
+agent code:
+
+```bash
+export OPENAI_API_KEY=sk-...
+openshell provider create --name openai --type openai --from-existing
+openshell inference set --provider openai --model gpt-4o
+```
+
+All sandboxes on the gateway pick up the new inference route automatically.
+No network policy changes needed — `inference.local` traffic stays internal.
+
+### deploy.py providers parameter
+
+The `providers=["anthropic"]` parameter in `a2a_openshell_deploy()` tells the deployer
+to verify that the provider exists in the gateway before creating the sandbox. It does
+not create or inject credentials — that is handled by the inference proxy.
 
 ---
 

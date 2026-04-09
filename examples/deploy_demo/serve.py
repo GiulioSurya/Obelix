@@ -8,8 +8,6 @@ sandbox container. It registers the agent and starts the A2A server.
 Do NOT run this directly — use deploy.py instead.
 """
 
-import os
-
 from obelix.adapters.outbound.litellm import LiteLLMProvider
 from obelix.adapters.outbound.shell import LocalShellExecutor
 from obelix.core.agent import BaseAgent
@@ -19,21 +17,21 @@ from obelix.plugins.builtin import BashTool
 
 setup_logging(console_level="INFO", log_dir="/tmp/logs")
 
-LITELLM_MODEL = os.getenv("LITELLM_MODEL")
-if not LITELLM_MODEL:
-    raise RuntimeError(
-        "LITELLM_MODEL env var is required. "
-        "Set it via OpenShell provider credentials: "
-        "openshell provider create --name anthropic --type anthropic "
-        "--from-existing --credential LITELLM_MODEL=anthropic/claude-haiku-4-5-20251001"
-    )
-
 # -- Provider ----------------------------------------------------------------
+
+# LLM calls go through the gateway's managed inference proxy at
+# https://inference.local. The gateway injects the real API key at the
+# network level — the sandbox never sees it.
+# Setup:
+#   openshell provider create --name anthropic --type anthropic --from-existing
+#   openshell inference set --provider anthropic --model claude-haiku-4-5-20251001
 
 
 def make_provider() -> LiteLLMProvider:
     return LiteLLMProvider(
-        model_id=LITELLM_MODEL,
+        model_id="anthropic/claude-haiku-4-5-20251001",
+        api_key="placeholder",  # real key injected by gateway at network level
+        base_url="https://inference.local",  # gateway-managed inference proxy
         max_tokens=4000,
         temperature=1,
     )
