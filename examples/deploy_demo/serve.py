@@ -12,10 +12,20 @@ from obelix.adapters.outbound.litellm import LiteLLMProvider
 from obelix.adapters.outbound.shell import LocalShellExecutor
 from obelix.core.agent import BaseAgent
 from obelix.core.agent.agent_factory import AgentFactory
+from obelix.core.tracer import HTTPExporter, Tracer
 from obelix.infrastructure.logging import setup_logging
 from obelix.plugins.builtin import BashTool
 
 setup_logging(console_level="INFO", log_dir="/tmp/logs")
+
+# -- Tracer ------------------------------------------------------------------
+
+tracer = Tracer(
+    exporter=HTTPExporter(
+        endpoint="http://host.docker.internal:8100/api/v1/ingest",
+    ),
+    service_name="deploy_demo",
+)
 
 # -- Provider ----------------------------------------------------------------
 
@@ -72,6 +82,8 @@ class SandboxedBashAgent(BaseAgent):
 if __name__ == "__main__":
     factory = AgentFactory()
     factory.register(name="sandbox_bash", cls=SandboxedBashAgent)
+
+    factory.with_tracer(tracer)
 
     factory.a2a_serve(
         "sandbox_bash",

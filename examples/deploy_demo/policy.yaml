@@ -49,14 +49,12 @@ network_policies:
       - path: /usr/bin/curl
 
   # Obelix Tracer — backend API for trace ingestion (runs on Windows host)
+  # No protocol specified → L4 (TCP passthrough), needed because the tracer is plain HTTP
   tracer_backend:
     name: obelix-tracer-ingest
     endpoints:
       - host: host.docker.internal
         port: 8100
-        protocol: rest
-        enforcement: enforce
-        access: read-write
         allowed_ips:
           - "192.168.0.0/16"
           - "172.16.0.0/12"
@@ -73,6 +71,22 @@ network_policies:
     endpoints:
       - host: host.docker.internal
         port: 8010
+        allowed_ips:
+          - "192.168.0.0/16"
+          - "172.16.0.0/12"
+          - "10.0.0.0/8"
+    binaries:
+      - path: /usr/bin/python*
+      - path: /usr/local/bin/python*
+      - path: /sandbox/.uv/python/*/bin/python*
+
+  # Obelix Tracer — frontend (Vite dev server on Windows host)
+  # No protocol specified → L4 (TCP passthrough), plain HTTP
+  tracer_frontend:
+    name: obelix-tracer-frontend
+    endpoints:
+      - host: host.docker.internal
+        port: 5173
         allowed_ips:
           - "192.168.0.0/16"
           - "172.16.0.0/12"
