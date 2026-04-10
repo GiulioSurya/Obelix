@@ -11,6 +11,9 @@ from pydantic import BaseModel
 from obelix.infrastructure.logging import get_logger
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
+    from obelix.adapters.outbound.mcp.config import MCPServerConfig
     from obelix.core.agent.shared_memory import SharedMemoryGraph
     from obelix.core.tracer.tracer import Tracer
 
@@ -62,6 +65,7 @@ class BaseAgent:
         response_schema: type[BaseModel] | None = None,
         tracer: "Tracer | None" = None,
         planning: bool = False,
+        mcp_config: "str | Path | MCPServerConfig | list | None" = None,
     ):
         self.system_message = SystemMessage(content=system_message)
         self.max_iterations = max_iterations
@@ -116,6 +120,39 @@ class BaseAgent:
         self.memory_graph: SharedMemoryGraph | None = None
         self.agent_id: str | None = None
         register_memory_hooks(self)
+
+        # MCP integration (optional)
+        self._mcp_manager = None
+        self._lazy_mcp = False
+        if mcp_config:
+            from obelix.adapters.outbound.mcp.config import parse_mcp_config
+            from obelix.adapters.outbound.mcp.manager import MCPManager
+
+            configs = parse_mcp_config(mcp_config)
+            self._mcp_manager = MCPManager(configs)
+            logger.info(
+                f"[{self.__class__.__name__}] MCP config detected with "
+                f"{len(configs)} server(s). Use 'async with agent:' for "
+                "persistent connections."
+            )
+
+    async def __aenter__(self):
+        """Enter async context — connects MCP servers if configured."""
+        if self._mcp_manager:
+            tools = await self._mcp_manager.connect()
+            for t in tools:
+                self.register_tool(t)
+            logger.info(
+                f"[{self.__class__.__name__}] MCP connected, "
+                f"{len(tools)} tool(s) registered"
+            )
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Exit async context — disconnects MCP servers."""
+        if self._mcp_manager and self._mcp_manager.is_connected():
+            await self._mcp_manager.disconnect()
+        return False
 
     def register_tool(self, tool: Tool):
         """
@@ -322,6 +359,17 @@ class BaseAgent:
                 self.__class__.__name__,
                 query if query is not None else "",
             )
+
+        # Lazy MCP connect (if not using async with)
+        if self._mcp_manager and not self._mcp_manager.is_connected():
+            logger.warning(
+                f"[{self.__class__.__name__}] MCP lazy connect — "
+                "use 'async with agent:' for persistent connections"
+            )
+            mcp_tools = await self._mcp_manager.connect()
+            for t in mcp_tools:
+                self.register_tool(t)
+            self._lazy_mcp = True
 
         collected_tool_results: list[ToolResult] = []
         execution_error: str | None = None
@@ -684,6 +732,11 @@ class BaseAgent:
             _trace_error = str(e)
             raise
         finally:
+            # Lazy MCP disconnect
+            if self._lazy_mcp and self._mcp_manager:
+                await self._mcp_manager.disconnect()
+                self._lazy_mcp = False
+
             if not _stopped_for_deferred:
                 # Normal completion or error — close agent span and
                 # (if root) the trace. When stopped for deferred, leave
