@@ -119,25 +119,8 @@ class BaseAgent:
 
     def register_tool(self, tool: Tool):
         """
-        Registers a tool for the agent
+        Registers a tool for the agent.
         """
-        try:
-            from obelix.plugins.mcp.mcp_tool import MCPTool
-
-            if isinstance(tool, MCPTool):
-                if not tool.manager.is_connected():
-                    logger.error(
-                        f"[{self.__class__.__name__}] Tool registration failed — MCP manager not connected | tool={tool.tool_name}"
-                    )
-                    raise RuntimeError(
-                        f"MCP Tool {tool.tool_name} is not connected. "
-                        "The manager must be connected before registration."
-                    )
-        except ImportError:
-            logger.debug(
-                "[BaseAgent] MCP plugin unavailable — skipping MCP connectivity check"
-            )
-
         if tool not in self.registered_tools:
             self.registered_tools.append(tool)
             tool_name = getattr(tool, "tool_name", None) or tool.__class__.__name__

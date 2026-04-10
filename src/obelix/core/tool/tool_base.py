@@ -19,7 +19,7 @@ The @tool decorator is the primary way to create tools:
             return {"result": self.param}
 
 The decorator wraps execute() to match the Protocol signature automatically.
-MCPTool and SubAgentWrapper satisfy the Protocol via structural typing.
+SubAgentWrapper and MCPToolAdapter satisfy the Protocol via structural typing.
 """
 
 from typing import Protocol, runtime_checkable
