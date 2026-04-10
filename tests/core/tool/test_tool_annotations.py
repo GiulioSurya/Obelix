@@ -124,3 +124,40 @@ class TestAnnotationValuesAccessible:
         assert obj.destructive is None
         assert obj.idempotent is None
         assert obj.open_world is None
+
+
+class TestAnnotationsPropagatedToSchema:
+    """Verify annotations are propagated to MCPToolSchema via create_schema()."""
+
+    def test_annotated_tool_schema_has_annotations(self):
+        """A fully annotated tool should have all MCP-format hints in schema."""
+        schema = AnnotatedTool.create_schema()
+        assert schema.annotations is not None
+        assert schema.annotations["readOnlyHint"] is True
+        assert schema.annotations["destructiveHint"] is False
+        assert schema.annotations["idempotentHint"] is True
+        assert schema.annotations["openWorldHint"] is False
+
+    def test_plain_tool_schema_annotations_is_none(self):
+        """A tool without any annotations should have annotations=None."""
+        schema = PlainTool.create_schema()
+        assert schema.annotations is None
+
+    def test_partial_tool_schema_has_only_set_annotations(self):
+        """A partially annotated tool includes only declared hints."""
+        schema = PartialTool.create_schema()
+        assert schema.annotations is not None
+        assert schema.annotations["readOnlyHint"] is True
+        assert schema.annotations["destructiveHint"] is True
+        assert "idempotentHint" not in schema.annotations
+        assert "openWorldHint" not in schema.annotations
+
+    def test_annotated_tool_schema_annotation_count(self):
+        """Fully annotated tool should have exactly 4 hint keys."""
+        schema = AnnotatedTool.create_schema()
+        assert len(schema.annotations) == 4
+
+    def test_partial_tool_schema_annotation_count(self):
+        """Partially annotated tool should have exactly 2 hint keys."""
+        schema = PartialTool.create_schema()
+        assert len(schema.annotations) == 2

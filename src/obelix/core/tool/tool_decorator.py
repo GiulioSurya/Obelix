@@ -57,6 +57,14 @@ def tool(
         is_deferred: If True, the tool's result is expected from the client.
             When a deferred tool returns None, the agent loop stops and
             signals the caller (e.g. A2A executor) that client input is needed.
+        read_only: Hint that the tool does not modify external state.
+            None means not declared.
+        destructive: Hint that the tool may cause irreversible side effects.
+            None means not declared.
+        idempotent: Hint that calling with same input multiple times has the
+            same effect. None means not declared.
+        open_world: Hint that the tool interacts with entities outside the
+            agent's control. None means not declared.
 
     Raises:
         ValueError: If name or description are missing (at import time)
@@ -165,11 +173,21 @@ def tool(
                 if cls_inner._output_schema
                 else {"type": "object", "additionalProperties": True}
             )
+            ann = {}
+            if cls_inner.read_only is not None:
+                ann["readOnlyHint"] = cls_inner.read_only
+            if cls_inner.destructive is not None:
+                ann["destructiveHint"] = cls_inner.destructive
+            if cls_inner.idempotent is not None:
+                ann["idempotentHint"] = cls_inner.idempotent
+            if cls_inner.open_world is not None:
+                ann["openWorldHint"] = cls_inner.open_world
             return MCPToolSchema(
                 name=cls_inner.tool_name,
                 description=cls_inner.tool_description,
                 inputSchema=cls_inner._input_schema.model_json_schema(),
                 outputSchema=output,
+                annotations=ann if ann else None,
             )
 
         cls.create_schema = create_schema
