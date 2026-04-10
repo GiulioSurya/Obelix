@@ -37,3 +37,13 @@ class Tool(Protocol):
 
     async def execute(self, tool_call: ToolCall) -> ToolResult: ...
     def create_schema(self) -> MCPToolSchema: ...
+
+
+# Behavioral annotations — set on the Protocol class itself so they are
+# available for type-checking and documentation, but NOT included in
+# __protocol_attrs__ (which would break isinstance() for tools that don't
+# declare them).  The @tool decorator sets these on each decorated class.
+Tool.read_only = None  # type: ignore[attr-defined]  # bool | None
+Tool.destructive = None  # type: ignore[attr-defined]  # bool | None
+Tool.idempotent = None  # type: ignore[attr-defined]  # bool | None
+Tool.open_world = None  # type: ignore[attr-defined]  # bool | None

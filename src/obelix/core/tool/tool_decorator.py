@@ -39,7 +39,15 @@ from obelix.core.model.tool_message import (
 from obelix.infrastructure.utility.pydantic_validation import format_validation_error
 
 
-def tool(name: str = None, description: str = None, is_deferred: bool = False):
+def tool(
+    name: str = None,
+    description: str = None,
+    is_deferred: bool = False,
+    read_only: bool | None = None,
+    destructive: bool | None = None,
+    idempotent: bool | None = None,
+    open_world: bool | None = None,
+):
     """
     Decorator for declaratively defining tools.
 
@@ -74,6 +82,10 @@ def tool(name: str = None, description: str = None, is_deferred: bool = False):
         cls.tool_name = name
         cls.tool_description = description
         cls.is_deferred = is_deferred
+        cls.read_only = read_only
+        cls.destructive = destructive
+        cls.idempotent = idempotent
+        cls.open_world = open_world
 
         # 3. Extract Fields from class to create Pydantic schema
         cls._input_schema = _create_input_schema(cls, name)
