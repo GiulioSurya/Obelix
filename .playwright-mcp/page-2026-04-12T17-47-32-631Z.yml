@@ -1,0 +1,355 @@
+- generic [active] [ref=e1]:
+  - banner:
+    - navigation [ref=e2]:
+      - generic [ref=e3]:
+        - link "Datapizza Datapizza logo" [ref=e4] [cursor=pointer]:
+          - /url: /it
+          - generic [ref=e5]: Datapizza
+          - img "Datapizza logo" [ref=e6]
+        - navigation "Main" [ref=e8]:
+          - list [ref=e10]:
+            - listitem [ref=e11]:
+              - link "AI Framework" [ref=e12] [cursor=pointer]:
+                - /url: /it/ai-framework
+            - listitem [ref=e13]:
+              - button "Per le aziende" [ref=e14] [cursor=pointer]:
+                - text: Per le aziende
+                - img [ref=e15]
+            - listitem [ref=e17]:
+              - button "Per i talenti" [ref=e18] [cursor=pointer]:
+                - text: Per i talenti
+                - img [ref=e19]
+            - listitem [ref=e21]:
+              - link "Contatti" [ref=e22] [cursor=pointer]:
+                - /url: /it/contacts
+        - button "Accedi" [ref=e25] [cursor=pointer]
+  - main [ref=e26]:
+    - generic [ref=e27]:
+      - generic [ref=e1034]:
+        - heading "Vogliamo un'Italia competitiva nel tech" [level=1] [ref=e1035]
+        - paragraph [ref=e1036]: Guidiamo l'innovazione di aziende e talenti con un approccio consapevole, concreto e misurabile.
+        - generic [ref=e1037]:
+          - link "Trova il tuo nuovo lavoro tech" [ref=e1038] [cursor=pointer]:
+            - /url: /it/jobs
+          - button "Scopri i nostri servizi" [ref=e1039] [cursor=pointer]
+      - generic [ref=e1043]:
+        - img "ABB" [ref=e1045]
+        - img "ING" [ref=e1047]
+        - img "Almawave" [ref=e1049]
+        - img "BGY" [ref=e1051]
+        - img "GEDI" [ref=e1053]
+        - img "Generali" [ref=e1055]
+        - img "Intesa Sanpaolo" [ref=e1057]
+        - img "Mediolanum" [ref=e1059]
+        - img "Mitsubishi" [ref=e1061]
+        - img "Mondadori" [ref=e1063]
+        - img "P&G" [ref=e1065]
+        - img "Reale Mutua" [ref=e1067]
+        - img "Var Group" [ref=e1069]
+        - img "Virgin" [ref=e1071]
+        - img "Würth" [ref=e1073]
+        - img "Zamperla" [ref=e1075]
+        - img "TeamSystem" [ref=e1077]
+        - img "Prima" [ref=e1079]
+        - img "ABB" [ref=e1081]
+        - img "ING" [ref=e1083]
+        - img "Almawave" [ref=e1085]
+        - img "BGY" [ref=e1087]
+        - img "GEDI" [ref=e1089]
+        - img "Generali" [ref=e1091]
+        - img "Intesa Sanpaolo" [ref=e1093]
+        - img "Mediolanum" [ref=e1095]
+        - img "Mitsubishi" [ref=e1097]
+        - img "Mondadori" [ref=e1099]
+        - img "P&G" [ref=e1101]
+        - img "Reale Mutua" [ref=e1103]
+        - img "Var Group" [ref=e1105]
+        - img "Virgin" [ref=e1107]
+        - img "Würth" [ref=e1109]
+        - img "Zamperla" [ref=e1111]
+        - img "TeamSystem" [ref=e1113]
+        - img "Prima" [ref=e1115]
+    - generic [ref=e1116]:
+      - heading "Generiamo impatto tramite Tecnologia, Persone e Intelligenza Artificiale" [level=2] [ref=e1119]:
+        - text: Generiamo
+        - generic [ref=e1120]:
+          - img [ref=e1121]
+          - text: impatto
+        - text: tramite Tecnologia, Persone e Intelligenza Artificiale
+      - generic [ref=e1124]:
+        - generic [ref=e1125]:
+          - heading "50k+" [level=1] [ref=e1126]
+          - paragraph [ref=e1127]: Talenti tech
+        - generic [ref=e1128]:
+          - heading "+500k" [level=1] [ref=e1129]
+          - paragraph [ref=e1130]: Iscritti community
+        - generic [ref=e1131]:
+          - heading "100+" [level=1] [ref=e1132]
+          - paragraph [ref=e1133]: Aziende partner
+    - generic [ref=e1135]:
+      - heading "Le nostre competenze" [level=4] [ref=e1136]
+      - generic [ref=e1137]:
+        - link "Dual Intelligence Costruiamo strumenti AI governabili, trasparenti e progettati per essere integrati nelle aziende pronte ad evolversi." [ref=e1138] [cursor=pointer]:
+          - /url: /it/dualintelligence
+          - heading "Dual Intelligence" [level=2] [ref=e1139]
+          - paragraph [ref=e1140]: Costruiamo strumenti AI governabili, trasparenti e progettati per essere integrati nelle aziende pronte ad evolversi.
+          - img [ref=e1142]
+        - link "AI Adoption Potenziamo la tua workforce tramite percorsi personalizzati di trasformazione interna, capaci di favorire l'adozione di nuovi processi e tecnologie e di aumentare notevolmente la produttività" [ref=e1144] [cursor=pointer]:
+          - /url: /it/ai-adoption
+          - heading "AI Adoption" [level=2] [ref=e1145]
+          - paragraph [ref=e1146]: Potenziamo la tua workforce tramite percorsi personalizzati di trasformazione interna, capaci di favorire l'adozione di nuovi processi e tecnologie e di aumentare notevolmente la produttività
+          - img [ref=e1148]
+        - link "Tech Recruiting Colleghiamo aziende e talenti tech, semplificando la selezione con opportunità trasparenti e match mirati alle esigenze di entrambi" [ref=e1150] [cursor=pointer]:
+          - /url: /it/tech-recruiting
+          - heading "Tech Recruiting" [level=2] [ref=e1151]
+          - paragraph [ref=e1152]: Colleghiamo aziende e talenti tech, semplificando la selezione con opportunità trasparenti e match mirati alle esigenze di entrambi
+          - img [ref=e1154]
+        - link "AI Framework Datapizza AI offre interfacce chiare e un comportamento prevedibile per agenti e RAG. La visibilità end-to-end e un’orchestrazione affidabile mantengono gli ingegneri sempre in controllo, dal PoC alla fase di scalabilità." [ref=e1156] [cursor=pointer]:
+          - /url: /it/ai-framework
+          - heading "AI Framework" [level=2] [ref=e1157]
+          - paragraph [ref=e1158]: Datapizza AI offre interfacce chiare e un comportamento prevedibile per agenti e RAG. La visibilità end-to-end e un’orchestrazione affidabile mantengono gli ingegneri sempre in controllo, dal PoC alla fase di scalabilità.
+          - img [ref=e1160]
+    - generic [ref=e1165]:
+      - heading "Diffondiamo l'innovazione e la condividiamo con la tech community più grande d'Italia" [level=2] [ref=e1166]
+      - heading "TECH COMMUNITY PIÙ GRANDE D'ITALIA" [level=6] [ref=e1167]
+      - heading "+500k" [level=4] [ref=e1177]
+    - generic [ref=e1180]:
+      - generic [ref=e1181]:
+        - heading "Portiamo l'AI nella tua azienda tramite percorsi di upskilling e progetti tech su misura" [level=2] [ref=e1182]
+        - paragraph [ref=e1183]: Progettiamo soluzioni AI su misura per rispondere alle esigenze uniche di ogni azienda, guidandole nella trasformazione digitale con un approccio pratico e strategico.
+        - paragraph [ref=e1184]: Integriamo il percorso con programmi personalizzati, pensati per preparare i team a sfruttare al meglio il potenziale dell'AI e diventare protagonisti dell'innovazione.
+      - generic [ref=e1185]:
+        - generic [ref=e1187]:
+          - generic [ref=e1188]:
+            - heading "Dual Intelligence" [level=4] [ref=e1189]
+            - paragraph [ref=e1190]: Costruiamo sistemi di Dual Intelligence governabili, trasparenti e progettati per essere integrati nelle aziende pronte ad evolversi.
+            - link "Scopri di più" [ref=e1191] [cursor=pointer]:
+              - /url: /it/dualintelligence
+          - img [ref=e1197]
+        - generic [ref=e1199]:
+          - generic [ref=e1200]:
+            - generic [ref=e1201]:
+              - heading "AI Adoption" [level=4] [ref=e1202]
+              - paragraph [ref=e1203]: Moltiplichiamo la produttività della tua workforce tramite percorsi di AI Upskilling disegnati sui tuoi processi
+            - img [ref=e1206]
+          - link "Scopri di più" [ref=e1215] [cursor=pointer]:
+            - /url: /it/ai-adoption
+    - generic [ref=e1218]:
+      - generic [ref=e1219]:
+        - generic [ref=e1220]:
+          - heading "Trasformiamo il Tech Recruiting con match mirati di qualità" [level=2] [ref=e1221]
+          - paragraph [ref=e1222]: Mettiamo le aziende in contatto con i migliori talenti Tech, Data & AI, individuando profili perfettamente in linea con le esigenze tramite un processo su misura per garantire il match ideale.
+          - link "Scopri di più" [ref=e1224] [cursor=pointer]:
+            - /url: /it/tech-recruiting
+        - generic [ref=e1225]:
+          - generic [ref=e1226]:
+            - img [ref=e1228]
+            - heading "Valorizzazione" [level=5] [ref=e1230]
+            - paragraph [ref=e1231]: Accompagniamo i talenti nel valorizzare e presentare le proprie competenze con successo
+          - generic [ref=e1232]:
+            - img [ref=e1234]
+            - heading "Matching" [level=5] [ref=e1237]
+            - paragraph [ref=e1238]: Aiutiamo le aziende a ottimizzare la ricerca, garantendo una selezione accurata e mirata
+      - generic [ref=e1241]:
+        - generic:
+          - link "Senior AI Software Engineer":
+            - /url: https://jobs.datapizza.tech/?o=63ec7d6b-a161-4706-be79-9feefcacfcbe
+        - generic:
+          - link "Senior Data Scientist":
+            - /url: https://jobs.datapizza.tech/?o=f509775c-c53c-4b19-83db-c6c91e7261da
+        - generic:
+          - link "AI Software Engineer":
+            - /url: https://jobs.datapizza.tech/?o=76052642-d856-4e02-ac74-7961171012d8
+        - generic:
+          - link "AI Transformation Architect":
+            - /url: https://jobs.datapizza.tech/?o=7181cde4-975a-494f-8312-945ba506a28d
+        - generic:
+          - link "Data Engineer":
+            - /url: https://jobs.datapizza.tech/?o=04b84b4a-e2a2-4890-8570-ea09d2204c3a
+        - generic:
+          - link "Legal Counsel":
+            - /url: https://jobs.datapizza.tech/?o=04073feb-f0c1-40fc-a1e3-efca26dd2ad8
+        - generic:
+          - generic:
+            - link "Definizione hiring need":
+              - /url: /it/jobs
+          - generic:
+            - link "Tech Recruiting":
+              - /url: /it/tech-recruiting
+    - generic [ref=e1245]:
+      - heading "Abbiamo costruito la più grande community Tech & AI italiana" [level=2] [ref=e1246]
+      - paragraph [ref=e1247]: La nostra community coinvolge innovatori, appassionati di tecnologia e futuri changemaker. Condividiamo risorse, idee e opportunità per crescere insieme. Da hackathon a coinvolgenti eventi unici, scopri un luogo dove il tech incontra la creatività
+      - generic [ref=e1248]:
+        - generic [ref=e1249]:
+          - img "Instagram" [ref=e1251]
+          - generic [ref=e1252]:
+            - text: +220k
+            - generic [ref=e1253]: follower
+        - generic [ref=e1254]:
+          - img "Spotify" [ref=e1256]
+          - generic [ref=e1257]:
+            - text: +20k
+            - generic [ref=e1258]: ascolti
+        - generic [ref=e1259]:
+          - img "LinkedIn" [ref=e1261]
+          - generic [ref=e1262]:
+            - text: +160k
+            - generic [ref=e1263]: persone
+        - generic [ref=e1264]:
+          - img "YouTube" [ref=e1266]
+          - generic [ref=e1267]:
+            - text: +30k
+            - generic [ref=e1268]: iscritti
+    - generic [ref=e1272]:
+      - generic [ref=e1273]:
+        - heading "I nostri canali" [level=2] [ref=e1274]
+        - generic [ref=e1275]: News, articoli, video, approfondimenti, interviste, risorse esclusive e podcast per rimanere al passo con le ultime novità
+      - generic [ref=e1276]:
+        - link "Visita il nostro canale Instagram" [ref=e1277] [cursor=pointer]:
+          - /url: https://instagram.com/datapizza
+          - img "Instagram"
+        - link "Visita il nostro canale LinkedIn" [ref=e1278] [cursor=pointer]:
+          - /url: https://linkedin.com/company/datapizza/
+          - img "LinkedIn"
+        - link "Visita il nostro canale YouTube" [ref=e1279] [cursor=pointer]:
+          - /url: https://www.youtube.com/@datapizza
+          - img "YouTube"
+        - link "Visita il nostro canale Telegram" [ref=e1280] [cursor=pointer]:
+          - /url: https://t.me/datapizza
+          - img "Telegram"
+        - link "Visita il nostro canale Spotify" [ref=e1281] [cursor=pointer]:
+          - /url: https://open.spotify.com/show/6TMBvIx2tWVA8AEPDU027j
+          - img "Spotify"
+    - generic [ref=e1283]:
+      - generic [ref=e1284]:
+        - heading "Iscriviti a Commit, la newsletter a tema AI" [level=3] [ref=e1285]
+        - paragraph [ref=e1286]: Ogni settimana le ultime news su AI e cosa ne pensiamo 🧪
+        - paragraph [ref=e1287]: Riceverai subito +20 risorse su AI e Data Science 🤩
+      - generic [ref=e1289]:
+        - textbox "Inserisci la tua email" [ref=e1292]
+        - button "Iscriviti" [ref=e1293] [cursor=pointer]
+    - generic [ref=e1296]:
+      - heading "Contattaci per saperne di più" [level=2] [ref=e1297]
+      - generic [ref=e1299]:
+        - heading "La tua richiesta" [level=5] [ref=e1300]
+        - generic [ref=e1301]:
+          - generic [ref=e1302]:
+            - generic [ref=e1303]:
+              - generic [ref=e1304]: Nome e cognome*
+              - textbox "Nome e cognome*" [ref=e1306]:
+                - /placeholder: Scrivi il tuo nome e cognome
+            - generic [ref=e1307]:
+              - generic [ref=e1308]: La tua azienda*
+              - textbox "La tua azienda*" [ref=e1310]:
+                - /placeholder: Scrivi la tua azienda
+          - generic [ref=e1311]:
+            - generic [ref=e1312]: Che ruolo ricopri?*
+            - textbox "Che ruolo ricopri?*" [ref=e1314]:
+              - /placeholder: Scrivi il tuo ruolo
+          - generic [ref=e1315]:
+            - generic [ref=e1316]:
+              - generic [ref=e1317]: Indirizzo email*
+              - textbox "Indirizzo email*" [ref=e1319]:
+                - /placeholder: Scrivi la mail
+            - generic [ref=e1320]:
+              - text: Telefono
+              - textbox "Telefono" [ref=e1322]:
+                - /placeholder: Scrivi il tuo numero
+          - generic [ref=e1323]:
+            - generic [ref=e1324]: Di cosa hai bisogno?*
+            - combobox [ref=e1325] [cursor=pointer]:
+              - generic [ref=e1326]: Selezione tra le opzioni
+              - generic [ref=e1327]:
+                - img
+        - generic [ref=e1328]:
+          - text: Hai altro da aggiungere?
+          - textbox "Hai altro da aggiungere?" [ref=e1330]:
+            - /placeholder: Inserisci altre informazioni che ritieni utili
+        - generic [ref=e1331]:
+          - paragraph [ref=e1332]: "*Campi obbligatori"
+          - paragraph [ref=e1333]: Nessuna delle informazioni inserite verranno divulgate o trattate da terzi
+      - button "Chiedi informazioni" [ref=e1335] [cursor=pointer]
+  - contentinfo [ref=e1336]:
+    - generic [ref=e1337]:
+      - generic [ref=e1338]:
+        - generic [ref=e1339]:
+          - link "Datapizza Datapizza" [ref=e1340] [cursor=pointer]:
+            - /url: /it
+            - generic [ref=e1341]: Datapizza
+            - img "Datapizza" [ref=e1342]
+          - paragraph [ref=e1343]: Iscriviti a Commit per rimanere aggiornato sul panorama tech
+          - generic [ref=e1344]:
+            - textbox "Inserisci la tua email" [ref=e1347]
+            - button "Iscriviti" [ref=e1348] [cursor=pointer]
+          - paragraph [ref=e1349]: Iscrivendoti, accetti la nostra Informativa sulla privacy e acconsenti a ricevere gli aggiornamenti.
+        - generic [ref=e1350]:
+          - generic [ref=e1351]:
+            - paragraph [ref=e1352]: Pagine
+            - list [ref=e1353]:
+              - listitem [ref=e1354]:
+                - link "AI Framework" [ref=e1355] [cursor=pointer]:
+                  - /url: /it/ai-framework
+              - listitem [ref=e1356]:
+                - link "Dual Intelligence" [ref=e1357] [cursor=pointer]:
+                  - /url: /it/dualintelligence
+              - listitem [ref=e1358]:
+                - link "AI Adoption" [ref=e1359] [cursor=pointer]:
+                  - /url: /it/ai-adoption
+              - listitem [ref=e1360]:
+                - link "Tech Recruiting" [ref=e1361] [cursor=pointer]:
+                  - /url: /it/tech-recruiting
+              - listitem [ref=e1362]:
+                - link "Accessibilità" [ref=e1363] [cursor=pointer]:
+                  - /url: https://jobs.datapizza.tech/accessibility
+          - generic [ref=e1364]:
+            - paragraph [ref=e1365]: Azienda
+            - list [ref=e1366]:
+              - listitem [ref=e1367]:
+                - link "Contatti" [ref=e1368] [cursor=pointer]:
+                  - /url: /it/contacts
+              - listitem [ref=e1369]:
+                - link "Blog" [ref=e1370] [cursor=pointer]:
+                  - /url: /it/blog
+          - generic [ref=e1371]:
+            - paragraph [ref=e1372]: Canali
+            - list [ref=e1373]:
+              - generic [ref=e1374]:
+                - link "Visita il nostro canale Instagram" [ref=e1375] [cursor=pointer]:
+                  - /url: https://www.instagram.com/datapizza/
+                  - img [ref=e1376]
+                - link "Visita il nostro canale LinkedIn" [ref=e1378] [cursor=pointer]:
+                  - /url: https://www.linkedin.com/company/datapizza/
+                  - img [ref=e1379]
+                - link "Visita il nostro canale YouTube" [ref=e1381] [cursor=pointer]:
+                  - /url: https://www.youtube.com/@datapizza
+                  - img [ref=e1382]
+                - link "Visita il nostro canale Spotify" [ref=e1384] [cursor=pointer]:
+                  - /url: https://open.spotify.com/show/6TMBvIx2tWVA8AEPDU027j
+                  - img [ref=e1386]
+                - link "Unisciti al nostro canale Telegram" [ref=e1389] [cursor=pointer]:
+                  - /url: https://t.me/datapizza
+                  - img [ref=e1390]
+      - generic [ref=e1392]:
+        - generic [ref=e1393]:
+          - paragraph [ref=e1394]: "Sede Legale: Via Giuseppe Ripamonti 190, Milano (MI) 20141"
+          - paragraph [ref=e1395]: "Numero REA: MI-2674097"
+          - paragraph [ref=e1396]: Camera di commercio di Milano, Monza Brianza e Lodi
+          - paragraph [ref=e1397]: "DPO: Antonio Sannino, antonio.sannino@studiosannino.it"
+          - paragraph [ref=e1398]: "Accessibilità: accessibilita@datapizza.tech"
+        - generic [ref=e1399]:
+          - paragraph [ref=e1400]: "Ragione sociale: Datapizza S.r.l."
+          - paragraph [ref=e1401]: "Partita IVA: 12629020962"
+          - paragraph [ref=e1402]: "PEC: datapizza@pec.net"
+          - paragraph [ref=e1403]: "Codice SDI: JI3TXCE"
+          - paragraph [ref=e1404]: "Capitale sociale: €25.000"
+      - generic [ref=e1405]:
+        - paragraph [ref=e1406]: Viale Sarca 222, 20126 - Milano
+        - generic [ref=e1407]:
+          - link "Termini e condizioni" [ref=e1408] [cursor=pointer]:
+            - /url: https://jobs.datapizza.tech/terms
+          - link "Privacy" [ref=e1409] [cursor=pointer]:
+            - /url: https://jobs.datapizza.tech/privacy
+          - link "Cookie" [ref=e1410] [cursor=pointer]:
+            - /url: https://jobs.datapizza.tech/cookies
+          - generic [ref=e1411]: Aggiorna preferenze cookies
+  - region "Notifications alt+T"

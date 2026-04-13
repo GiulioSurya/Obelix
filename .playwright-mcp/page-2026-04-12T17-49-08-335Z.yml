@@ -1,0 +1,105 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - banner [ref=e3]:
+      - link "LinkedIn" [ref=e4] [cursor=pointer]:
+        - /url: /
+        - generic "LinkedIn" [ref=e5]:
+          - img [ref=e6]
+    - main [ref=e8]:
+      - alert:
+        - generic [ref=e10]:
+          - img [ref=e13]
+          - generic [ref=e15]:
+            - generic [ref=e17]:
+              - paragraph [ref=e18]:
+                - text: LinkedIn e terze parti utilizzano cookie essenziali e non essenziali per fornire, rendere sicuri, analizzare e migliorare i nostri servizi e per mostrarti annunci pertinenti (inclusi annunci professionali e offerte di lavoro) su LinkedIn e altrove. Per saperne di più, consulta la nostra
+                - link [ref=e19] [cursor=pointer]:
+                  - /url: https://www.linkedin.com/legal/cookie-policy
+                  - text: Informativa sui cookie
+                - text: .
+              - paragraph [ref=e20]:
+                - text: Seleziona “Accetta” per accettare o “Rifiuta” per rifiutare i cookie non essenziali per questo utilizzo. Puoi aggiornare le tue scelte in qualsiasi momento nelle
+                - link [ref=e21] [cursor=pointer]:
+                  - /url: https://www.linkedin.com/mypreferences/g/guest-cookies
+                  - text: impostazioni
+                - text: .
+            - generic [ref=e22]:
+              - button [ref=e23] [cursor=pointer]: Accetta
+              - button [ref=e24] [cursor=pointer]: Rifiuta
+      - generic [ref=e26]:
+        - generic [ref=e27]:
+          - heading "Accedi" [level=1] [ref=e28]
+          - paragraph
+        - generic [ref=e29]:
+          - generic [ref=e31] [cursor=pointer]:
+            - button "Continue with Google" [ref=e33]:
+              - generic [ref=e35]:
+                - img [ref=e37]
+                - generic [ref=e44]: Continue with Google
+            - iframe
+          - button "Accedi con Apple" [ref=e45] [cursor=pointer]:
+            - img [ref=e46]
+            - generic [ref=e49]: Accedi con Apple
+          - paragraph [ref=e50]:
+            - text: Cliccando su “Continua”, accetti il
+            - link "Contratto di licenza" [ref=e51] [cursor=pointer]:
+              - /url: /legal/user-agreement
+            - text: ", l’"
+            - link "Informativa sulla privacy" [ref=e52] [cursor=pointer]:
+              - /url: /legal/privacy-policy
+            - text: e l’
+            - link "Informativa sui cookie" [ref=e53] [cursor=pointer]:
+              - /url: /legal/cookie-policy
+            - text: di LinkedIn.
+          - generic [ref=e55]: oppure
+        - generic [ref=e56]:
+          - generic [ref=e57]:
+            - textbox "Email o telefono" [active] [ref=e58]:
+              - /placeholder: " "
+            - generic [ref=e59]: Email o telefono
+          - generic [ref=e60]:
+            - textbox "Password" [ref=e61]
+            - generic [ref=e62]: Password
+            - button "Mostra" [ref=e63] [cursor=pointer]
+          - link "Hai dimenticato la password?" [ref=e64] [cursor=pointer]:
+            - /url: /checkpoint/rp/request-password-reset
+          - generic [ref=e65]:
+            - checkbox "Mantieni attiva la sessione" [checked]
+            - generic [ref=e66]: Mantieni attiva la sessione
+          - button "Accedi" [ref=e68] [cursor=pointer]
+      - generic [ref=e69]:
+        - text: Non hai un account LinkedIn?
+        - link "Iscriviti ora" [ref=e70] [cursor=pointer]:
+          - /url: /signup/cold-join
+    - contentinfo [ref=e71]:
+      - generic [ref=e72]:
+        - paragraph [ref=e73]:
+          - img [ref=e75]
+          - emphasis [ref=e87]:
+            - generic: LinkedIn
+            - text: © 2026
+        - list "Footer Legal Menu" [ref=e89]:
+          - listitem [ref=e90]:
+            - link "Contratto di licenza" [ref=e91] [cursor=pointer]:
+              - /url: /legal/user-agreement?trk=d_checkpoint_lg_consumer_login_ft_user_agreement
+          - listitem [ref=e92]:
+            - link "Informativa sulla privacy" [ref=e93] [cursor=pointer]:
+              - /url: /legal/privacy-policy?trk=d_checkpoint_lg_consumer_login_ft_privacy_policy
+          - listitem [ref=e94]:
+            - link "Linee guida della community" [ref=e95] [cursor=pointer]:
+              - /url: /help/linkedin/answer/34593?lang=en&trk=d_checkpoint_lg_consumer_login_ft_community_guidelines
+          - listitem [ref=e96]:
+            - link "Informativa sui cookie" [ref=e97] [cursor=pointer]:
+              - /url: /legal/cookie-policy?trk=d_checkpoint_lg_consumer_login_ft_cookie_policy
+          - listitem [ref=e98]:
+            - link "Informativa sul copyright" [ref=e99] [cursor=pointer]:
+              - /url: /legal/copyright-policy?trk=d_checkpoint_lg_consumer_login_ft_copyright_policy
+          - listitem [ref=e100]:
+            - link "Invia commenti" [ref=e101] [cursor=pointer]:
+              - /url: /help/linkedin?trk=d_checkpoint_lg_consumer_login_ft_send_feedback&lang=en
+          - listitem [ref=e102]:
+            - button "Lingua" [ref=e104] [cursor=pointer]:
+              - text: Lingua
+              - img [ref=e106]
+  - generic:
+    - iframe
