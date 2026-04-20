@@ -8,6 +8,7 @@ Additional validator classes are added in subsequent tasks (3.2-3.6).
 
 from __future__ import annotations
 
+import re
 from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -139,4 +140,39 @@ class ArgumentUniquenessValidator:
                     )
                 )
 
+        return issues
+
+
+# Placeholder: $<identifier> where identifier is [A-Za-z_][A-Za-z0-9_]*
+# Excludes ${...} form (those are meta placeholders, handled separately).
+_PLACEHOLDER_RE = re.compile(r"\$(?!\{)([A-Za-z_][A-Za-z0-9_]*)")
+
+# Placeholder names that are always valid regardless of `arguments:`
+_META_PLACEHOLDER_NAMES: frozenset[str] = frozenset({"ARGUMENTS"})
+
+
+class PlaceholderConsistencyValidator:
+    """Every $name in body must be declared in `arguments` (or be ARGUMENTS)."""
+
+    def check(self, candidate: SkillCandidate) -> list[SkillIssue]:
+        declared_raw = candidate.frontmatter.get("arguments", [])
+        declared: set[str] = (
+            set(declared_raw) if isinstance(declared_raw, list) else set()
+        )
+        allowed = declared | _META_PLACEHOLDER_NAMES
+
+        found = _PLACEHOLDER_RE.findall(candidate.body)
+        reported: set[str] = set()
+        issues: list[SkillIssue] = []
+        for name in found:
+            if name in allowed or name in reported:
+                continue
+            reported.add(name)
+            issues.append(
+                SkillIssue(
+                    file_path=candidate.file_path,
+                    field="body",
+                    message=f"placeholder '${name}' referenced but not declared in 'arguments'",
+                )
+            )
         return issues

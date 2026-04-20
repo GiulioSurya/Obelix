@@ -5,6 +5,7 @@ from obelix.core.skill.validation import (
     ArgumentUniquenessValidator,
     FrontmatterSchemaValidator,
     HookEventValidator,
+    PlaceholderConsistencyValidator,
     Validator,
     run_validators,
 )
@@ -249,3 +250,59 @@ class TestArgumentUniquenessValidator:
     def test_issue_field_is_arguments(self):
         issues = self.v.check(_cand_fm(arguments=["x", "x"]))
         assert issues[0].field == "arguments"
+
+
+def _cand_body(body: str, **fm) -> SkillCandidate:
+    return SkillCandidate(file_path=Path("x.md"), frontmatter=fm, body=body)
+
+
+class TestPlaceholderConsistencyValidator:
+    def setup_method(self):
+        self.v = PlaceholderConsistencyValidator()
+
+    def test_body_no_placeholders_ok(self):
+        assert self.v.check(_cand_body("Just text.")) == []
+
+    def test_arguments_placeholder_always_ok(self):
+        assert self.v.check(_cand_body("use $ARGUMENTS here")) == []
+
+    def test_meta_placeholders_always_ok(self):
+        body = "dir=${OBELIX_SKILL_DIR} sid=${OBELIX_SESSION_ID}"
+        assert self.v.check(_cand_body(body)) == []
+
+    def test_declared_placeholder_ok(self):
+        assert self.v.check(_cand_body("path=$path", arguments=["path"])) == []
+
+    def test_undeclared_placeholder_one_issue(self):
+        issues = self.v.check(_cand_body("depth=$depth", arguments=["path"]))
+        assert len(issues) == 1
+        assert "$depth" in issues[0].message
+
+    def test_multiple_undeclared_all_reported(self):
+        issues = self.v.check(_cand_body("$a $b $c", arguments=["a"]))
+        msgs = [i.message for i in issues]
+        assert any("$b" in m for m in msgs)
+        assert any("$c" in m for m in msgs)
+
+    def test_same_placeholder_multiple_times_reported_once(self):
+        issues = self.v.check(_cand_body("$x then $x", arguments=[]))
+        assert len(issues) == 1
+
+    def test_placeholder_name_with_underscore(self):
+        assert self.v.check(_cand_body("$my_var", arguments=["my_var"])) == []
+
+    def test_placeholder_followed_by_underscore_word(self):
+        """$pa must be recognized distinctly from $path."""
+        issues = self.v.check(_cand_body("x=$pa", arguments=["path"]))
+        assert len(issues) == 1
+        assert "$pa" in issues[0].message
+
+    def test_non_list_arguments_defensive(self):
+        """If arguments isn't a list, treat as empty — schema validator reports type."""
+        issues = self.v.check(_cand_body("$x", arguments="not a list"))
+        # $x is unrecognized
+        assert len(issues) == 1
+
+    def test_issue_field_is_body(self):
+        issues = self.v.check(_cand_body("$unknown", arguments=[]))
+        assert issues[0].field == "body"
