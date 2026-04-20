@@ -63,7 +63,7 @@ src/obelix/
 All imports use the `obelix` package name:
 - `from obelix.core.agent import BaseAgent`
 - `from obelix.core.tool.tool_decorator import tool`
-- `from obelix.adapters.outbound.anthropic.provider import AnthropicProvider`
+- `from obelix.adapters.outbound.llm.anthropic.provider import AnthropicProvider`
 
 ---
 
@@ -151,8 +151,8 @@ See [Hooks API - Complete Hook Examples](hooks.md#complete-hook-examples).
 ### Use a Specific LLM Provider
 
 ```python
-from obelix.adapters.outbound.anthropic.connection import AnthropicConnection
-from obelix.adapters.outbound.anthropic.provider import AnthropicProvider
+from obelix.adapters.outbound.llm.anthropic.connection import AnthropicConnection
+from obelix.adapters.outbound.llm.anthropic.provider import AnthropicProvider
 from obelix.core.agent import BaseAgent
 
 connection = AnthropicConnection()

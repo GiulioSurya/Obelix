@@ -10,11 +10,9 @@ Usage:
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).parent / "shell-demo" / ".env")
+load_dotenv()
 
 from obelix.adapters.inbound.a2a.client import CLIClient  # noqa: E402
 

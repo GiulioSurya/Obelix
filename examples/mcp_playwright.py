@@ -20,27 +20,33 @@ import os
 
 from dotenv import load_dotenv
 
-from obelix.adapters.outbound.litellm import LiteLLMProvider
+from obelix.adapters.outbound.llm.anthropic.connection import AnthropicConnection
+from obelix.adapters.outbound.llm.anthropic.provider import AnthropicProvider
 from obelix.adapters.outbound.mcp.config import MCPServerConfig
 from obelix.core.agent import BaseAgent
 from obelix.core.agent.agent_factory import AgentFactory
-from obelix.core.tracer import ConsoleExporter, Tracer
+from obelix.core.tracer import HTTPExporter, Tracer
 from obelix.infrastructure.logging import setup_logging
 
 load_dotenv()
 setup_logging(console_level="INFO")
 
-LITELLM_MODEL = "anthropic/claude-sonnet-4-20250514"
+ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
 
-tracer = Tracer(exporter=ConsoleExporter(verbosity=3))
+# tracer = Tracer(exporter=ConsoleExporter(verbosity=3))
+
+tracer = Tracer(
+    exporter=HTTPExporter(endpoint="http://localhost:8100/api/v1/ingest"),
+    service_name="playwright",
+)
 
 _SYSTEM_MESSAGE = (
     "You are a web browsing assistant. You have access to a real browser "
-    "via Playwright MCP tools.\n"
+    "via Playwright MCP tools."
     "You can navigate to URLs, click elements, fill forms, take screenshots, "
-    "and interact with any web page.\n"
+    "and interact with any web page."
     "When the user asks you to do something on the web, use the browser tools "
-    "to accomplish it step by step.\n"
+    "to accomplish it step by step."
     "Always describe what you see on the page after navigating."
 )
 
@@ -53,19 +59,13 @@ _PLAYWRIGHT_MCP = MCPServerConfig(
 )
 
 
-# -- Provider ----------------------------------------------------------------
-
-
-def make_provider() -> LiteLLMProvider:
-    return LiteLLMProvider(
-        model_id=LITELLM_MODEL,
-        api_key=os.getenv("API_KEY"),
-        max_tokens=8000,
+def make_provider() -> AnthropicProvider:
+    return AnthropicProvider(
+        connection=AnthropicConnection(api_key=os.getenv("API_KEY")),
+        model_id=ANTHROPIC_MODEL,
+        max_tokens=9000,
         temperature=1,
     )
-
-
-# -- Agent -------------------------------------------------------------------
 
 
 class BrowserAgent(BaseAgent):

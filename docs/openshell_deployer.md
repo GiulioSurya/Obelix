@@ -251,7 +251,7 @@ openshell inference set --provider anthropic --model claude-haiku-4-5-20251001
 Use LiteLLM with `base_url` pointing to the inference proxy:
 
 ```python
-from obelix.adapters.outbound.litellm import LiteLLMProvider
+from obelix.adapters.outbound.llm.litellm import LiteLLMProvider
 
 provider = LiteLLMProvider(
     model_id="anthropic/claude-haiku-4-5-20251001",

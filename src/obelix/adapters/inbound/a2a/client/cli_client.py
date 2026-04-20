@@ -535,7 +535,7 @@ class CLIClient(App):
         """Called periodically. Updates status bar and shows completed results.
 
         Includes a **polling fallback**: if a task has been non-terminal for
-        more than 3 seconds (suggesting push notification didn't arrive),
+        more than 1 second (suggesting push notification didn't arrive),
         actively polls the server via ``get_task()`` to retrieve the current
         state.  This ensures the client always gets results, even when the
         server can't reach the webhook endpoint (e.g. Docker networking).
@@ -545,8 +545,8 @@ class CLIClient(App):
 
         # Polling fallback for tasks stuck in non-terminal state
         now = time.time()
-        _POLL_AFTER_SECONDS = 3.0
-        _POLL_INTERVAL_SECONDS = 2.0
+        _POLL_AFTER_SECONDS = 1.0
+        _POLL_INTERVAL_SECONDS = 1.0
         for t in self.tracker.get_active():
             if now - t.timestamp > _POLL_AFTER_SECONDS:
                 last = self._last_poll.get(t.task_id, 0.0)

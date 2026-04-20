@@ -610,8 +610,8 @@ from obelix.core.agent import BaseAgent
 from obelix.core.agent.agent_factory import AgentFactory
 from obelix.core.tool.tool_base import Tool
 from obelix.core.tool.tool_decorator import tool
-from obelix.adapters.outbound.anthropic.connection import AnthropicConnection
-from obelix.adapters.outbound.anthropic.provider import AnthropicProvider
+from obelix.adapters.outbound.llm.anthropic.connection import AnthropicConnection
+from obelix.adapters.outbound.llm.anthropic.provider import AnthropicProvider
 
 load_dotenv()
 

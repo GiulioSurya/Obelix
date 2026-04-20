@@ -26,8 +26,8 @@ A provider connects your agent to an LLM. Every provider implements `AbstractLLM
 ### Anthropic (native)
 
 ```python
-from obelix.adapters.outbound.anthropic.connection import AnthropicConnection
-from obelix.adapters.outbound.anthropic.provider import AnthropicProvider
+from obelix.adapters.outbound.llm.anthropic.connection import AnthropicConnection
+from obelix.adapters.outbound.llm.anthropic.provider import AnthropicProvider
 
 connection = AnthropicConnection(api_key="sk-ant-...")
 provider = AnthropicProvider(
@@ -43,8 +43,8 @@ provider = AnthropicProvider(
 ### OpenAI (native)
 
 ```python
-from obelix.adapters.outbound.openai.connection import OpenAIConnection
-from obelix.adapters.outbound.openai.provider import OpenAIProvider
+from obelix.adapters.outbound.llm.openai.connection import OpenAIConnection
+from obelix.adapters.outbound.llm.openai.provider import OpenAIProvider
 
 connection = OpenAIConnection(api_key="sk-...", base_url=None)
 provider = OpenAIProvider(
@@ -61,7 +61,7 @@ provider = OpenAIProvider(
 ### LiteLLM (universal — 100+ providers)
 
 ```python
-from obelix.adapters.outbound.litellm.provider import LiteLLMProvider
+from obelix.adapters.outbound.llm.litellm.provider import LiteLLMProvider
 
 # Routes via model_id prefix: anthropic/, openai/, ollama/, azure/, etc.
 provider = LiteLLMProvider(

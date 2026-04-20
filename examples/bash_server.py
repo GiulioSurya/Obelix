@@ -22,7 +22,7 @@ import os
 
 from dotenv import load_dotenv
 
-from obelix.adapters.outbound.litellm import LiteLLMProvider
+from obelix.adapters.outbound.llm.litellm import LiteLLMProvider
 from obelix.adapters.outbound.shell import ClientShellExecutor, LocalShellExecutor
 from obelix.core.agent import BaseAgent
 from obelix.core.agent.agent_factory import AgentFactory

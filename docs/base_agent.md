@@ -8,8 +8,8 @@ BaseAgent is the core execution engine for all agents in Obelix. It manages conv
 
 ```python
 from obelix.core.agent import BaseAgent
-from obelix.adapters.outbound.anthropic.connection import AnthropicConnection
-from obelix.adapters.outbound.anthropic.provider import AnthropicProvider
+from obelix.adapters.outbound.llm.anthropic.connection import AnthropicConnection
+from obelix.adapters.outbound.llm.anthropic.provider import AnthropicProvider
 
 connection = AnthropicConnection()  # reads ANTHROPIC_API_KEY from env
 provider = AnthropicProvider(connection=connection, model_id="claude-sonnet-4-20250514")
@@ -59,7 +59,7 @@ agent = BaseAgent(
 The LLM provider instance to use. See [README — Using Providers](../README.md#using-providers) for all supported providers.
 
 ```python
-from obelix.adapters.outbound.litellm import LiteLLMProvider
+from obelix.adapters.outbound.llm.litellm import LiteLLMProvider
 
 provider = LiteLLMProvider(model_id="openai/gpt-4o")
 agent = BaseAgent(system_message="...", provider=provider)

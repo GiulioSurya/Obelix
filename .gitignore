@@ -394,3 +394,6 @@ build/
 *.whl
 
 .mcp.json
+
+# Playwright MCP session artifacts
+.playwright-mcp/

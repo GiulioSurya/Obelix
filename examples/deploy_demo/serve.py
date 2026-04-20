@@ -8,7 +8,7 @@ sandbox container. It registers the agent and starts the A2A server.
 Do NOT run this directly — use deploy.py instead.
 """
 
-from obelix.adapters.outbound.litellm import LiteLLMProvider
+from obelix.adapters.outbound.llm.litellm import LiteLLMProvider
 from obelix.adapters.outbound.shell import LocalShellExecutor
 from obelix.core.agent import BaseAgent
 from obelix.core.agent.agent_factory import AgentFactory

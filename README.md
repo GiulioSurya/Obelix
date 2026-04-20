@@ -82,7 +82,7 @@ pip is also supported: `pip install ".[litellm,serve]"`.
 ### 1. Create an Agent
 
 ```python
-from obelix.adapters.outbound.litellm import LiteLLMProvider
+from obelix.adapters.outbound.llm.litellm import LiteLLMProvider
 from obelix.core.agent import BaseAgent
 
 provider = LiteLLMProvider(model_id="anthropic/claude-haiku-4-5-20251001")
@@ -290,13 +290,13 @@ The client resolves both Agent Cards, shows the table above, and you can chat wi
 
 | Provider | Extra | Import |
 |----------|-------|--------|
-| **LiteLLM** (100+) | `litellm` | `from obelix.adapters.outbound.litellm import LiteLLMProvider` |
-| Anthropic | `anthropic` | `from obelix.adapters.outbound.anthropic.provider import AnthropicProvider` |
-| OpenAI | `openai` | `from obelix.adapters.outbound.openai.provider import OpenAIProvider` |
-| Oracle Cloud (OCI) | `oci` | `from obelix.adapters.outbound.oci.provider import OCILLm` |
-| IBM Watson | `ibm` | `from obelix.adapters.outbound.ibm.provider import IBMProvider` |
-| Ollama | `ollama` | `from obelix.adapters.outbound.ollama.provider import OllamaProvider` |
-| vLLM | `vllm` | `from obelix.adapters.outbound.vllm.provider import VLLMProvider` |
+| **LiteLLM** (100+) | `litellm` | `from obelix.adapters.outbound.llm.litellm import LiteLLMProvider` |
+| Anthropic | `anthropic` | `from obelix.adapters.outbound.llm.anthropic.provider import AnthropicProvider` |
+| OpenAI | `openai` | `from obelix.adapters.outbound.llm.openai.provider import OpenAIProvider` |
+| Oracle Cloud (OCI) | `oci` | `from obelix.adapters.outbound.llm.oci.provider import OCILLm` |
+| IBM Watson | `ibm` | `from obelix.adapters.outbound.llm.ibm.provider import IBMProvider` |
+| Ollama | `ollama` | `from obelix.adapters.outbound.llm.ollama.provider import OllamaProvider` |
+| vLLM | `vllm` | `from obelix.adapters.outbound.llm.vllm.provider import VLLMProvider` |
 
 LiteLLM routes to Azure, Bedrock, Vertex AI, Groq, Mistral, Together AI, DeepSeek, and many more through a single interface.
 

@@ -52,7 +52,7 @@ class SmartPushNotificationSender(BasePushNotificationSender):
                 url,
                 json=task.model_dump(mode="json", exclude_none=True),
                 headers=headers,
-                timeout=10.0,
+                timeout=0.3,
             )
             response.raise_for_status()
             logger.info(
@@ -79,7 +79,7 @@ class SmartPushNotificationSender(BasePushNotificationSender):
             logger.warning(
                 "Push notification FAILED (timeout) | "
                 "task_id={} url={} error={} — "
-                "the webhook endpoint did not respond within 10s. "
+                "the webhook endpoint did not respond within 0.3s. "
                 "The client can fall back to polling via get_task().",
                 task.id,
                 url,

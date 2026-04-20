@@ -23,7 +23,7 @@ import re
 from dotenv import load_dotenv
 from pydantic import Field
 
-from obelix.adapters.outbound.litellm import LiteLLMProvider
+from obelix.adapters.outbound.llm.litellm import LiteLLMProvider
 from obelix.core.agent import BaseAgent, SharedMemoryGraph
 from obelix.core.agent.agent_factory import AgentFactory
 from obelix.core.agent.hooks import AgentEvent
@@ -32,7 +32,7 @@ from obelix.core.model.tool_message import ToolRequirement
 from obelix.core.tool.tool_base import Tool
 from obelix.core.tool.tool_decorator import tool
 from obelix.core.tracer import Tracer
-from obelix.core.tracer.exporters import ConsoleExporter
+from obelix.core.tracer.exporters import HTTPExporter
 from obelix.infrastructure.logging import setup_logging
 
 load_dotenv()
@@ -40,8 +40,12 @@ setup_logging(console_level="INFO")
 
 LITELLM_MODEL = "anthropic/claude-haiku-4-5-20251001"
 
-tracer = Tracer(exporter=ConsoleExporter(verbosity=3))
+# tracer = Tracer(exporter=ConsoleExporter(verbosity=3))
 
+tracer = Tracer(
+    exporter=HTTPExporter(endpoint="http://localhost:8100/api/v1/ingest"),
+    service_name="COORDINATOR",
+)
 
 # -- Provider ----------------------------------------------------------------
 

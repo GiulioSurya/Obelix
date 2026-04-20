@@ -26,6 +26,13 @@ except ImportError:
     SandboxClient = None
     TlsConfig = None
 
+# Port-forward watchdog tuning (see design spec:
+# docs/superpowers/specs/2026-04-13-port-forward-watchdog-design.md).
+# Kept at module level so tests can monkeypatch them to tiny values.
+_WATCHDOG_INTERVAL = 10.0  # seconds between liveness probes
+_RESTART_BACKOFF = 5.0  # seconds to wait after a failed restart attempt
+_PROBE_TIMEOUT = 1.0  # seconds for the TCP probe
+
 # Mapping from provider name to pyproject.toml optional-dependency group.
 # Providers in base dependencies (anthropic, openai) map to None.
 _PROVIDER_EXTRAS: dict[str, str | None] = {
@@ -94,6 +101,7 @@ class OpenShellDeployer:
         self._sandbox_name: str | None = None
         self._generated_dockerfile: Path | None = None
         self._forward_proc: subprocess.Popen | None = None
+        self._watchdog_task: asyncio.Task | None = None
         self._destroyed = False
 
     async def _validate(self) -> None:
@@ -449,6 +457,99 @@ class OpenShellDeployer:
                 logger.warning(f"[Deployer] Failed to stop forward: {e}")
         self._forward_proc = None
 
+    async def _is_forward_alive(self) -> bool:
+        """Probe the local forwarded port with a short TCP connect.
+
+        Returns True if `127.0.0.1:<port>` accepts a connection within
+        `_PROBE_TIMEOUT` seconds; False on refused, timeout, or any OSError.
+        Never raises.
+        """
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection("127.0.0.1", self._port),
+                timeout=_PROBE_TIMEOUT,
+            )
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+            del reader  # keep linter happy, reader is never read
+            return True
+        except (OSError, TimeoutError):
+            return False
+
+    async def _watchdog_loop(self) -> None:
+        """Supervise the port-forward daemon; restart it if it dies.
+
+        TODO(production): replace this watchdog with a server-side Activator.
+            The current design is a tactical workaround. The
+            ``openshell forward start -d`` daemon dies silently on SSH idle
+            timeout (~70 min observed on 2026-04-13). This loop detects the
+            death and restarts the forward from the client side, accepting up
+            to ``_WATCHDOG_INTERVAL`` seconds of downtime per incident.
+
+            The correct long-term architecture is a server-side Activator
+            (Knative-style pattern):
+
+              1. OpenShell gateway exposes each sandbox via an always-on HTTP
+                 ingress (similar to the existing ``inference.local`` route
+                 but for arbitrary sandbox services).
+              2. A2A clients speak to the gateway URL, authenticated via mTLS
+                 or bearer token.
+              3. The gateway routes requests to the sandbox pod, waking it
+                 from scale-to-zero on first request.
+              4. No client-side tunnel or daemon is needed. Clients work from
+                 any network, including behind NAT.
+
+            When the Activator is available, delete this watchdog and the
+            ``_start_forward`` / ``_stop_forward`` path entirely. See
+            docs/superpowers/specs/2026-04-13-port-forward-watchdog-design.md
+            for context.
+        """
+        # CancelledError is intentionally NOT caught here so that the task
+        # finishes in the 'cancelled' state, which `_stop_watchdog` awaits.
+        while True:
+            await asyncio.sleep(_WATCHDOG_INTERVAL)
+            if await self._is_forward_alive():
+                continue
+
+            logger.warning(
+                f"[Deployer] Port forward DEAD — restarting | "
+                f"port={self._port} sandbox={self._sandbox_name}"
+            )
+            try:
+                await self._stop_forward()
+                await self._start_forward()
+                logger.info(f"[Deployer] Port forward RESTORED | port={self._port}")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(
+                    f"[Deployer] Forward restart failed, will retry | error={e}"
+                )
+                await asyncio.sleep(_RESTART_BACKOFF)
+
+    def _start_watchdog(self) -> None:
+        """Start the port-forward watchdog task in the current event loop."""
+        if self._watchdog_task is not None and not self._watchdog_task.done():
+            return
+        self._watchdog_task = asyncio.create_task(self._watchdog_loop())
+
+    async def _stop_watchdog(self) -> None:
+        """Cancel the watchdog task, suppressing CancelledError. Idempotent."""
+        task = self._watchdog_task
+        self._watchdog_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning(f"[Deployer] Watchdog exited with error: {e}")
+
     async def deploy(self) -> DeploymentInfo:
         """Full deploy: validate -> providers -> image -> sandbox -> server -> forward.
 
@@ -463,6 +564,7 @@ class OpenShellDeployer:
             await self._create_sandbox(image_source)
             await self._start_server()
             await self._start_forward()
+            self._start_watchdog()
         except Exception:
             await self.destroy()
             raise
@@ -513,16 +615,20 @@ class OpenShellDeployer:
             return False
 
     async def destroy(self) -> None:
-        """Stop forward, delete sandbox, close client. Idempotent."""
+        """Stop watchdog, stop forward, delete sandbox, close client. Idempotent."""
         if self._destroyed:
             return
         self._destroyed = True
 
-        # 1. Stop port forwarding (best-effort)
+        # 1. Stop watchdog first, so it does not try to restart the forward
+        # while we are bringing everything down.
+        await self._stop_watchdog()
+
+        # 2. Stop port forwarding (best-effort)
         if self._sandbox_name:
             await self._stop_forward()
 
-        # 2. Delete sandbox (SDK)
+        # 3. Delete sandbox (SDK)
         if self._sandbox_name and self._client:
             try:
                 await asyncio.to_thread(self._client.delete, self._sandbox_name)
@@ -533,14 +639,14 @@ class OpenShellDeployer:
                     f"[Deployer] Failed to delete sandbox '{self._sandbox_name}': {e}"
                 )
 
-        # 3. Close SDK client
+        # 4. Close SDK client
         if self._client:
             try:
                 await asyncio.to_thread(self._client.close)
             except Exception as e:
                 logger.warning(f"[Deployer] Failed to close client: {e}")
 
-        # 4. Clean up generated files
+        # 5. Clean up generated files
         for attr in ("_generated_dockerfile", "_generated_dockerignore"):
             f = getattr(self, attr, None)
             if f:
