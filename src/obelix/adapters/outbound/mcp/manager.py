@@ -7,6 +7,7 @@ Thin wrapper over the MCP SDK's ClientSessionGroup. Handles:
 """
 
 from contextlib import AsyncExitStack
+from dataclasses import dataclass
 from typing import Any
 
 from obelix.adapters.outbound.mcp.config import MCPServerConfig
@@ -17,6 +18,20 @@ from obelix.infrastructure.logging import get_logger
 from obelix.ports.outbound.mcp_provider import AbstractMCPProvider
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class MCPPrompt:
+    """Lightweight DTO: a prompt offered by an MCP server.
+
+    Produced by MCPManager.list_prompts() and consumed by MCPSkillProvider.
+    """
+
+    name: str
+    description: str
+    arguments: list
+    server_name: str
+    template: str = ""
 
 
 class MCPManager(AbstractMCPProvider):
@@ -83,6 +98,29 @@ class MCPManager(AbstractMCPProvider):
 
     def is_connected(self) -> bool:
         return self._connected
+
+    def list_prompts(self) -> list[MCPPrompt]:
+        """Return all prompts exposed by connected servers.
+
+        Returns [] when not connected, when _group is missing, or when the
+        SDK session group does not expose a prompts attribute.
+        """
+        if not self._connected or self._group is None:
+            return []
+        prompts_dict = getattr(self._group, "prompts", None) or {}
+        out: list[MCPPrompt] = []
+        for name, prompt in prompts_dict.items():
+            server_name = self._resolve_server_name(name)
+            out.append(
+                MCPPrompt(
+                    name=name,
+                    description=getattr(prompt, "description", "") or "",
+                    arguments=list(getattr(prompt, "arguments", []) or []),
+                    server_name=server_name,
+                    template="",  # v1 does not materialize templates
+                )
+            )
+        return out
 
     def get_resources(self) -> dict[str, list[MCPResourceAdapter]]:
         return self._resources
