@@ -61,9 +61,7 @@ class TestFormatValidationError:
         out = format_validation_error(
             [SkillIssue(file_path=Path("a.md"), field="x", message="bad")]
         )
-        for line in out.splitlines():
-            if "[x] bad" in line:
-                assert "line" not in line.lower()
+        assert "(line " not in out
 
     def test_mcp_issue_has_mcp_section(self):
         out = format_validation_error(
@@ -99,3 +97,28 @@ class TestFormatValidationError:
         out = format_validation_error(issues)
         assert "[mcp]" in out
         assert "a.md" in out
+
+    def test_path_rendered_as_posix_cross_platform(self):
+        """Locks in the as_posix() fix — no backslashes on Windows."""
+        out = format_validation_error(
+            [
+                SkillIssue(
+                    file_path=Path("skills") / "deep" / "SKILL.md",
+                    field="x",
+                    message="bad",
+                )
+            ]
+        )
+        assert "skills/deep/SKILL.md" in out
+        assert "\\" not in out  # no Windows-style separator leaks
+
+    def test_mcp_section_sorts_before_lowercase_paths(self):
+        """'[mcp]' starts with '[' (0x5B) so it sorts before lowercase file paths."""
+        issues = [
+            SkillIssue(file_path=Path("skills/a.md"), field="fs", message="m"),
+            SkillIssue(file_path=None, field="mcp_field", message="m"),
+        ]
+        out = format_validation_error(issues)
+        mcp_idx = out.index("[mcp]")
+        fs_idx = out.index("skills/a.md")
+        assert mcp_idx < fs_idx
