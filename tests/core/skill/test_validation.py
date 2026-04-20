@@ -2,6 +2,7 @@ from pathlib import Path
 
 from obelix.core.skill.skill import SkillCandidate, SkillIssue
 from obelix.core.skill.validation import (
+    ArgumentUniquenessValidator,
     FrontmatterSchemaValidator,
     HookEventValidator,
     Validator,
@@ -199,3 +200,52 @@ class TestHookEventValidator:
         """If hooks is not a dict (FrontmatterSchemaValidator catches it),
         this validator gracefully returns no issues."""
         assert self.v.check(_cand_fm(hooks="not a dict")) == []
+
+
+class TestArgumentUniquenessValidator:
+    def setup_method(self):
+        self.v = ArgumentUniquenessValidator()
+
+    def test_no_arguments_ok(self):
+        assert self.v.check(_cand_fm()) == []
+
+    def test_empty_list_ok(self):
+        assert self.v.check(_cand_fm(arguments=[])) == []
+
+    def test_unique_names_ok(self):
+        assert self.v.check(_cand_fm(arguments=["path", "depth"])) == []
+
+    def test_single_duplicate_one_issue(self):
+        issues = self.v.check(_cand_fm(arguments=["path", "path"]))
+        assert len(issues) == 1
+        assert "path" in issues[0].message
+        assert "duplicate" in issues[0].message.lower()
+
+    def test_multiple_duplicates_all_reported(self):
+        issues = self.v.check(_cand_fm(arguments=["a", "b", "a", "c", "b"]))
+        messages = [i.message for i in issues]
+        # At least one mentioning 'a' and one mentioning 'b'
+        assert any("'a'" in m for m in messages)
+        assert any("'b'" in m for m in messages)
+
+    def test_reserved_arguments_name(self):
+        issues = self.v.check(_cand_fm(arguments=["path", "ARGUMENTS"]))
+        assert any("reserved" in i.message.lower() for i in issues)
+
+    def test_reserved_and_duplicate_both_reported(self):
+        issues = self.v.check(_cand_fm(arguments=["ARGUMENTS", "ARGUMENTS"]))
+        assert len(issues) >= 2
+
+    def test_non_list_arguments_no_crash(self):
+        """If arguments is not a list (schema validator catches it),
+        this returns empty."""
+        assert self.v.check(_cand_fm(arguments="not a list")) == []
+
+    def test_non_string_item_skipped(self):
+        """Non-string items skipped defensively (schema validator reports them)."""
+        # Should not raise
+        self.v.check(_cand_fm(arguments=["path", 42, "depth"]))
+
+    def test_issue_field_is_arguments(self):
+        issues = self.v.check(_cand_fm(arguments=["x", "x"]))
+        assert issues[0].field == "arguments"

@@ -96,3 +96,47 @@ class HookEventValidator:
                     )
                 )
         return issues
+
+
+_RESERVED_ARG_NAMES: frozenset[str] = frozenset({"ARGUMENTS"})
+
+
+class ArgumentUniquenessValidator:
+    """Arguments must be unique and not clash with reserved names."""
+
+    def check(self, candidate: SkillCandidate) -> list[SkillIssue]:
+        args = candidate.frontmatter.get("arguments", [])
+        if not isinstance(args, list):
+            return []
+
+        issues: list[SkillIssue] = []
+
+        # Duplicates
+        seen: set[str] = set()
+        reported_dups: set[str] = set()
+        for name in args:
+            if not isinstance(name, str):
+                continue
+            if name in seen and name not in reported_dups:
+                issues.append(
+                    SkillIssue(
+                        file_path=candidate.file_path,
+                        field="arguments",
+                        message=f"duplicate name '{name}'",
+                    )
+                )
+                reported_dups.add(name)
+            seen.add(name)
+
+        # Reserved
+        for name in args:
+            if isinstance(name, str) and name in _RESERVED_ARG_NAMES:
+                issues.append(
+                    SkillIssue(
+                        file_path=candidate.file_path,
+                        field="arguments",
+                        message=f"'{name}' is reserved, use a different name",
+                    )
+                )
+
+        return issues
