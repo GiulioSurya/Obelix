@@ -2,7 +2,9 @@ from pathlib import Path
 
 from obelix.core.skill.skill import SkillCandidate, SkillIssue
 from obelix.core.skill.validation import (
+    DEFAULT_VALIDATORS,
     ArgumentUniquenessValidator,
+    BodyNonEmptyValidator,
     FrontmatterSchemaValidator,
     HookEventValidator,
     PlaceholderConsistencyValidator,
@@ -306,3 +308,78 @@ class TestPlaceholderConsistencyValidator:
     def test_issue_field_is_body(self):
         issues = self.v.check(_cand_body("$unknown", arguments=[]))
         assert issues[0].field == "body"
+
+
+class TestBodyNonEmptyValidator:
+    def setup_method(self):
+        self.v = BodyNonEmptyValidator()
+
+    def test_normal_body_ok(self):
+        assert self.v.check(_cand_body("hello")) == []
+
+    def test_empty_body_one_issue(self):
+        issues = self.v.check(_cand_body(""))
+        assert len(issues) == 1
+        assert issues[0].field == "body"
+        assert "empty" in issues[0].message.lower()
+
+    def test_whitespace_only_body_one_issue(self):
+        issues = self.v.check(_cand_body("   \n\n  "))
+        assert len(issues) == 1
+
+    def test_issue_file_path_propagated(self):
+        issues = self.v.check(_cand_body(""))
+        assert issues[0].file_path == Path("x.md")
+
+
+class TestDefaultValidators:
+    def test_default_validators_is_tuple(self):
+        assert isinstance(DEFAULT_VALIDATORS, tuple)
+        # Has all 5 concrete validators
+        assert len(DEFAULT_VALIDATORS) >= 5
+
+    def test_default_catches_multi_issue_candidate(self):
+        candidate = SkillCandidate(
+            file_path=Path("x.md"),
+            frontmatter={
+                "description": "",  # fails schema (empty)
+                "arguments": ["a", "a"],  # duplicate
+                "hooks": {"bogus": "x"},  # unknown event
+            },
+            body="$undeclared_thing",
+        )
+        issues = run_validators(candidate, DEFAULT_VALIDATORS)
+        # Expect at least: empty description + duplicate arg + unknown hook + undeclared placeholder
+        assert len(issues) >= 4
+
+    def test_default_happy_path(self):
+        candidate = SkillCandidate(
+            file_path=Path("x.md"),
+            frontmatter={
+                "description": "All good",
+                "arguments": ["path"],
+                "hooks": {"on_tool_error": "retry"},
+            },
+            body="Review $path",
+        )
+        assert run_validators(candidate, DEFAULT_VALIDATORS) == []
+
+    def test_default_validators_contains_all_5(self):
+        """Each of the 5 concrete validator types is represented."""
+        from obelix.core.skill.validation import (
+            ArgumentUniquenessValidator,
+            BodyNonEmptyValidator,
+            FrontmatterSchemaValidator,
+            HookEventValidator,
+            PlaceholderConsistencyValidator,
+        )
+
+        types = {type(v) for v in DEFAULT_VALIDATORS}
+        expected = {
+            FrontmatterSchemaValidator,
+            HookEventValidator,
+            ArgumentUniquenessValidator,
+            PlaceholderConsistencyValidator,
+            BodyNonEmptyValidator,
+        }
+        assert expected <= types

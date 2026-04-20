@@ -176,3 +176,27 @@ class PlaceholderConsistencyValidator:
                 )
             )
         return issues
+
+
+class BodyNonEmptyValidator:
+    """Body (after stripping whitespace) must be non-empty."""
+
+    def check(self, candidate: SkillCandidate) -> list[SkillIssue]:
+        if candidate.body.strip():
+            return []
+        return [
+            SkillIssue(
+                file_path=candidate.file_path,
+                field="body",
+                message="empty body",
+            )
+        ]
+
+
+DEFAULT_VALIDATORS: tuple[Validator, ...] = (
+    FrontmatterSchemaValidator(),
+    HookEventValidator(),
+    ArgumentUniquenessValidator(),
+    PlaceholderConsistencyValidator(),
+    BodyNonEmptyValidator(),
+)
