@@ -27,12 +27,15 @@ class MCPPrompt:
     Produced by MCPManager.list_prompts() and consumed by MCPSkillProvider.
     `arguments` holds the SDK-provided argument descriptors (typically
     `mcp.types.PromptArgument` — only the `.name` attribute is read).
+    `template` is the prompt body when materialized; `None` means the
+    SDK exposed the prompt but didn't materialize its template (v1: always None).
     """
 
     name: str
     description: str
     arguments: list[Any]
     server_name: str
+    template: str | None = None
 
 
 class MCPManager(AbstractMCPProvider):

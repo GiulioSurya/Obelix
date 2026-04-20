@@ -32,27 +32,37 @@ class MCPSkillProvider(AbstractSkillProvider):
 
         skills: list[Skill] = []
         for prompt in self._manager.list_prompts():
-            skill = self._to_skill(prompt)
+            skill, reason = self._to_skill(prompt)
             if skill is None:
                 logger.warning(
-                    "[skill] Skipped malformed MCP prompt %r from server %r",
+                    "[skill] Skipped MCP prompt %r from server %r: %s",
                     prompt.name,
                     prompt.server_name,
+                    reason,
                 )
                 continue
             skills.append(skill)
         return skills
 
-    def _to_skill(self, prompt: MCPPrompt) -> Skill | None:
+    def _to_skill(self, prompt: MCPPrompt) -> tuple[Skill, None] | tuple[None, str]:
+        """Convert an MCPPrompt into a Skill, or return (None, reason) on skip."""
         if not prompt.description:
-            return None
-        if not (prompt.template or "").strip():
-            return None
+            return None, "missing description"
+        body = prompt.template or ""
+        if not body.strip():
+            return None, "empty template"
+        # MCP skills have no on-disk base_dir; ${OBELIX_SKILL_DIR} is meaningless.
+        # Reject upfront rather than silently substituting an empty string at runtime.
+        if "${OBELIX_SKILL_DIR}" in body:
+            return (
+                None,
+                "body references ${OBELIX_SKILL_DIR} (not available for MCP skills)",
+            )
 
         # Extract argument names from MCP PromptArgument (.name attribute)
         arg_names: list[str] = []
-        for a in prompt.arguments:
-            name = getattr(a, "name", None)
+        for arg in prompt.arguments:
+            name = getattr(arg, "name", None)
             if isinstance(name, str):
                 arg_names.append(name)
 
@@ -62,13 +72,15 @@ class MCPSkillProvider(AbstractSkillProvider):
                 "description": prompt.description,
                 "arguments": arg_names,
             },
-            body=prompt.template,
+            body=body,
         )
         issues = run_validators(candidate, DEFAULT_VALIDATORS)
         if issues:
-            return None
+            reasons = "; ".join(f"{i.field}: {i.message}" for i in issues)
+            return None, f"validation failed: {reasons}"
 
         namespaced = f"mcp__{prompt.server_name}__{prompt.name}"
-        return Skill.from_candidate(
+        skill = Skill.from_candidate(
             candidate, name=namespaced, base_dir=None, source="mcp"
         )
+        return skill, None
