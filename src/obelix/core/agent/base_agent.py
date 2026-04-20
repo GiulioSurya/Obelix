@@ -200,6 +200,15 @@ class BaseAgent:
         self._hooks[event].append(hook)
         return hook
 
+    def _unregister_hook(self, event: AgentEvent, hook: Hook) -> None:
+        """Remove a previously registered hook. No-op if not present.
+
+        Internal API. Used by SkillTool to clean up skill-scoped hooks at
+        query end. Matches by object identity so two structurally identical
+        hooks can coexist and be removed independently.
+        """
+        self._hooks[event] = [h for h in self._hooks[event] if h is not hook]
+
     def _is_valid_value(self, value: Any, expected: Any) -> bool:
         if expected is None:
             return value is None
