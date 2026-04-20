@@ -36,6 +36,16 @@ class TestFlatArguments:
         )
         assert out == body
 
+    def test_empty_body_with_args_no_op(self):
+        out = substitute_placeholders(
+            body="",
+            args="anything",
+            declared_args=(),
+            base_dir=None,
+            session_id="s",
+        )
+        assert out == ""
+
 
 class TestNamedPositional:
     def test_single_named(self):
@@ -110,6 +120,17 @@ class TestNamedPositional:
             session_id="s",
         )
         assert out == "foo-"
+
+    def test_unterminated_quote_raises_invocation_error(self):
+        with pytest.raises(SkillInvocationError) as exc:
+            substitute_placeholders(
+                body="$p",
+                args='"oops',
+                declared_args=("p",),
+                base_dir=None,
+                session_id="s",
+            )
+        assert "failed to parse" in str(exc.value).lower()
 
 
 class TestMetaPlaceholders:

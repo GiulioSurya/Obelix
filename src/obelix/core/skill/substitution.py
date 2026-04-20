@@ -38,9 +38,14 @@ def substitute_placeholders(
       3. Meta placeholders (${OBELIX_SKILL_DIR}, ${OBELIX_SESSION_ID}).
     """
     # Parse args with shell quoting
-    parsed = shlex.split(args) if args else []
-    # Only enforce arg-count when named positional args are declared;
-    # otherwise the body is expected to use $ARGUMENTS flat mode.
+    try:
+        parsed = shlex.split(args) if args else []
+    except ValueError as e:
+        raise SkillInvocationError(f"failed to parse skill arguments: {e}") from e
+    # Flat-mode (no declared args) accepts any args verbatim via $ARGUMENTS —
+    # shlex-count is irrelevant. Count check applies only when named positional
+    # arguments are declared; excess args would be typo'd skill definitions,
+    # caught at load time, not here.
     if declared_args and len(parsed) > len(declared_args):
         raise SkillInvocationError(
             f"skill expects {len(declared_args)} argument(s), got {len(parsed)}"
