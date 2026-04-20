@@ -8,7 +8,9 @@ Additional validator classes are added in subsequent tasks (3.2-3.6).
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from obelix.core.skill.skill import SkillCandidate, SkillIssue
 
@@ -33,3 +35,38 @@ def run_validators(
     for v in validators:
         issues.extend(v.check(candidate))
     return issues
+
+
+class _FrontmatterSchema(BaseModel):
+    """Pydantic model capturing the schema of valid frontmatter."""
+
+    model_config = ConfigDict(extra="ignore")  # forward-compat: ignore unknown keys
+
+    name: str | None = None
+    description: str = Field(..., min_length=1)
+    when_to_use: str | None = None
+    arguments: list[str] = []
+    allowed_tools: list[str] = []
+    context: Literal["inline", "fork"] = "inline"
+    hooks: dict[str, str] = {}
+
+
+class FrontmatterSchemaValidator:
+    """Validate required fields, types, and Literal values using Pydantic."""
+
+    def check(self, candidate: SkillCandidate) -> list[SkillIssue]:
+        try:
+            _FrontmatterSchema.model_validate(candidate.frontmatter)
+            return []
+        except ValidationError as e:
+            issues: list[SkillIssue] = []
+            for err in e.errors():
+                loc = ".".join(str(p) for p in err["loc"]) or "frontmatter"
+                issues.append(
+                    SkillIssue(
+                        file_path=candidate.file_path,
+                        field=f"frontmatter.{loc}",
+                        message=err["msg"],
+                    )
+                )
+            return issues

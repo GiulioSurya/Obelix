@@ -1,7 +1,11 @@
 from pathlib import Path
 
 from obelix.core.skill.skill import SkillCandidate, SkillIssue
-from obelix.core.skill.validation import Validator, run_validators
+from obelix.core.skill.validation import (
+    FrontmatterSchemaValidator,
+    Validator,
+    run_validators,
+)
 
 
 class _Fixed:
@@ -77,3 +81,75 @@ class TestValidatorProtocol:
             def something_else(self): ...
 
         assert not isinstance(NotAValidator(), Validator)
+
+
+def _cand_fm(**fm) -> SkillCandidate:
+    return SkillCandidate(file_path=Path("x.md"), frontmatter=fm, body="nonempty body")
+
+
+class TestFrontmatterSchemaValidator:
+    def setup_method(self):
+        self.v = FrontmatterSchemaValidator()
+
+    def test_happy_path(self):
+        assert self.v.check(_cand_fm(description="hi")) == []
+
+    def test_missing_description(self):
+        issues = self.v.check(_cand_fm())
+        assert len(issues) == 1
+        assert "description" in issues[0].field
+        assert (
+            "missing" in issues[0].message.lower()
+            or "required" in issues[0].message.lower()
+            or "field required" in issues[0].message.lower()
+        )
+
+    def test_description_empty_string(self):
+        issues = self.v.check(_cand_fm(description=""))
+        assert len(issues) == 1
+
+    def test_description_wrong_type(self):
+        issues = self.v.check(_cand_fm(description=42))
+        assert len(issues) == 1
+
+    def test_unknown_field_ignored_forward_compat(self):
+        """Unknown frontmatter keys are silently ignored (forward compat)."""
+        assert self.v.check(_cand_fm(description="hi", future_field="xyz")) == []
+
+    def test_full_valid_frontmatter(self):
+        fm = {
+            "description": "Reviews Python",
+            "when_to_use": "on demand",
+            "arguments": ["path", "depth"],
+            "allowed_tools": ["Read", "Grep"],
+            "context": "inline",
+            "hooks": {"on_tool_error": "retry"},
+            "name": "custom-name",
+        }
+        assert self.v.check(_cand_fm(**fm)) == []
+
+    def test_invalid_context_value(self):
+        issues = self.v.check(_cand_fm(description="hi", context="parallel"))
+        assert len(issues) >= 1
+        assert any("context" in i.field for i in issues)
+
+    def test_arguments_wrong_type(self):
+        issues = self.v.check(_cand_fm(description="hi", arguments="not a list"))
+        assert len(issues) >= 1
+
+    def test_hooks_wrong_type(self):
+        issues = self.v.check(_cand_fm(description="hi", hooks=["not a dict"]))
+        assert len(issues) >= 1
+
+    def test_allowed_tools_wrong_type(self):
+        issues = self.v.check(_cand_fm(description="hi", allowed_tools="Read"))
+        assert len(issues) >= 1
+
+    def test_issue_file_path_propagated(self):
+        issues = self.v.check(_cand_fm())
+        assert issues[0].file_path == Path("x.md")
+
+    def test_no_issue_raised_just_returned(self):
+        """Validator returns list — never raises on invalid input."""
+        # Should not raise for any of these:
+        self.v.check(_cand_fm(description=42, arguments="x", hooks="y"))
