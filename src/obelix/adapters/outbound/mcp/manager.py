@@ -25,13 +25,14 @@ class MCPPrompt:
     """Lightweight DTO: a prompt offered by an MCP server.
 
     Produced by MCPManager.list_prompts() and consumed by MCPSkillProvider.
+    `arguments` holds the SDK-provided argument descriptors (typically
+    `mcp.types.PromptArgument` — only the `.name` attribute is read).
     """
 
     name: str
     description: str
-    arguments: list
+    arguments: list[Any]
     server_name: str
-    template: str = ""
 
 
 class MCPManager(AbstractMCPProvider):
@@ -111,13 +112,15 @@ class MCPManager(AbstractMCPProvider):
         out: list[MCPPrompt] = []
         for name, prompt in prompts_dict.items():
             server_name = self._resolve_server_name(name)
+            # `None` and missing attribute both coerce to the respective empty default.
+            description = getattr(prompt, "description", None) or ""
+            arguments = list(getattr(prompt, "arguments", None) or [])
             out.append(
                 MCPPrompt(
                     name=name,
-                    description=getattr(prompt, "description", "") or "",
-                    arguments=list(getattr(prompt, "arguments", []) or []),
+                    description=description,
+                    arguments=arguments,
                     server_name=server_name,
-                    template="",  # v1 does not materialize templates
                 )
             )
         return out

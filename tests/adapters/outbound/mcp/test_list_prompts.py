@@ -5,8 +5,7 @@ import pytest
 from obelix.adapters.outbound.mcp.manager import MCPManager, MCPPrompt
 
 
-@pytest.mark.asyncio
-async def test_list_prompts_returns_empty_when_not_connected():
+def test_list_prompts_returns_empty_when_not_connected():
     manager = MCPManager(config=[])
     assert manager.list_prompts() == []
 
@@ -99,6 +98,50 @@ def test_mcp_prompt_is_frozen_dataclass():
 
     assert is_dataclass(MCPPrompt)
     # Check it's frozen
-    p = MCPPrompt(name="n", description="d", arguments=[], server_name="s", template="")
+    p = MCPPrompt(name="n", description="d", arguments=[], server_name="s")
     with pytest.raises(dataclasses.FrozenInstanceError):
         p.name = "x"
+
+
+def test_list_prompts_handles_description_none():
+    """SDK may return a Prompt with description=None; coerce to empty string."""
+    manager = MCPManager(config=[])
+    prompt = MagicMock()
+    prompt.description = None
+    prompt.arguments = []
+    group = MagicMock()
+    group.prompts = {"p": prompt}
+    manager._group = group
+    manager._connected = True
+    manager._resolve_server_name = MagicMock(return_value="s")
+
+    prompts = manager.list_prompts()
+    assert len(prompts) == 1
+    assert prompts[0].description == ""
+
+
+def test_list_prompts_handles_arguments_none():
+    """SDK may return a Prompt with arguments=None; coerce to empty list."""
+    manager = MCPManager(config=[])
+    prompt = MagicMock()
+    prompt.description = "d"
+    prompt.arguments = None
+    group = MagicMock()
+    group.prompts = {"p": prompt}
+    manager._group = group
+    manager._connected = True
+    manager._resolve_server_name = MagicMock(return_value="s")
+
+    prompts = manager.list_prompts()
+    assert len(prompts) == 1
+    assert prompts[0].arguments == []
+
+
+def test_list_prompts_empty_dict():
+    """An empty prompts dict returns an empty list (distinct from missing attr)."""
+    manager = MCPManager(config=[])
+    group = MagicMock()
+    group.prompts = {}
+    manager._group = group
+    manager._connected = True
+    assert manager.list_prompts() == []
