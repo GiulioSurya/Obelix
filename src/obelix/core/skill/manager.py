@@ -9,12 +9,19 @@ from obelix.ports.outbound.skill_provider import AbstractSkillProvider
 
 logger = logging.getLogger(__name__)
 
+# Hard cap on description chars regardless of budget — prevents a pathological
+# skill from monopolizing the listing when budget is generous.
 _MAX_DESC_CHARS = 250
+# Below this per-entry limit, truncated descriptions become useless
+# (just "a few chars…") — fall back to names-only instead.
 _MIN_DESC_CHARS = 20
 
 
 def _source_priority(source: str) -> int:
-    """Higher priority wins in collisions."""
+    """Higher priority wins in collisions.
+
+    Unknown sources get 0, so they lose to all known sources.
+    """
     return {"filesystem": 2, "mcp": 1}.get(source, 0)
 
 
@@ -77,10 +84,12 @@ class SkillManager:
         if full_total <= char_budget:
             return "\n".join(full_lines)
 
-        # Compute per-desc max that lets all lines fit
-        # Each line is: "- <name>: <desc>" -> fixed overhead is len(name) + 4
-        # (dash+space+colon+space)
-        name_overhead = sum(len(s.name) + 4 for s in skills) + (len(skills) - 1)
+        # Compute per-desc max that lets all lines fit.
+        # Each line is "- <name>: <desc>": the non-desc portion is `len(name) + 4`
+        # chars ("- ", ": "). Plus one "\n" separator between each pair of lines.
+        per_line_overhead = sum(len(s.name) + 4 for s in skills)
+        separator_overhead = len(skills) - 1
+        name_overhead = per_line_overhead + separator_overhead
         available_for_desc = char_budget - name_overhead
         if (
             available_for_desc <= 0
@@ -94,8 +103,11 @@ class SkillManager:
     @staticmethod
     def _render_entry(s: Skill, truncate: int | None) -> str:
         desc = s.description
+        # Append when_to_use after an em-dash when present; skipped entirely
+        # when absent so we don't emit a dangling "— " on plain skills.
         if s.when_to_use:
             desc = f"{desc} \u2014 {s.when_to_use}"
+        # Hard-cap first so a 10_000-char description can't consume the budget.
         desc = desc[:_MAX_DESC_CHARS]
         if truncate is not None and len(desc) > truncate:
             desc = desc[: max(truncate - 1, 0)] + "\u2026"
