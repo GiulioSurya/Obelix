@@ -1,3 +1,4 @@
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -62,7 +63,7 @@ class TestSkill:
 
     def test_frozen(self):
         s = Skill(name="a", description="b", body="c", base_dir=None)
-        with pytest.raises(Exception):  # noqa: B017
+        with pytest.raises(dataclasses.FrozenInstanceError):
             s.name = "x"  # type: ignore[misc]
 
     def test_equality_by_value(self):
@@ -94,6 +95,32 @@ class TestSkill:
         assert s.base_dir == Path("skills/r")
         assert s.file_path == Path("skills/r/SKILL.md")
         assert s.source == "filesystem"
+
+    def test_from_candidate_minimal_frontmatter(self):
+        candidate = SkillCandidate(
+            file_path=None,
+            frontmatter={"description": "Only description"},
+            body="body",
+        )
+        s = Skill.from_candidate(candidate, name="x", base_dir=None)
+        assert s.description == "Only description"
+        assert s.when_to_use is None
+        assert s.arguments == ()
+        assert s.allowed_tools == ()
+        assert s.context == "inline"
+        assert s.hooks == {}
+        assert s.source == "filesystem"
+        assert s.file_path is None
+        assert s.base_dir is None
+
+    def test_from_candidate_missing_description_raises(self):
+        candidate = SkillCandidate(
+            file_path=None,
+            frontmatter={},  # no description
+            body="body",
+        )
+        with pytest.raises(KeyError):
+            Skill.from_candidate(candidate, name="x", base_dir=None)
 
 
 class TestSkillValidationError:

@@ -29,7 +29,7 @@ class SkillCandidate:
     """
 
     file_path: Path | None
-    frontmatter: dict
+    frontmatter: dict[str, object]
     body: str
 
 
@@ -58,6 +58,8 @@ class Skill:
         source: Literal["filesystem", "mcp"] = "filesystem",
     ) -> Skill:
         fm = candidate.frontmatter
+        # NOTE: assumes arguments / allowed_tools have been validated as lists.
+        # tuple() of a string yields per-character tuple — validators must reject strings.
         return cls(
             name=name,
             description=fm["description"],
@@ -93,4 +95,10 @@ class SkillValidationError(Exception):
 
             return format_validation_error(self.issues)
         except ImportError:
-            return f"{len(self.issues)} skill issue(s)"
+            first = self.issues[0]
+            suffix = (
+                f" — first: [{first.field}] {first.message}"
+                if len(self.issues) == 1
+                else f" (first: [{first.field}] {first.message})"
+            )
+            return f"{len(self.issues)} skill issue(s){suffix}"
