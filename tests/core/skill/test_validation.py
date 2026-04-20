@@ -135,20 +135,20 @@ class TestFrontmatterSchemaValidator:
 
     def test_invalid_context_value(self):
         issues = self.v.check(_cand_fm(description="hi", context="parallel"))
-        assert len(issues) >= 1
+        assert len(issues) == 1
         assert any("context" in i.field for i in issues)
 
     def test_arguments_wrong_type(self):
         issues = self.v.check(_cand_fm(description="hi", arguments="not a list"))
-        assert len(issues) >= 1
+        assert len(issues) == 1
 
     def test_hooks_wrong_type(self):
         issues = self.v.check(_cand_fm(description="hi", hooks=["not a dict"]))
-        assert len(issues) >= 1
+        assert len(issues) == 1
 
     def test_allowed_tools_wrong_type(self):
         issues = self.v.check(_cand_fm(description="hi", allowed_tools="Read"))
-        assert len(issues) >= 1
+        assert len(issues) == 1
 
     def test_issue_file_path_propagated(self):
         issues = self.v.check(_cand_fm())
@@ -237,7 +237,17 @@ class TestArgumentUniquenessValidator:
 
     def test_reserved_and_duplicate_both_reported(self):
         issues = self.v.check(_cand_fm(arguments=["ARGUMENTS", "ARGUMENTS"]))
-        assert len(issues) >= 2
+        # Exactly 2: one for the duplicate, one for the reserved name.
+        # Reserved-name reports are deduplicated per distinct name.
+        assert len(issues) == 2
+        messages = [i.message for i in issues]
+        assert any("duplicate" in m.lower() for m in messages)
+        assert any("reserved" in m.lower() for m in messages)
+
+    def test_reserved_name_appearing_once_reported_once(self):
+        issues = self.v.check(_cand_fm(arguments=["path", "ARGUMENTS"]))
+        reserved = [i for i in issues if "reserved" in i.message.lower()]
+        assert len(reserved) == 1
 
     def test_non_list_arguments_no_crash(self):
         """If arguments is not a list (schema validator catches it),
@@ -308,6 +318,16 @@ class TestPlaceholderConsistencyValidator:
     def test_issue_field_is_body(self):
         issues = self.v.check(_cand_body("$unknown", arguments=[]))
         assert issues[0].field == "body"
+
+    def test_escaped_dollar_not_treated_as_placeholder(self):
+        r"""\$foo is a literal dollar sign, not a placeholder reference."""
+        assert self.v.check(_cand_body(r"Literal \$foo in body", arguments=[])) == []
+
+    def test_escaped_and_unescaped_mixed(self):
+        r"""Only unescaped $bar triggers an issue; \$foo is ignored."""
+        issues = self.v.check(_cand_body(r"\$foo and $bar", arguments=[]))
+        assert len(issues) == 1
+        assert "$bar" in issues[0].message
 
 
 class TestBodyNonEmptyValidator:
