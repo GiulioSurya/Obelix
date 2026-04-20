@@ -138,14 +138,19 @@ class MCPManager(AbstractMCPProvider):
         return ClientSessionGroup()
 
     def _resolve_server_name(self, tool_or_resource_name: str) -> str:
-        """Resolve which server a tool/resource came from.
+        """Resolve which server a tool/resource/prompt came from.
 
-        ClientSessionGroup may prefix names. For now, if we have a
-        single server, use its name. With multiple, use first as fallback.
+        ClientSessionGroup namespaces names as `mcp__<server>__<name>`.
+        When the name follows that convention, extract the server component.
+        Otherwise fall back to the first configured server (best effort for
+        SDK variations that don't prefix).
         """
-        if len(self._config) == 1:
+        parts = tool_or_resource_name.split("__")
+        if len(parts) >= 3 and parts[0] == "mcp":
+            return parts[1]
+        if self._config:
             return self._config[0].name
-        return self._config[0].name
+        return ""
 
 
 def _config_to_params(cfg: MCPServerConfig) -> Any:
