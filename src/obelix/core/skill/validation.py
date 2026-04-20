@@ -12,6 +12,7 @@ from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from obelix.core.agent.hooks import AgentEvent
 from obelix.core.skill.skill import SkillCandidate, SkillIssue
 
 
@@ -70,3 +71,28 @@ class FrontmatterSchemaValidator:
                     )
                 )
             return issues
+
+
+_VALID_HOOK_EVENTS: frozenset[str] = frozenset(e.value for e in AgentEvent)
+
+
+class HookEventValidator:
+    """Every hooks.<key> must map to a valid AgentEvent enum value."""
+
+    def check(self, candidate: SkillCandidate) -> list[SkillIssue]:
+        hooks = candidate.frontmatter.get("hooks", {})
+        if not isinstance(hooks, dict):
+            return []  # type error is reported by FrontmatterSchemaValidator
+
+        valid_list = ", ".join(sorted(_VALID_HOOK_EVENTS))
+        issues: list[SkillIssue] = []
+        for key in hooks.keys():
+            if key not in _VALID_HOOK_EVENTS:
+                issues.append(
+                    SkillIssue(
+                        file_path=candidate.file_path,
+                        field=f"hooks.{key}",
+                        message=f"unknown event. Valid: {valid_list}",
+                    )
+                )
+        return issues

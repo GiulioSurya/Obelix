@@ -3,6 +3,7 @@ from pathlib import Path
 from obelix.core.skill.skill import SkillCandidate, SkillIssue
 from obelix.core.skill.validation import (
     FrontmatterSchemaValidator,
+    HookEventValidator,
     Validator,
     run_validators,
 )
@@ -153,3 +154,48 @@ class TestFrontmatterSchemaValidator:
         """Validator returns list — never raises on invalid input."""
         # Should not raise for any of these:
         self.v.check(_cand_fm(description=42, arguments="x", hooks="y"))
+
+
+class TestHookEventValidator:
+    def setup_method(self):
+        self.v = HookEventValidator()
+
+    def test_no_hooks_no_issues(self):
+        assert self.v.check(_cand_fm()) == []
+
+    def test_empty_hooks_dict_no_issues(self):
+        assert self.v.check(_cand_fm(hooks={})) == []
+
+    def test_all_valid_events_no_issues(self):
+        hooks = {
+            "before_llm_call": "x",
+            "after_llm_call": "x",
+            "before_tool_execution": "x",
+            "after_tool_execution": "x",
+            "on_tool_error": "x",
+            "before_final_response": "x",
+            "query_end": "x",
+        }
+        assert self.v.check(_cand_fm(hooks=hooks)) == []
+
+    def test_unknown_event_one_issue(self):
+        issues = self.v.check(_cand_fm(hooks={"on_random": "x"}))
+        assert len(issues) == 1
+        assert "hooks.on_random" in issues[0].field
+        assert "query_end" in issues[0].message
+
+    def test_multiple_unknown_events_all_reported(self):
+        issues = self.v.check(_cand_fm(hooks={"on_a": "x", "on_b": "y", "on_c": "z"}))
+        assert len(issues) == 3
+        fields = {i.field for i in issues}
+        assert fields == {"hooks.on_a", "hooks.on_b", "hooks.on_c"}
+
+    def test_mix_of_valid_and_invalid(self):
+        issues = self.v.check(_cand_fm(hooks={"on_tool_error": "x", "on_bogus": "y"}))
+        assert len(issues) == 1
+        assert "hooks.on_bogus" in issues[0].field
+
+    def test_hooks_not_dict_no_crash(self):
+        """If hooks is not a dict (FrontmatterSchemaValidator catches it),
+        this validator gracefully returns no issues."""
+        assert self.v.check(_cand_fm(hooks="not a dict")) == []
