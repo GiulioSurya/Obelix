@@ -25,6 +25,12 @@ class SpanStatus(StrEnum):
     timeout = "timeout"
 
 
+class SpanEvent(BaseModel):
+    name: str
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    attributes: dict[str, Any] = Field(default_factory=dict)
+
+
 class Span(BaseModel):
     span_id: str = Field(default_factory=lambda: str(uuid4()))
     trace_id: str

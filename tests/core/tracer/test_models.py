@@ -1,6 +1,6 @@
 """Tests for tracer data models."""
 
-from obelix.core.tracer.models import SpanType
+from obelix.core.tracer.models import SpanEvent, SpanType
 
 
 class TestSpanType:
@@ -20,3 +20,27 @@ class TestSpanType:
         assert not hasattr(SpanType, "llm")
         assert not hasattr(SpanType, "memory")
         assert not hasattr(SpanType, "hook")
+
+
+class TestSpanEvent:
+    def test_constructs_with_defaults(self):
+        ev = SpanEvent(name="hook.fired")
+        assert ev.name == "hook.fired"
+        assert ev.attributes == {}
+        assert ev.timestamp is not None
+
+    def test_carries_attributes(self):
+        ev = SpanEvent(
+            name="memory.pull", attributes={"from_agent": "reviewer", "bytes": 1240}
+        )
+        assert ev.attributes["from_agent"] == "reviewer"
+        assert ev.attributes["bytes"] == 1240
+
+    def test_is_serializable(self):
+        ev = SpanEvent(
+            name="a2a.state_change", attributes={"to": "rejected", "reason": "nope"}
+        )
+        dumped = ev.model_dump(mode="json")
+        assert dumped["name"] == "a2a.state_change"
+        assert dumped["attributes"]["to"] == "rejected"
+        assert "timestamp" in dumped
