@@ -112,13 +112,19 @@ async def _publish_to_memory(status: AgentStatus) -> None:
     if not agent.memory_graph or not agent.agent_id:
         return
 
+    tracer = getattr(agent, "_tracer", None)
+
     if status.assistant_message and status.assistant_message.content:
-        await agent.memory_graph.publish(
-            agent.agent_id, status.assistant_message.content
-        )
+        final_content = status.assistant_message.content
+        await agent.memory_graph.publish(agent.agent_id, final_content)
         logger.debug(
-            f"[SharedMemory] Published final response | agent={agent.agent_id} chars={len(status.assistant_message.content)}"
+            f"[SharedMemory] Published final response | agent={agent.agent_id} chars={len(final_content)}"
         )
+        if tracer is not None:
+            await tracer.add_event(
+                "memory.publish",
+                {"kind": "final", "bytes": len(final_content)},
+            )
 
     last_tool_content = _extract_last_tool_result(agent.conversation_history)
     if last_tool_content:
@@ -128,6 +134,11 @@ async def _publish_to_memory(status: AgentStatus) -> None:
         logger.debug(
             f"[SharedMemory] Published tool result | agent={agent.agent_id} chars={len(last_tool_content)}"
         )
+        if tracer is not None:
+            await tracer.add_event(
+                "memory.publish",
+                {"kind": "tool_result", "bytes": len(last_tool_content)},
+            )
 
 
 def _extract_last_tool_result(
