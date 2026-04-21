@@ -96,6 +96,7 @@ def _make_fork_agent(parent_agent, rendered_body: str) -> BaseAgent:
         system_message=rendered_body,
         provider=parent_agent.provider,
         max_iterations=getattr(parent_agent, "max_iterations", 15),
+        tracer=getattr(parent_agent, "_tracer", None),
     )
     for t in getattr(parent_agent, "registered_tools", []):
         inner.register_tool(t)
