@@ -32,9 +32,22 @@ DEFAULT_LISTING_BUDGET = 8_000
 
 
 def _register_skill_hooks(agent, registered: list, skill: Skill) -> None:
-    """Register skill.hooks on the agent, tracking them for later cleanup."""
-    from obelix.core.agent.hooks import AgentEvent
+    """Register skill.hooks on the agent, tracking them for later cleanup.
+
+    Each hook uses CONTINUE decision plus a side-effect that appends a
+    HumanMessage to the agent's conversation history. This matches the
+    Hook fluent API (`.handle(decision, value, effects)`) and is neutral
+    to the per-event value shape — we never attempt to transform the
+    handler's value, we only nudge the model by injecting an instruction.
+    """
+    from obelix.core.agent.hooks import AgentEvent, HookDecision
     from obelix.core.model.human_message import HumanMessage
+
+    def _make_effect(text: str):
+        def _effect(status):
+            status.agent.conversation_history.append(HumanMessage(content=text))
+
+        return _effect
 
     for event_name, instruction in skill.hooks.items():
         try:
@@ -49,7 +62,7 @@ def _register_skill_hooks(agent, registered: list, skill: Skill) -> None:
             )
             continue
         hook = agent.on(event)
-        hook.inject(lambda _status, msg=instruction: HumanMessage(content=msg))
+        hook.handle(HookDecision.CONTINUE, effects=[_make_effect(instruction)])
         registered.append((event, hook))
 
 

@@ -343,9 +343,17 @@ class TestHookRegistration:
         skill_tool = make_skill_tool(mgr, parent_agent=parent)
         _invoke_execute(skill_tool, name="alpha", args="")
         # parent.on(AgentEvent.ON_TOOL_ERROR) was called
-        from obelix.core.agent.hooks import AgentEvent
+        from obelix.core.agent.hooks import AgentEvent, HookDecision
 
         parent.on.assert_any_call(AgentEvent.ON_TOOL_ERROR)
+        # And .handle(CONTINUE, effects=[...]) was called on the returned Hook
+        returned_hook = parent.on.return_value
+        assert returned_hook.handle.called
+        # Verify the decision passed is CONTINUE and effects list is non-empty
+        call_args = returned_hook.handle.call_args
+        assert call_args.args[0] == HookDecision.CONTINUE
+        effects = call_args.kwargs.get("effects", [])
+        assert len(effects) == 1
 
     def test_multiple_hooks_all_registered(self):
         real_skill = Skill(
@@ -414,3 +422,47 @@ class TestHookRegistration:
 
         assert r.status == ToolStatus.SUCCESS
         assert r.result == "Body"
+
+
+class TestHookRegistrationRealAgent:
+    """Integration: register against a real BaseAgent.on() + Hook.handle()."""
+
+    def test_real_agent_receives_hook_and_executes_effect(self):
+        """Register a hook via skill, fire the event, verify effect injects HumanMessage."""
+        import asyncio
+
+        from obelix.core.agent.base_agent import BaseAgent
+        from obelix.core.agent.hooks import AgentEvent, AgentStatus
+
+        # Build a minimal BaseAgent without running its heavy __init__ —
+        # only the hooks registry + conversation_history are exercised here.
+        parent = BaseAgent.__new__(BaseAgent)
+        parent._hooks = {event: [] for event in AgentEvent}
+        parent.conversation_history = []
+
+        real_skill = Skill(
+            name="alpha",
+            description="d",
+            body="Body",
+            base_dir=None,
+            hooks={"on_tool_error": "Retry with care."},
+        )
+        provider = MagicMock()
+        provider.discover.return_value = [real_skill]
+        mgr = SkillManager(providers=[provider])
+
+        skill_tool = make_skill_tool(mgr, parent_agent=parent)
+        _invoke_execute(skill_tool, name="alpha", args="")
+
+        # Exactly one hook registered on ON_TOOL_ERROR
+        hooks_on_error = parent._hooks[AgentEvent.ON_TOOL_ERROR]
+        assert len(hooks_on_error) == 1
+
+        # Fire the hook — its effect should append HumanMessage to history
+        status = AgentStatus(event=AgentEvent.ON_TOOL_ERROR, agent=parent)
+        asyncio.run(hooks_on_error[0].execute(status))
+
+        # conversation_history received the injected HumanMessage
+        assert len(parent.conversation_history) == 1
+        msg = parent.conversation_history[0]
+        assert msg.content == "Retry with care."
