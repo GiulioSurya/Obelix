@@ -496,7 +496,7 @@ class BaseAgent:
             )
 
         try:
-            if not resume:
+            if not resume and is_root_trace:
                 query_text = (
                     query
                     if isinstance(query, str)
@@ -530,7 +530,8 @@ class BaseAgent:
                 )
                 if outcome.decision == HookDecision.STOP:
                     assistant_msg = outcome.value
-                    await emit_assistant_span(self._tracer, assistant_msg)
+                    if is_root_trace:
+                        await emit_assistant_span(self._tracer, assistant_msg)
                     response = self._build_final_response(
                         assistant_msg, collected_tool_results, execution_error
                     )
@@ -640,7 +641,8 @@ class BaseAgent:
                     raise RuntimeError("Hook AFTER_LLM_CALL requested FAIL")
                 if outcome.decision == HookDecision.STOP:
                     assistant_msg = outcome.value
-                    await emit_assistant_span(self._tracer, assistant_msg)
+                    if is_root_trace:
+                        await emit_assistant_span(self._tracer, assistant_msg)
                     response = self._build_final_response(
                         assistant_msg, collected_tool_results, execution_error
                     )
@@ -679,7 +681,8 @@ class BaseAgent:
                             "Required tool call missing before final response"
                         )
                     assistant_msg = outcome.value
-                    await emit_assistant_span(self._tracer, assistant_msg)
+                    if is_root_trace:
+                        await emit_assistant_span(self._tracer, assistant_msg)
                     response = self._build_final_response(
                         assistant_msg, collected_tool_results, execution_error
                     )
@@ -757,7 +760,8 @@ class BaseAgent:
                                 "Required tool call missing before final response"
                             )
                         assistant_msg = outcome.value
-                        await emit_assistant_span(self._tracer, assistant_msg)
+                        if is_root_trace:
+                            await emit_assistant_span(self._tracer, assistant_msg)
                         response = self._build_final_response(
                             assistant_msg, collected_tool_results, execution_error
                         )
@@ -797,7 +801,8 @@ class BaseAgent:
                         "Required tool call missing before final response"
                     )
                 assistant_msg = outcome.value
-                await emit_assistant_span(self._tracer, assistant_msg)
+                if is_root_trace:
+                    await emit_assistant_span(self._tracer, assistant_msg)
                 response = self._build_final_response(
                     assistant_msg, collected_tool_results, execution_error
                 )

@@ -1037,3 +1037,92 @@ class TestAgentSpanAggregatedLlmUsage:
         assert len(agent_spans) == 1
         assert agent_spans[0].metadata.get("model_id") is not None
         assert agent_spans[0].metadata.get("provider_type") is not None
+
+
+# ---------------------------------------------------------------------------
+# Task 13: guard human/assistant emission to root-only
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_human_and_assistant_spans_emitted_when_root(make_agent_with_spy_tracer):
+    """Standalone (root) agent emits exactly one human + one assistant span."""
+    from tests.core.agent.conftest import _mock_assistant_text
+
+    agent, spy = make_agent_with_spy_tracer(
+        responses=[_mock_assistant_text("hello world")]
+    )
+    await agent.execute_query_async("the query")
+
+    human_spans = [s for s in spy.spans if s.span_type.value == "human"]
+    assistant_spans = [s for s in spy.spans if s.span_type.value == "assistant"]
+    assert len(human_spans) == 1, f"expected 1 human span, got {len(human_spans)}"
+    assert len(assistant_spans) == 1, (
+        f"expected 1 assistant span, got {len(assistant_spans)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_human_and_assistant_spans_not_emitted_when_nested(
+    make_agent_with_spy_tracer,
+):
+    """When a trace is already active (nested), BaseAgent does NOT emit human/assistant spans."""
+    from tests.core.agent.conftest import _mock_assistant_text
+
+    agent, spy = make_agent_with_spy_tracer(responses=[_mock_assistant_text("hello")])
+    # Open an outer trace + agent span to simulate nesting under an a2a_task
+    from obelix.core.tracer.models import SpanType
+
+    await agent._tracer.start_trace("outer")
+    await agent._tracer.start_span(SpanType.a2a_task, "outer-task")
+    try:
+        await agent.execute_query_async("hi")
+    finally:
+        await agent._tracer.end_span()
+        await agent._tracer.end_trace()
+
+    human_spans = [s for s in spy.spans if s.span_type.value == "human"]
+    assistant_spans = [s for s in spy.spans if s.span_type.value == "assistant"]
+    assert human_spans == [], (
+        f"nested agent must not emit human spans; got {human_spans}"
+    )
+    assert assistant_spans == [], (
+        f"nested agent must not emit assistant spans; got {assistant_spans}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_no_intermediate_assistant_spans_mid_loop(make_agent_with_spy_tracer):
+    """
+    A multi-iteration loop must emit exactly one assistant span (the final response),
+    not one per iteration's text output.
+    """
+    from obelix.core.model.assistant_message import AssistantMessage
+    from obelix.core.model.tool_message import ToolCall
+    from obelix.core.model.usage import Usage
+    from tests.core.agent.conftest import _mock_assistant_text
+
+    # Iteration 1: text + tool call → this is mid-loop text.
+    # Iteration 2: text only → this is the final response.
+    intermediate = AssistantMessage(
+        content="let me use the tool first",
+        tool_calls=[ToolCall(id="t1", name="dummy", arguments={})],
+        usage=Usage(input_tokens=50, output_tokens=10, total_tokens=60),
+    )
+    final = _mock_assistant_text("final answer")
+    agent, spy = make_agent_with_spy_tracer(
+        responses=[intermediate, final],
+        tool_results={"dummy": {"ok": True}},
+    )
+    await agent.execute_query_async("do a thing")
+
+    assistant_spans = [s for s in spy.spans if s.span_type.value == "assistant"]
+    # Exactly ONE assistant span — the final response, not the intermediate text.
+    assert len(assistant_spans) == 1, (
+        f"expected 1 assistant span, got {len(assistant_spans)}: "
+        f"{[getattr(s.output, 'get', lambda _: None)('content') if isinstance(s.output, dict) else s.output for s in assistant_spans]}"
+    )
+    # And its content must be the final answer
+    final_out = assistant_spans[0].output
+    content = final_out.get("content") if isinstance(final_out, dict) else final_out
+    assert content == "final answer"
