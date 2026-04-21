@@ -873,3 +873,52 @@ class TestForkExecution:
         from obelix.core.model.tool_message import ToolStatus
 
         assert result.status == ToolStatus.ERROR
+
+
+class TestForkExecutionRealAgent:
+    """End-to-end fork exercising the real BaseAgent(...) construction path."""
+
+    def test_fork_with_real_base_agent_and_stub_provider(self):
+        """Full path: real BaseAgent + real SubAgentWrapper + stub LLM provider."""
+        from obelix.core.agent.base_agent import BaseAgent
+        from obelix.core.model.assistant_message import AssistantMessage
+        from obelix.infrastructure.providers import Providers
+        from obelix.ports.outbound.llm_provider import AbstractLLMProvider
+
+        class _StubProvider(AbstractLLMProvider):
+            """Minimal provider: returns a single AssistantMessage and stops."""
+
+            model_id = "stub-model-1"
+
+            @property
+            def provider_type(self):
+                return Providers.ANTHROPIC
+
+            async def invoke(self, messages, tools, response_schema=None):
+                # Immediately return a final response — no tool calls.
+                return AssistantMessage(content="Fork completed successfully.")
+
+        parent = BaseAgent(
+            system_message="You are the parent.",
+            provider=_StubProvider(),
+            max_iterations=3,
+        )
+
+        fork_skill = Skill(
+            name="deep_analyzer",
+            description="Runs a deep analysis in a sub-agent",
+            body="You are a deep analyzer. Summarize X.",
+            base_dir=None,
+            context="fork",
+        )
+        provider = MagicMock()
+        provider.discover.return_value = [fork_skill]
+        mgr = SkillManager(providers=[provider])
+
+        skill_tool = make_skill_tool(mgr, parent_agent=parent)
+        result = _invoke_execute(skill_tool, name="deep_analyzer", args="")
+
+        from obelix.core.model.tool_message import ToolStatus
+
+        assert result.status == ToolStatus.SUCCESS
+        assert result.result == "Fork completed successfully."
