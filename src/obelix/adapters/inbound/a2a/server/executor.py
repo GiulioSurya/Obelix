@@ -98,6 +98,40 @@ class ObelixAgentExecutor(AgentExecutor):
         self._store_lock = asyncio.Lock()
         self._tracer = tracer
 
+    async def _emit_state(
+        self,
+        from_state: str | None,
+        to_state: str,
+        reason: str | None = None,
+    ) -> None:
+        """Emit an a2a.state_change tracer event on the a2a_task span.
+
+        Temporarily re-pins the current span to the a2a_task span so the event
+        attaches there (not to whatever nested span — agent/tool — is active).
+        Restores the prior current span afterwards. No-op if no tracer is
+        configured or no a2a_task span exists on the current trace.
+        """
+        if not self._tracer:
+            return
+        trace = get_current_trace()
+        if trace is None:
+            return
+        a2a_span = next(
+            (s for s in trace.spans if s.span_type == SpanType.a2a_task),
+            None,
+        )
+        if a2a_span is None:
+            return
+        prior = get_current_span()
+        set_current_span(a2a_span)
+        try:
+            await self._tracer.add_event(
+                "a2a.state_change",
+                {"from": from_state, "to": to_state, "reason": reason},
+            )
+        finally:
+            set_current_span(prior)
+
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         task_id = context.task_id
         context_id = context.context_id or "default"
@@ -125,6 +159,14 @@ class ObelixAgentExecutor(AgentExecutor):
                     ),
                     final=True,
                 )
+            )
+            # No a2a_task span is opened in this early-exit path, so the
+            # emission is a no-op (add_event is guarded), but we still log
+            # the transition for symmetry.
+            await self._emit_state(
+                from_state=None,
+                to_state="failed",
+                reason="no_input",
             )
             return
 
@@ -274,6 +316,12 @@ class ObelixAgentExecutor(AgentExecutor):
                 final=False,
             )
         )
+        # Initial entry: None -> working; resume: input_required -> working
+        await self._emit_state(
+            from_state="input_required" if is_resume else None,
+            to_state="working",
+            reason="resume" if is_resume else "execute_start",
+        )
 
         stream = None
         # Captured on the success path to emit an ``assistant`` span as a
@@ -332,6 +380,11 @@ class ObelixAgentExecutor(AgentExecutor):
                             final=True,
                         )
                     )
+                    await self._emit_state(
+                        from_state="working",
+                        to_state="canceled",
+                        reason="client_cancel",
+                    )
                     logger.info(f"[A2A] Agent canceled by user | task_id={task_id}")
                     return False
 
@@ -363,6 +416,11 @@ class ObelixAgentExecutor(AgentExecutor):
                             ),
                             final=True,
                         )
+                    )
+                    await self._emit_state(
+                        from_state="working",
+                        to_state="input_required",
+                        reason="deferred_tool",
                     )
                     logger.info(
                         f"[A2A] Input required | task_id={task_id} "
@@ -475,6 +533,11 @@ class ObelixAgentExecutor(AgentExecutor):
                             final=True,
                         )
                     )
+                    await self._emit_state(
+                        from_state="working",
+                        to_state="completed",
+                        reason="final_response",
+                    )
                     logger.info(f"[A2A] Agent completed | task_id={task_id}")
                     break
 
@@ -491,6 +554,11 @@ class ObelixAgentExecutor(AgentExecutor):
                     ),
                     final=True,
                 )
+            )
+            await self._emit_state(
+                from_state="working",
+                to_state="canceled",
+                reason="async_cancel",
             )
             raise
 
@@ -510,6 +578,11 @@ class ObelixAgentExecutor(AgentExecutor):
                     final=True,
                 )
             )
+            await self._emit_state(
+                from_state="working",
+                to_state="rejected",
+                reason=e.reason,
+            )
 
         except Exception as e:
             entry.history = agent.conversation_history[1:]
@@ -524,6 +597,11 @@ class ObelixAgentExecutor(AgentExecutor):
                     ),
                     final=True,
                 )
+            )
+            await self._emit_state(
+                from_state="working",
+                to_state="failed",
+                reason=str(e),
             )
 
         finally:
@@ -599,6 +677,10 @@ class ObelixAgentExecutor(AgentExecutor):
             )
         else:
             # No active agent — task was likely in input_required (deferred).
+            # Capture the "from" state before cleanup below clears the flag.
+            was_deferred = bool(entry.deferred_tool_calls)
+            saved_trace = entry.trace_session
+            saved_span = entry.trace_span
             # Clean up: replace the null ToolMessage with a cancel message
             # so the LLM knows the tool was not executed.
             if entry.deferred_tool_calls and entry.history:
@@ -632,3 +714,20 @@ class ObelixAgentExecutor(AgentExecutor):
                     final=True,
                 )
             )
+            # Restore the trace context saved at suspension so the
+            # state_change attaches to the original a2a_task span, then
+            # restore whatever was current before (almost always None here).
+            if self._tracer and saved_trace is not None:
+                prior_trace = get_current_trace()
+                prior_span = get_current_span()
+                set_current_trace(saved_trace)
+                set_current_span(saved_span)
+                try:
+                    await self._emit_state(
+                        from_state="input_required" if was_deferred else "working",
+                        to_state="canceled",
+                        reason="cancel_request",
+                    )
+                finally:
+                    set_current_trace(prior_trace)
+                    set_current_span(prior_span)

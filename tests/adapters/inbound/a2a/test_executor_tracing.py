@@ -149,3 +149,31 @@ async def test_executor_does_not_unboundlocalerror_on_tracer_failure(
             pytest.fail(f"UnboundLocalError leaked: {e}")
     finally:
         tracer_mod.Tracer.start_span = original_start_span
+
+
+@pytest.mark.asyncio
+async def test_executor_emits_state_change_events(executor_with_tracer):
+    """A successful turn emits at least working and completed state_change events on the a2a_task span."""
+    send_message, spy = executor_with_tracer
+    await send_message("hi")
+
+    a2a_tasks = [s for s in spy.spans if s.span_type.value == "a2a_task"]
+    assert len(a2a_tasks) == 1
+    events = a2a_tasks[0].events
+    state_changes = [e for e in events if e.name == "a2a.state_change"]
+    assert len(state_changes) >= 2
+    states = [e.attributes.get("to") for e in state_changes]
+    assert "working" in states, f"working not in {states}"
+    assert "completed" in states, f"completed not in {states}"
+
+
+@pytest.mark.asyncio
+async def test_state_change_attributes_carry_from_to_reason(executor_with_tracer):
+    """Each state_change event has 'to' attribute; 'from' and 'reason' are optional."""
+    send_message, spy = executor_with_tracer
+    await send_message("hi")
+
+    a2a_tasks = [s for s in spy.spans if s.span_type.value == "a2a_task"]
+    events = [e for e in a2a_tasks[0].events if e.name == "a2a.state_change"]
+    for e in events:
+        assert "to" in e.attributes, f"state_change event missing 'to': {e.attributes}"
