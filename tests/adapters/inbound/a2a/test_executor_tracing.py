@@ -241,3 +241,52 @@ async def test_deferred_wait_cleared_on_resume(executor_with_deferred_tool):
         if s.span_type.value == "deferred_wait" and s.end_time is not None
     ]
     assert len(dw_spans) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancellation_emits_event_on_a2a_task(
+    executor_with_deferred_tool_and_cancel,
+):
+    """
+    When cancel() is called during deferred input_required, the a2a_task span
+    receives a cancellation.requested event.
+    """
+    send_message, resume, spy, executor_cancel = executor_with_deferred_tool_and_cancel
+    await send_message("do the deferred thing")
+    await executor_cancel()
+
+    a2a_tasks = [s for s in spy.spans if s.span_type.value == "a2a_task"]
+    assert len(a2a_tasks) == 1
+    cancel_events = [
+        e for e in a2a_tasks[0].events if e.name == "cancellation.requested"
+    ]
+    assert len(cancel_events) == 1
+    assert cancel_events[0].attributes.get("source")
+
+
+@pytest.mark.asyncio
+async def test_cancel_closes_deferred_wait_span(executor_with_deferred_tool_and_cancel):
+    """Task 19 follow-up: cancelling during input_required must close deferred_wait."""
+    send_message, resume, spy, executor_cancel = executor_with_deferred_tool_and_cancel
+    await send_message("deferred thing")
+    await executor_cancel()
+
+    dw_spans = [s for s in spy.spans if s.span_type.value == "deferred_wait"]
+    assert len(dw_spans) == 1
+    assert dw_spans[0].end_time is not None, (
+        "deferred_wait span must be closed on cancel; got end_time=None (leak)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancel_marks_a2a_task_status_canceled(
+    executor_with_deferred_tool_and_cancel,
+):
+    """a2a_task span status is SpanStatus.canceled after cancel."""
+    send_message, resume, spy, executor_cancel = executor_with_deferred_tool_and_cancel
+    await send_message("deferred thing")
+    await executor_cancel()
+
+    a2a_tasks = [s for s in spy.spans if s.span_type.value == "a2a_task"]
+    assert len(a2a_tasks) == 1
+    assert a2a_tasks[0].status.value == "canceled"

@@ -245,3 +245,116 @@ def executor_with_deferred_tool():
         await executor.execute(ctx, queue)
 
     return send_message, resume, spy
+
+
+@pytest.fixture
+def executor_with_deferred_tool_and_cancel():
+    """Return ``(send_message, resume, spy_exporter, executor_cancel)``.
+
+    Same shape as ``executor_with_deferred_tool`` plus an ``executor_cancel``
+    callable that drives ``ObelixAgentExecutor.cancel`` on the same
+    ``context_id``. Used to exercise the cancel-path tracer instrumentation
+    (cancellation.requested event, deferred_wait close, canceled status).
+    """
+    from obelix.core.model.assistant_message import AssistantResponse, StreamEvent
+    from obelix.core.model.system_message import SystemMessage
+    from obelix.core.model.tool_message import ToolCall
+
+    spy = _ExecutorSpyExporter()
+    tracer = Tracer(exporter=spy)
+
+    created: list[MagicMock] = []
+    context_id = "ctx-deferred-cancel-001"
+
+    class _DeferredToolStub:
+        tool_name = "ask_user"
+        tool_description = "Ask the user a question (deferred)."
+        is_deferred = True
+
+        async def execute(self, tool_call):  # pragma: no cover - not used
+            return None
+
+        def create_schema(self):  # pragma: no cover - not used
+            from obelix.core.model.tool_message import MCPToolSchema
+
+            return MCPToolSchema(
+                name=self.tool_name,
+                description=self.tool_description,
+                inputSchema={"type": "object", "properties": {}},
+            )
+
+    def factory() -> MagicMock:
+        agent = MagicMock()
+        agent.system_message = SystemMessage(content="You are a test agent.")
+        agent.conversation_history = [agent.system_message]
+        agent.registered_tools = [_DeferredToolStub()]
+        agent._tracer = tracer
+
+        call_count = len(created)
+        if call_count == 0:
+            # First invocation: yield deferred tool calls
+            async def first_stream(query):
+                yield StreamEvent(
+                    deferred_tool_calls=[
+                        ToolCall(
+                            id="tc-deferred-cancel-1",
+                            name="ask_user",
+                            arguments={"question": "something?"},
+                        )
+                    ],
+                    is_final=True,
+                )
+
+            agent.execute_query_stream = MagicMock(side_effect=first_stream)
+        else:
+            # Resume invocation: yield a final assistant response
+            async def resume_stream():
+                yield StreamEvent(
+                    is_final=True,
+                    assistant_response=AssistantResponse(
+                        agent_name="test_agent",
+                        content="resumed done",
+                    ),
+                )
+
+            agent.resume_after_deferred = MagicMock(side_effect=resume_stream)
+
+        created.append(agent)
+        return agent
+
+    executor = ObelixAgentExecutor(factory, tracer=tracer)
+
+    async def send_message(text: str) -> None:
+        ctx = _FakeRequestContext(
+            context_id=context_id,
+            text=text,
+            task_id="task-tracing-defcancel",
+        )
+        queue = _FakeEventQueue()
+        await executor.execute(ctx, queue)
+
+    async def resume(data: dict) -> None:
+        ctx = _FakeResumeContext(
+            context_id=context_id,
+            data=data,
+            task_id="task-tracing-defcancel-resume",
+        )
+        queue = _FakeEventQueue()
+        await executor.execute(ctx, queue)
+
+    async def executor_cancel() -> None:
+        """Drive ``ObelixAgentExecutor.cancel`` on the same context_id.
+
+        The executor's ``cancel`` needs a minimal ``RequestContext``-like
+        object (task_id + context_id) and an ``EventQueue``. We reuse the
+        same fake shapes used by ``send_message``.
+        """
+        ctx = _FakeRequestContext(
+            context_id=context_id,
+            text="",
+            task_id="task-tracing-defcancel-cancel",
+        )
+        queue = _FakeEventQueue()
+        await executor.cancel(ctx, queue)
+
+    return send_message, resume, spy, executor_cancel

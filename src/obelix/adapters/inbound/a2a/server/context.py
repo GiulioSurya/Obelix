@@ -34,6 +34,7 @@ class ContextEntry:
         "deferred_wait_span_id",
         "active_agent",
         "client_info",
+        "was_canceled",
     )
 
     def __init__(self) -> None:
@@ -50,6 +51,11 @@ class ContextEntry:
         self.deferred_wait_span_id: str | None = None
         self.active_agent: BaseAgent | None = None  # ref to running agent for cancel
         self.client_info: dict | None = None  # client shell environment for BashTool
+        # Flag set by ``cancel()`` (either via CancelledError in the agent
+        # loop or via the input_required cancel path) so the outer
+        # ``_run_agent`` finally closes the a2a_task span with
+        # ``SpanStatus.canceled`` instead of the default ``ok``.
+        self.was_canceled: bool = False
 
 
 class ContextStore:

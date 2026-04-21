@@ -58,7 +58,7 @@ from obelix.core.tracer.context import (
     set_current_span,
     set_current_trace,
 )
-from obelix.core.tracer.models import SpanType
+from obelix.core.tracer.models import SpanStatus, SpanType
 from obelix.infrastructure.logging import get_logger
 
 if TYPE_CHECKING:
@@ -129,6 +129,40 @@ class ObelixAgentExecutor(AgentExecutor):
                 "a2a.state_change",
                 {"from": from_state, "to": to_state, "reason": reason},
             )
+        finally:
+            set_current_span(prior)
+
+    async def _emit_cancellation_event(
+        self,
+        source: str = "client",
+        iteration: int | None = None,
+    ) -> None:
+        """Emit a ``cancellation.requested`` event on the a2a_task span.
+
+        Same pattern as :meth:`_emit_state`: pin the current span to the
+        ``a2a_task`` root so the event attaches there (not to a nested
+        agent/tool/deferred_wait span), then restore the prior current span.
+        No-op if no tracer is configured, no current trace, or no a2a_task
+        span exists on the current trace.
+        """
+        if not self._tracer:
+            return
+        trace = get_current_trace()
+        if trace is None:
+            return
+        a2a_span = next(
+            (s for s in trace.spans if s.span_type == SpanType.a2a_task),
+            None,
+        )
+        if a2a_span is None:
+            return
+        prior = get_current_span()
+        set_current_span(a2a_span)
+        try:
+            attributes: dict[str, object] = {"source": source}
+            if iteration is not None:
+                attributes["iteration"] = iteration
+            await self._tracer.add_event("cancellation.requested", attributes)
         finally:
             set_current_span(prior)
 
@@ -351,7 +385,12 @@ class ObelixAgentExecutor(AgentExecutor):
                         )
                 if task_span is not None:
                     set_current_span(task_span)
-                await tracer.end_span()
+                # Propagate canceled status onto the a2a_task span when
+                # a cancel flowed through (either via CancelledError in the
+                # agent loop — see _run_agent_impl — or via a client-initiated
+                # cancel captured in entry.was_canceled).
+                status = SpanStatus.canceled if entry.was_canceled else SpanStatus.ok
+                await tracer.end_span(status=status)
                 await tracer.end_trace()
 
     async def _run_agent_impl(
@@ -451,6 +490,9 @@ class ObelixAgentExecutor(AgentExecutor):
                 # === Agent canceled by user ===
                 if event.canceled:
                     entry.history = agent.conversation_history[1:]
+                    # Propagate cancel intent to the outer finally so the
+                    # a2a_task span is closed with SpanStatus.canceled.
+                    entry.was_canceled = True
                     await event_queue.enqueue_event(
                         TaskStatusUpdateEvent(
                             task_id=task_id,
@@ -633,6 +675,9 @@ class ObelixAgentExecutor(AgentExecutor):
 
         except asyncio.CancelledError:
             entry.history = agent.conversation_history[1:]
+            # Mark the context so the outer _run_agent finally closes the
+            # a2a_task span with SpanStatus.canceled.
+            entry.was_canceled = True
             logger.info(f"[A2A] Agent canceled | task_id={task_id}")
             await event_queue.enqueue_event(
                 TaskStatusUpdateEvent(
@@ -760,6 +805,8 @@ class ObelixAgentExecutor(AgentExecutor):
             # Agent is running — signal cooperative cancellation.
             # The _execute_loop will detect the flag, yield a canceled
             # StreamEvent, and _run_agent will emit TaskState.canceled.
+            # _run_agent_impl will set entry.was_canceled so the outer
+            # finally closes the a2a_task span with SpanStatus.canceled.
             entry.active_agent.cancel()
             logger.info(
                 f"[A2A] Cancel signal sent to active agent | "
@@ -804,20 +851,47 @@ class ObelixAgentExecutor(AgentExecutor):
                     final=True,
                 )
             )
-            # Restore the trace context saved at suspension so the
-            # state_change attaches to the original a2a_task span, then
-            # restore whatever was current before (almost always None here).
+            # Restore the trace context saved at suspension so tracer
+            # operations (deferred_wait close, cancellation.requested event,
+            # state_change event, a2a_task close, trace end) attach to the
+            # original task. Restore whatever was current before afterwards
+            # (almost always None here).
             if self._tracer and saved_trace is not None:
                 prior_trace = get_current_trace()
                 prior_span = get_current_span()
                 set_current_trace(saved_trace)
                 set_current_span(saved_span)
                 try:
+                    # Close the open deferred_wait span first so its end_time
+                    # is recorded BEFORE the a2a_task span closes — addresses
+                    # the Task 19 leak (span previously stayed open on cancel).
+                    await self._close_deferred_wait_span(entry)
+                    # Emit cancellation.requested event on the a2a_task span
+                    # BEFORE state_change, so the event appears on the span
+                    # independently of the state transition.
+                    await self._emit_cancellation_event(source="client")
                     await self._emit_state(
                         from_state="input_required" if was_deferred else "working",
                         to_state="canceled",
                         reason="cancel_request",
                     )
+                    # Finally, close the a2a_task span with canceled status
+                    # and end the trace. The suspended deferred path owns
+                    # the open trace, so cancel is the only place it can be
+                    # closed (no resume will come).
+                    entry.was_canceled = True
+                    a2a_span = next(
+                        (
+                            s
+                            for s in saved_trace.spans
+                            if s.span_type == SpanType.a2a_task and s.end_time is None
+                        ),
+                        None,
+                    )
+                    if a2a_span is not None:
+                        set_current_span(a2a_span)
+                        await self._tracer.end_span(status=SpanStatus.canceled)
+                        await self._tracer.end_trace()
                 finally:
                     set_current_trace(prior_trace)
                     set_current_span(prior_span)
