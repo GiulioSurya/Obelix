@@ -512,3 +512,70 @@ class TestHookFiredEvent:
         assert attrs["decision"] == "continue"
         assert attrs["effects_count"] == 1
         assert attrs["reason"] is None
+
+    @pytest.mark.asyncio
+    async def test_memory_configured_agent_emits_hook_fired_for_memory_hooks(
+        self,
+        spy_tracer_exporter,
+    ):
+        """A memory-configured agent must emit hook.fired events for memory_hooks."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from obelix.core.agent.base_agent import BaseAgent
+        from obelix.core.agent.shared_memory import (
+            PropagationPolicy,
+            SharedMemoryGraph,
+        )
+        from obelix.core.model.assistant_message import AssistantMessage
+        from obelix.core.model.usage import Usage
+        from obelix.core.tracer.tracer import Tracer
+
+        tracer = Tracer(exporter=spy_tracer_exporter)
+
+        # Build a two-node memory graph: predecessor -> current
+        graph = SharedMemoryGraph()
+        graph.add_agent("predecessor")
+        graph.add_agent("current")
+        graph.add_edge(
+            "predecessor", "current", policy=PropagationPolicy.FINAL_RESPONSE_ONLY
+        )
+        # Pre-publish data on predecessor so memory.pull has something to fetch
+        await graph.publish("predecessor", "some predecessor context", kind="final")
+
+        # Mocked provider
+        provider = MagicMock()
+        provider.provider_type = "mock"
+        provider.model_id = "mock-model"
+        provider.invoke = AsyncMock(
+            side_effect=[
+                AssistantMessage(
+                    content="done",
+                    tool_calls=[],
+                    usage=Usage(input_tokens=10, output_tokens=5, total_tokens=15),
+                )
+            ]
+        )
+
+        agent = BaseAgent(
+            system_message="test",
+            provider=provider,
+            tracer=tracer,
+            max_iterations=3,
+        )
+        # Wire memory binding (same pattern as AgentFactory.with_memory_graph)
+        agent.memory_graph = graph
+        agent.agent_id = "current"
+
+        await agent.execute_query_async("hi")
+
+        agent_spans = [
+            s for s in spy_tracer_exporter.spans if s.span_type.value == "agent"
+        ]
+        assert agent_spans, "agent span must exist"
+        hook_events = [e for e in agent_spans[0].events if e.name == "hook.fired"]
+        # At least one hook.fired from the memory hook path
+        # (BEFORE_LLM_CALL + BEFORE_FINAL_RESPONSE)
+        assert hook_events, (
+            "memory-configured agent must emit at least one hook.fired event; "
+            f"got events: {[e.name for e in agent_spans[0].events]}"
+        )

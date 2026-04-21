@@ -307,8 +307,14 @@ class BaseAgent:
                 outcome.decision != HookDecision.CONTINUE or outcome.effects_count
             ):
                 reason: str | None = None
-                if outcome.decision in (HookDecision.REJECT, HookDecision.FAIL) and (
-                    isinstance(outcome.value, str)
+                if outcome.decision == HookDecision.REJECT:
+                    reason = (
+                        outcome.value
+                        if isinstance(outcome.value, str)
+                        else "Task rejected by agent"
+                    )
+                elif outcome.decision == HookDecision.FAIL and isinstance(
+                    outcome.value, str
                 ):
                     reason = outcome.value
                 await self._tracer.add_event(
