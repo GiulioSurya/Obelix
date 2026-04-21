@@ -86,6 +86,48 @@ class TestSkillsConfigAccepted:
         assert "with_named_args" in a.system_message.content
 
 
+class TestInputValidation:
+    def test_empty_string_rejected(self):
+        with pytest.raises(ValueError, match="cannot be empty"):
+            BaseAgent(
+                system_message="X",
+                provider=_provider(),
+                skills_config="",
+            )
+
+    def test_whitespace_string_rejected(self):
+        with pytest.raises(ValueError, match="cannot be empty"):
+            BaseAgent(
+                system_message="X",
+                provider=_provider(),
+                skills_config="   ",
+            )
+
+    def test_empty_string_inside_list_rejected(self):
+        with pytest.raises(ValueError, match="cannot contain empty strings"):
+            BaseAgent(
+                system_message="X",
+                provider=_provider(),
+                skills_config=[str(FIXTURES / "minimal"), ""],
+            )
+
+    def test_non_str_non_path_type_rejected(self):
+        with pytest.raises(TypeError, match="must be str, Path, list, or None"):
+            BaseAgent(
+                system_message="X",
+                provider=_provider(),
+                skills_config=42,
+            )
+
+    def test_bad_item_in_list_rejected(self):
+        with pytest.raises(TypeError, match="list items must be str or Path"):
+            BaseAgent(
+                system_message="X",
+                provider=_provider(),
+                skills_config=[str(FIXTURES / "minimal"), 42],
+            )
+
+
 class TestValidationFailure:
     def test_invalid_skill_raises_on_construction(self):
         with pytest.raises(SkillValidationError):

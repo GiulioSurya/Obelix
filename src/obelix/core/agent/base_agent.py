@@ -14,6 +14,7 @@ from obelix.infrastructure.logging import get_logger
 if TYPE_CHECKING:
     from obelix.adapters.outbound.mcp.config import MCPServerConfig
     from obelix.core.agent.shared_memory import SharedMemoryGraph
+    from obelix.core.skill.manager import SkillManager
     from obelix.core.tracer.tracer import Tracer
 
 from obelix.core.agent.agent_tracing import (
@@ -153,7 +154,9 @@ class BaseAgent:
                 )
                 self.register_tool(skill_tool)
 
-    def _build_skill_manager(self, skills_config):
+    def _build_skill_manager(
+        self, skills_config: "str | Path | list"
+    ) -> "SkillManager":
         """Normalize skills_config into a SkillManager with FS + optional MCP providers."""
         from obelix.adapters.outbound.skill.filesystem import FilesystemSkillProvider
         from obelix.core.skill.manager import SkillManager
@@ -167,17 +170,28 @@ class BaseAgent:
         return SkillManager(providers)
 
     @staticmethod
-    def _normalize_skills_config(cfg):
-        """Accept str, Path, list[str|Path] → list[Path]. Reject other types."""
+    def _normalize_skills_config(cfg: "str | Path | list") -> list[Path]:
+        """Accept str, Path, list[str|Path] -> list[Path]. Reject other types.
+
+        Empty strings are rejected up-front: `Path("")` would silently resolve
+        to the current working directory and scan it for skills, which is
+        almost never what the caller intended.
+        """
         if isinstance(cfg, (str, Path)):
+            if isinstance(cfg, str) and not cfg.strip():
+                raise ValueError(
+                    "skills_config string cannot be empty; pass None to disable skills"
+                )
             return [Path(cfg)]
         if isinstance(cfg, list):
-            out = []
+            out: list[Path] = []
             for item in cfg:
                 if not isinstance(item, (str, Path)):
                     raise TypeError(
                         f"skills_config list items must be str or Path, got {type(item).__name__}"
                     )
+                if isinstance(item, str) and not item.strip():
+                    raise ValueError("skills_config list cannot contain empty strings")
                 out.append(Path(item))
             return out
         raise TypeError(
