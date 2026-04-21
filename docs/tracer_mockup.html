@@ -1,0 +1,948 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8" />
+<title>Obelix Tracer — new taxonomy mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #0d0f14;
+    --surface: #13161e;
+    --surface2: #1a1e28;
+    --border: #252a38;
+    --border2: #2e3447;
+    --text: #e2e8f0;
+    --muted: #6b7894;
+    --accent: #4f8ef7;
+    --accent-dim: rgba(79,142,247,0.12);
+    --green: #34d399;
+    --green-dim: rgba(52,211,153,0.12);
+    --orange: #fb923c;
+    --orange-dim: rgba(251,146,60,0.12);
+    --purple: #a78bfa;
+    --purple-dim: rgba(167,139,250,0.12);
+    --red: #f87171;
+    --red-dim: rgba(248,113,113,0.12);
+    --yellow: #fbbf24;
+    --yellow-dim: rgba(251,191,36,0.12);
+    --human: #60a5fa;
+    --human-dim: rgba(96,165,250,0.12);
+    --assistant: #34d399;
+    --assistant-dim: rgba(52,211,153,0.12);
+    --teal: #2dd4bf;
+    --teal-dim: rgba(45,212,191,0.12);
+    --pink: #f472b6;
+    --pink-dim: rgba(244,114,182,0.12);
+    --mono: 'JetBrains Mono', monospace;
+    --display: 'Syne', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    min-height: 100vh;
+    overflow: hidden;
+  }
+
+  /* Layout */
+  .app {
+    display: grid;
+    grid-template-rows: 48px 48px 1fr;
+    grid-template-columns: 380px 1fr 360px;
+    height: 100vh;
+  }
+  .topbar {
+    grid-row: 1; grid-column: 1 / -1;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 20px; gap: 16px;
+  }
+  .topbar .logo { font-family: var(--display); font-weight: 800; font-size: 15px; letter-spacing: 0.04em; }
+  .topbar .trace-meta { font-size: 11px; color: var(--muted); display: flex; gap: 12px; margin-left: auto; }
+  .topbar .trace-meta b { color: var(--text); font-weight: 500; }
+
+  .scenario-bar {
+    grid-row: 2; grid-column: 1 / -1;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 16px; gap: 4px;
+  }
+  .scenario-bar button {
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--muted);
+    padding: 5px 11px;
+    font-family: var(--mono); font-size: 11px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: all .12s;
+  }
+  .scenario-bar button:hover { color: var(--text); background: var(--surface2); }
+  .scenario-bar button.active { color: var(--accent); background: var(--accent-dim); border-color: rgba(79,142,247,0.2); }
+  .scenario-bar .toggles { margin-left: auto; display: flex; gap: 6px; align-items: center; font-size: 10px; color: var(--muted); }
+  .scenario-bar .toggle {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 9px; border-radius: 4px; border: 1px solid var(--border);
+    cursor: pointer; user-select: none;
+    background: var(--surface2);
+  }
+  .scenario-bar .toggle.on { background: var(--accent-dim); color: var(--accent); border-color: rgba(79,142,247,0.25); }
+  .scenario-bar .toggle .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+  .scenario-bar .toggle.on .dot { background: var(--accent); }
+
+  .sidebar {
+    grid-row: 3; grid-column: 1;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 12px 0;
+  }
+  .sidebar-section-label {
+    padding: 8px 16px;
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 4px;
+  }
+
+  .tree {
+    grid-row: 3; grid-column: 2;
+    background: var(--bg);
+    overflow-y: auto;
+    padding: 8px 0;
+  }
+  .tree-section-label {
+    padding: 10px 18px 8px;
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 4px;
+  }
+
+  .detail {
+    grid-row: 3; grid-column: 3;
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    overflow-y: auto;
+  }
+
+  /* Tree rows */
+  .row {
+    display: flex; align-items: center; gap: 7px;
+    padding: 5px 14px 5px 0;
+    min-height: 30px;
+    cursor: pointer;
+    transition: background .1s;
+    font-size: 11.5px;
+  }
+  .row:hover { background: rgba(255,255,255,0.025); }
+  .row.selected { background: var(--accent-dim); border-right: 2px solid var(--accent); }
+
+  .chev {
+    width: 16px; height: 16px; flex-shrink: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--muted); font-size: 9px;
+    transition: transform .15s;
+  }
+  .chev.collapsed { transform: rotate(-90deg); }
+  .chev.leaf { visibility: hidden; }
+
+  .badge {
+    width: 20px; height: 20px;
+    border-radius: 5px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: 700;
+    flex-shrink: 0;
+    border: 1px solid;
+  }
+  .badge-a2a_task    { background: var(--pink-dim);    color: var(--pink);    border-color: rgba(244,114,182,0.25); }
+  .badge-agent       { background: var(--purple-dim);  color: var(--purple);  border-color: rgba(167,139,250,0.25); }
+  .badge-sub_agent   { background: var(--purple-dim);  color: var(--purple);  border-color: rgba(167,139,250,0.15); opacity:0.8; }
+  .badge-skill       { background: var(--teal-dim);    color: var(--teal);    border-color: rgba(45,212,191,0.25); }
+  .badge-tool        { background: var(--orange-dim);  color: var(--orange);  border-color: rgba(251,146,60,0.25); }
+  .badge-deferred_wait { background: var(--yellow-dim); color: var(--yellow); border-color: rgba(251,191,36,0.3); }
+  .badge-human       { background: var(--human-dim);   color: var(--human);   border-color: rgba(96,165,250,0.25); }
+  .badge-assistant   { background: var(--assistant-dim); color: var(--assistant); border-color: rgba(52,211,153,0.25); }
+
+  .name {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .name.err { color: var(--red); }
+  .name .suffix {
+    color: var(--muted);
+    font-size: 10.5px;
+    margin-left: 8px;
+  }
+
+  /* stat chips that live next to the name */
+  .stat {
+    color: var(--muted);
+    font-size: 10px;
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+  .stat.tok { color: var(--muted); }
+  .stat.calls { color: var(--muted); }
+
+  /* event counter chips */
+  .chip {
+    display: inline-flex; align-items: center; gap: 3px;
+    font-size: 10px; padding: 1px 6px;
+    border-radius: 10px; border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--muted);
+    flex-shrink: 0;
+    cursor: default;
+  }
+  .chip.hooks  { color: var(--orange); background: var(--orange-dim); border-color: rgba(251,146,60,0.25); }
+  .chip.mempull{ color: var(--accent); background: var(--accent-dim); border-color: rgba(79,142,247,0.25); }
+  .chip.mempush{ color: var(--accent); background: var(--accent-dim); border-color: rgba(79,142,247,0.25); }
+  .chip.warn   { color: var(--red); background: var(--red-dim); border-color: rgba(248,113,113,0.25); }
+
+  .status-dot {
+    width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+    background: var(--green);
+  }
+  .status-dot.err { background: var(--red); }
+  .status-dot.warn{ background: var(--yellow); }
+  .running {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+    animation: pulse 1.2s ease-in-out infinite;
+    flex-shrink: 0;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.8); }
+  }
+  .dur {
+    color: var(--muted);
+    font-size: 10px;
+    flex-shrink: 0;
+    margin-left: 4px;
+  }
+
+  /* Event lines (inline, optional toggle) */
+  .event-line {
+    display: flex; align-items: center; gap: 7px;
+    padding: 2px 14px 2px 0;
+    min-height: 22px;
+    font-size: 10.5px;
+    color: var(--muted);
+    font-style: italic;
+  }
+  .event-line .ev-bullet {
+    color: var(--accent);
+    font-weight: 700;
+    flex-shrink: 0;
+    width: 14px;
+    text-align: center;
+  }
+  .event-line .ev-name { color: var(--text); font-style: normal; font-weight: 500; font-size: 10.5px; }
+  .event-line .ev-attr { color: var(--muted); }
+  .event-line .ev-attr b { color: var(--text); font-weight: 500; }
+  .event-line .ev-attr.warn { color: var(--red); }
+
+  /* Deferred gap divider */
+  .gap {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 14px;
+    color: var(--yellow);
+    font-size: 10px;
+    background: linear-gradient(90deg, transparent, rgba(251,191,36,0.05), transparent);
+  }
+  .gap::before, .gap::after {
+    content: ''; flex: 1; height: 1px;
+    background: repeating-linear-gradient(90deg, rgba(251,191,36,0.3) 0 4px, transparent 4px 8px);
+  }
+
+  /* Detail panel */
+  .detail-header {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px;
+    background: var(--surface);
+    position: sticky; top: 0; z-index: 2;
+  }
+  .detail-header .badge { width: 24px; height: 24px; font-size: 10px; }
+  .detail-header .title { font-family: var(--display); font-weight: 700; font-size: 15px; }
+  .detail-header .status-badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 2px 8px; font-size: 10px; font-weight: 600;
+    border-radius: 4px;
+    background: var(--green-dim); color: var(--green); border: 1px solid rgba(52,211,153,0.25);
+  }
+
+  .detail-body { padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+
+  .chips-row { display: flex; flex-wrap: wrap; gap: 6px; }
+  .meta-chip {
+    background: var(--surface2); border: 1px solid var(--border);
+    padding: 5px 11px; border-radius: 5px;
+    font-size: 11px; color: var(--muted);
+  }
+  .meta-chip b { color: var(--text); font-weight: 500; margin-left: 3px; }
+  .meta-chip b.blue { color: var(--accent); }
+  .meta-chip b.green { color: var(--green); }
+
+  .section {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .section-header {
+    padding: 7px 12px;
+    font-size: 9px; letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--muted);
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 7px;
+  }
+  .section-header .dot {
+    width: 5px; height: 5px; border-radius: 50%;
+    background: var(--accent);
+  }
+  .section-body { padding: 10px 12px; font-size: 11px; line-height: 1.55; }
+
+  .event-card {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 10.5px;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .event-card:last-child { border-bottom: none; }
+  .event-card .ev-head { display: flex; gap: 8px; align-items: center; }
+  .event-card .ev-time { color: var(--muted); font-size: 9px; flex-shrink: 0; }
+  .event-card .ev-type { color: var(--text); font-weight: 500; }
+  .event-card .ev-type.warn { color: var(--orange); }
+  .event-card .ev-kv { color: var(--muted); font-size: 10px; }
+  .event-card .ev-kv b { color: var(--text); font-weight: 500; }
+
+  .conv-item {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  .conv-item:last-child { border-bottom: none; }
+  .conv-item .role { font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-bottom: 3px; }
+
+  /* Sidebar scenarios list preview */
+  .sidebar .trace-item {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer; transition: background .12s;
+  }
+  .sidebar .trace-item:hover { background: var(--surface2); }
+  .sidebar .trace-item.active { background: var(--accent-dim); border-left: 2px solid var(--accent); padding-left: 14px; }
+  .sidebar .trace-item .ti-title { font-size: 11.5px; font-weight: 500; color: var(--text); }
+  .sidebar .trace-item .ti-meta { display: flex; gap: 8px; font-size: 10px; color: var(--muted); margin-top: 4px; }
+  .sidebar .trace-item .ti-status {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 1px 6px; border-radius: 3px;
+    font-size: 9px; font-weight: 600;
+  }
+  .ti-status.ok  { background: var(--green-dim); color: var(--green); }
+  .ti-status.err { background: var(--red-dim); color: var(--red); }
+  .ti-status.warn{ background: var(--yellow-dim); color: var(--yellow); }
+
+  .scenario { display: none; }
+  .scenario.active { display: block; }
+
+  /* Hide events unless toggle on */
+  body:not(.show-events) .event-line { display: none; }
+</style>
+</head>
+<body class="show-events">
+
+<div class="app">
+
+  <!-- TOP BAR -->
+  <header class="topbar">
+    <div class="logo">OBELIX · tracer mockup</div>
+    <div class="trace-meta">
+      <span>service <b id="svc-name">DEV_WORKFLOW</b></span>
+      <span>trace <b id="trace-id">8b7e4c…</b></span>
+      <span>context <b id="ctx-id">c19f…</b></span>
+      <span id="trace-duration">· 4.2s</span>
+    </div>
+  </header>
+
+  <!-- SCENARIO SELECTOR -->
+  <div class="scenario-bar">
+    <button class="active" data-scn="dev_workflow">dev_workflow (skills + sub-agents)</button>
+    <button data-scn="deferred">deferred tool</button>
+    <button data-scn="rejection">rejection</button>
+    <button data-scn="cancellation">cancellation + mcp</button>
+    <button data-scn="standalone">standalone (no A2A)</button>
+    <div class="toggles">
+      <label class="toggle on" id="toggle-events">
+        <span class="dot"></span>show events
+      </label>
+      <label class="toggle on" id="toggle-chips">
+        <span class="dot"></span>chips
+      </label>
+    </div>
+  </div>
+
+  <!-- SIDEBAR (trace list, fake) -->
+  <aside class="sidebar">
+    <div class="sidebar-section-label">recent traces</div>
+    <div class="trace-item active">
+      <div class="ti-title">CoordinatorAgent</div>
+      <div class="ti-meta"><span class="ti-status ok">● completed</span><span>4.2s</span><span>13 spans</span></div>
+    </div>
+    <div class="trace-item">
+      <div class="ti-title">BashAgent</div>
+      <div class="ti-meta"><span class="ti-status ok">● completed</span><span>8.4s</span><span>6 spans</span></div>
+    </div>
+    <div class="trace-item">
+      <div class="ti-title">ReviewerAgent</div>
+      <div class="ti-meta"><span class="ti-status err">● rejected</span><span>140ms</span><span>2 spans</span></div>
+    </div>
+    <div class="trace-item">
+      <div class="ti-title">BrowserAgent</div>
+      <div class="ti-meta"><span class="ti-status warn">● canceled</span><span>2.2s</span><span>4 spans</span></div>
+    </div>
+  </aside>
+
+  <!-- TREE PANEL (scenarios) -->
+  <main class="tree">
+    <div class="tree-section-label">execution log</div>
+
+    <!-- ───── SCENARIO 1: dev_workflow ───── -->
+    <div class="scenario active" data-scn="dev_workflow">
+      <!-- [TK] a2a_task root -->
+      <div class="row selected" style="padding-left:14px">
+        <span class="chev">▼</span>
+        <span class="badge badge-a2a_task">TK</span>
+        <span class="name">task 8b7e4c…</span>
+        <span class="stat">context=c19f</span>
+        <span class="status-dot"></span>
+        <span class="dur">4.2s</span>
+      </div>
+
+      <!-- [H] human input -->
+      <div class="row" style="padding-left:32px">
+        <span class="chev leaf">▼</span>
+        <span class="badge badge-human">H</span>
+        <span class="name">"review my staged changes"</span>
+        <span class="status-dot"></span>
+        <span class="dur">—</span>
+      </div>
+
+      <!-- [AG] Coordinator -->
+      <div class="row" style="padding-left:32px">
+        <span class="chev">▼</span>
+        <span class="badge badge-agent">AG</span>
+        <span class="name">CoordinatorAgent</span>
+        <span class="stat calls">3 calls</span>
+        <span class="stat tok">1.2k→240 tok</span>
+        <span class="status-dot"></span>
+        <span class="dur">4.0s</span>
+      </div>
+
+      <!-- [SA] reviewer -->
+      <div class="row" style="padding-left:50px">
+        <span class="chev">▼</span>
+        <span class="badge badge-sub_agent">SA</span>
+        <span class="name">reviewer</span>
+        <span class="status-dot"></span>
+        <span class="dur">2.8s</span>
+      </div>
+
+      <!-- child AG ReviewerAgent -->
+      <div class="row" style="padding-left:68px">
+        <span class="chev">▼</span>
+        <span class="badge badge-agent">AG</span>
+        <span class="name">ReviewerAgent</span>
+        <span class="stat calls">2 calls</span>
+        <span class="stat tok">1.5k→250 tok</span>
+        <span class="chip hooks">⚡ 1</span>
+        <span class="status-dot"></span>
+        <span class="dur">2.7s</span>
+      </div>
+
+      <!-- [TL] git_diff -->
+      <div class="row" style="padding-left:86px">
+        <span class="chev leaf">▼</span>
+        <span class="badge badge-tool">TL</span>
+        <span class="name">git_diff <span class="suffix">mode=summary</span></span>
+        <span class="status-dot"></span>
+        <span class="dur">50ms</span>
+      </div>
+
+      <!-- [SK] code-review (fork) -->
+      <div class="row" style="padding-left:86px">
+        <span class="chev">▼</span>
+        <span class="badge badge-skill">SK</span>
+        <span class="name">code-review <span class="suffix">mode=fork source=fs</span></span>
+        <span class="status-dot"></span>
+        <span class="dur">1.6s</span>
+      </div>
+
+      <!-- child fork agent -->
+      <div class="row" style="padding-left:104px">
+        <span class="chev leaf">▼</span>
+        <span class="badge badge-agent">AG</span>
+        <span class="name">code-review fork</span>
+        <span class="stat calls">1 call</span>
+        <span class="stat tok">1.1k→320 tok</span>
+        <span class="status-dot"></span>
+        <span class="dur">1.5s</span>
+      </div>
+
+      <!-- [SK] security-check (inline) with hook event -->
+      <div class="row" style="padding-left:86px">
+        <span class="chev leaf">▼</span>
+        <span class="badge badge-skill">SK</span>
+        <span class="name">security-check <span class="suffix">mode=inline</span></span>
+        <span class="chip hooks">⚡ 1</span>
+        <span class="status-dot"></span>
+        <span class="dur">80ms</span>
+      </div>
+
+      <!-- event inline under security-check -->
+      <div class="event-line" style="padding-left:104px">
+        <span class="ev-bullet">·</span>
+        <span class="ev-name">hook.fired</span>
+        <span class="ev-attr">event=<b>ON_TOOL_ERROR</b> decision=<b>INJECT</b> effects=1</span>
+      </div>
+
+      <!-- [SA] commit_writer -->
+      <div class="row" style="padding-left:50px">
+        <span class="chev">▼</span>
+        <span class="badge badge-sub_agent">SA</span>
+        <span class="name">commit_writer</span>
+        <span class="status-dot"></span>
+        <span class="dur">800ms</span>
+      </div>
+
+      <div class="row" style="padding-left:68px">
+        <span class="chev">▼</span>
+        <span class="badge badge-agent">AG</span>
+        <span class="name">CommitAgent</span>
+        <span class="stat calls">1 call</span>
+        <span class="stat tok">900→180 tok</span>
+        <span class="chip mempull">⇩ 1</span>
+        <span class="status-dot"></span>
+        <span class="dur">790ms</span>
+      </div>
+
+      <div class="event-line" style="padding-left:86px">
+        <span class="ev-bullet">·</span>
+        <span class="ev-name">memory.pull</span>
+        <span class="ev-attr">from=<b>reviewer</b> policy=<b>FINAL_RESPONSE_ONLY</b> 1240B</span>
+      </div>
+
+      <div class="row" style="padding-left:86px">
+        <span class="chev">▼</span>
+        <span class="badge badge-skill">SK</span>
+        <span class="name">commit-writer <span class="suffix">mode=fork</span></span>
+        <span class="status-dot"></span>
+        <span class="dur">700ms</span>
+      </div>
+
+      <div class="row" style="padding-left:104px">
+        <span class="chev leaf">▼</span>
+        <span class="badge badge-agent">AG</span>
+        <span class="name">commit-writer fork</span>
+        <span class="stat calls">1 call</span>
+        <span class="status-dot"></span>
+        <span class="dur">650ms</span>
+      </div>
+
+      <!-- [SA] summary -->
+      <div class="row" style="padding-left:50px">
+        <span class="chev">▼</span>
+        <span class="badge badge-sub_agent">SA</span>
+        <span class="name">summary</span>
+        <span class="status-dot"></span>
+        <span class="dur">400ms</span>
+      </div>
+
+      <div class="row" style="padding-left:68px">
+        <span class="chev leaf">▼</span>
+        <span class="badge badge-agent">AG</span>
+        <span class="name">SummaryAgent</span>
+        <span class="stat calls">1 call</span>
+        <span class="chip mempull">⇩ 2</span>
+        <span class="status-dot"></span>
+        <span class="dur">390ms</span>
+      </div>
+
+      <div class="event-line" style="padding-left:86px">
+        <span class="ev-bullet">·</span>
+        <span class="ev-name">memory.pull</span>
+        <span class="ev-attr">from=<b>reviewer</b> 1240B</span>
+      </div>
+      <div class="event-line" style="padding-left:86px">
+        <span class="ev-bullet">·</span>
+        <span class="ev-name">memory.pull</span>
+        <span class="ev-attr">from=<b>commit_writer</b> 180B</span>
+      </div>
+
+      <!-- [A] assistant final -->
+      <div class="row" style="padding-left:32px">
+        <span class="chev leaf">▼</span>
+        <span class="badge badge-assistant">A</span>
+        <span class="name">"## Code Review ..."</span>
+        <span class="status-dot"></span>
+        <span class="dur">—</span>
+      </div>
+    </div>
+
+    <!-- ───── SCENARIO 2: deferred ───── -->
+    <div class="scenario" data-scn="deferred">
+      <div class="row" style="padding-left:14px">
+        <span class="chev">▼</span>
+        <span class="badge badge-a2a_task">TK</span>
+        <span class="name">task c4d2…</span>
+        <span class="stat">context=c22a</span>
+        <span class="status-dot"></span>
+        <span class="dur">8.4s <span style="color:var(--yellow)">(active 1.2s)</span></span>
+      </div>
+
+      <div class="row" style="padding-left:32px">
+        <span class="chev leaf">▼</span>
+        <span class="badge badge-human">H</span>
+        <span class="name">"run df -h"</span>
+        <span class="dur">—</span>
+      </div>
+
+      <div class="row" style="padding-left:32px">
+        <span class="chev">▼</span>
+        <span class="badge badge-agent">AG</span>
+        <span class="name">BashAgent <span class="suffix">iter 1</span></span>
+        <span class="stat calls">1 call</span>
+        <span class="stat tok">120 tok</span>
+        <span class="status-dot"></span>
+        <span class="dur">400ms</span>
+      </div>
+
+      <div class="row" style="padding-left:50px">
+        <span class="chev leaf">▼</span>
+        <span class="badge badge-tool">TL</span>
+        <span class="name">bash <span class="suffix">deferred=true</span></span>
+        <span class="chip warn">deferred</span>
+        <span class="dur">—</span>
+      </div>
+
+      <div class="event-line" style="padding-left:32px">
+        <span class="ev-bullet">·</span>
+        <span class="ev-name">a2a.state_change</span>
+        <span class="ev-attr">to=<b>input_required</b> reason=<b>deferred_tool</b></span>
+      </div>
+
+      <!-- SUSPEND -->
+      <div class="gap">⏸ deferred_wait — 7.0s</div>
+
+      <div class="event-line" style="padding-left:32px">
+        <span class="ev-bullet">·</span>
+        <span class="ev-name">a2a.state_change</span>
+        <span class="ev-attr">to=<b>working</b> reason=<b>resume</b></span>
+      </div>
+
+      <div class="row" style="padding-left:32px">
+        <span class="chev leaf">▼</span>
+        <span class="badge badge-human">H</span>
+        <span class="name">DataPart &#123;stdout="Filesystem…", exit_code=0&#125;</span>
+        <span class="dur">—</span>
+      </div>
+
+      <div class="row" style="padding-left:32px">
+        <span class="chev leaf">▼</span>
+        <span class="badge badge-agent">AG</span>
+        <span class="name">BashAgent <span class="suffix">iter 2, resumed</span></span>
+        <span class="stat calls">1 call</span>
+        <span class="stat tok">180 tok</span>
+        <span class="status-dot"></span>
+        <span class="dur">800ms</span>
+      </div>
+
+      <div class="row" style="padding-left:32px">
+        <span class="chev leaf">▼</span>
+        <span class="badge badge-assistant">A</span>
+        <span class="name">"Filesystem … 47% used"</span>
+        <span class="dur">—</span>
+      </div>
+    </div>
+
+    <!-- ───── SCENARIO 3: rejection ───── -->
+    <div class="scenario" data-scn="rejection">
+      <div class="row" style="padding-left:14px">
+        <span class="chev">▼</span>
+        <span class="badge badge-a2a_task">TK</span>
+        <span class="name err">task 2e91…</span>
+        <span class="stat" style="color:var(--red)">rejected</span>
+        <span class="status-dot err"></span>
+        <span class="dur">140ms</span>
+      </div>
+
+      <div class="row" style="padding-left:32px">
+        <span class="chev leaf">▼</span>
+        <span class="badge badge-human">H</span>
+        <span class="name">"review my staged changes"</span>
+        <span class="dur">—</span>
+      </div>
+
+      <div class="row" style="padding-left:32px">
+        <span class="chev leaf">▼</span>
+        <span class="badge badge-agent">AG</span>
+        <span class="name">ReviewerAgent</span>
+        <span class="stat calls">0 calls</span>
+        <span class="chip warn">⚡ 1 REJECT</span>
+        <span class="status-dot err"></span>
+        <span class="dur">120ms</span>
+      </div>
+
+      <div class="event-line" style="padding-left:50px">
+        <span class="ev-bullet" style="color:var(--red)">·</span>
+        <span class="ev-name warn" style="color:var(--red)">hook.fired</span>
+        <span class="ev-attr warn">event=<b>BEFORE_LLM_CALL</b> decision=<b>REJECT</b> reason="No staged changes found"</span>
+      </div>
+
+      <div class="event-line" style="padding-left:14px">
+        <span class="ev-bullet" style="color:var(--red)">·</span>
+        <span class="ev-name warn" style="color:var(--red)">a2a.state_change</span>
+        <span class="ev-attr warn">to=<b>rejected</b> reason="No staged changes found"</span>
+      </div>
+    </div>
+
+    <!-- ───── SCENARIO 4: cancellation + MCP ───── -->
+    <div class="scenario" data-scn="cancellation">
+      <div class="row" style="padding-left:14px">
+        <span class="chev">▼</span>
+        <span class="badge badge-a2a_task">TK</span>
+        <span class="name">task fa01…</span>
+        <span class="stat" style="color:var(--yellow)">canceled</span>
+        <span class="status-dot warn"></span>
+        <span class="dur">2.2s</span>
+      </div>
+
+      <div class="row" style="padding-left:32px">
+        <span class="chev leaf">▼</span>
+        <span class="badge badge-human">H</span>
+        <span class="name">"open example.com and screenshot"</span>
+        <span class="dur">—</span>
+      </div>
+
+      <div class="row" style="padding-left:32px">
+        <span class="chev">▼</span>
+        <span class="badge badge-agent">AG</span>
+        <span class="name">BrowserAgent</span>
+        <span class="stat calls">2 calls</span>
+        <span class="stat tok">600 tok</span>
+        <span class="chip warn">⚠ canceled</span>
+        <span class="status-dot warn"></span>
+        <span class="dur">2.1s</span>
+      </div>
+
+      <div class="row" style="padding-left:50px">
+        <span class="chev leaf">▼</span>
+        <span class="badge badge-tool">TL</span>
+        <span class="name">mcp__playwright__navigate <span class="suffix">open_world=true</span></span>
+        <span class="status-dot"></span>
+        <span class="dur">1.2s</span>
+      </div>
+
+      <div class="row" style="padding-left:50px">
+        <span class="chev leaf">▼</span>
+        <span class="badge badge-tool">TL</span>
+        <span class="name err">mcp__playwright__take_screenshot</span>
+        <span class="chip warn">cancelled</span>
+        <span class="running"></span>
+        <span class="dur">—</span>
+      </div>
+
+      <div class="event-line" style="padding-left:50px">
+        <span class="ev-bullet" style="color:var(--yellow)">·</span>
+        <span class="ev-name warn" style="color:var(--yellow)">cancellation.requested</span>
+        <span class="ev-attr">source=<b>client</b> iteration=<b>2</b></span>
+      </div>
+    </div>
+
+    <!-- ───── SCENARIO 5: standalone ───── -->
+    <div class="scenario" data-scn="standalone">
+      <div class="row" style="padding-left:14px">
+        <span class="chev">▼</span>
+        <span class="badge badge-agent">AG</span>
+        <span class="name">ReviewerAgent <span class="suffix">standalone</span></span>
+        <span class="stat calls">2 calls</span>
+        <span class="stat tok">1.5k→250 tok</span>
+        <span class="status-dot"></span>
+        <span class="dur">2.3s</span>
+      </div>
+
+      <div class="row" style="padding-left:32px">
+        <span class="chev leaf">▼</span>
+        <span class="badge badge-human">H</span>
+        <span class="name">"analyze this diff"</span>
+        <span class="dur">—</span>
+      </div>
+
+      <div class="row" style="padding-left:32px">
+        <span class="chev leaf">▼</span>
+        <span class="badge badge-tool">TL</span>
+        <span class="name">git_diff</span>
+        <span class="dur">50ms</span>
+      </div>
+
+      <div class="row" style="padding-left:32px">
+        <span class="chev">▼</span>
+        <span class="badge badge-skill">SK</span>
+        <span class="name">code-review <span class="suffix">mode=fork</span></span>
+        <span class="dur">1.8s</span>
+      </div>
+
+      <div class="row" style="padding-left:50px">
+        <span class="chev leaf">▼</span>
+        <span class="badge badge-agent">AG</span>
+        <span class="name">code-review fork</span>
+        <span class="stat calls">1 call</span>
+        <span class="dur">1.7s</span>
+      </div>
+
+      <div class="row" style="padding-left:32px">
+        <span class="chev leaf">▼</span>
+        <span class="badge badge-assistant">A</span>
+        <span class="name">"Review findings: …"</span>
+        <span class="dur">—</span>
+      </div>
+
+      <div style="padding:10px 14px; font-size:10px; color:var(--muted); font-style:italic; border-top:1px solid var(--border); margin-top:6px;">
+        Niente [TK]: root = agent perché l'esecuzione è standalone (no A2A executor).
+      </div>
+    </div>
+  </main>
+
+  <!-- DETAIL PANEL (preview) -->
+  <aside class="detail">
+    <div class="detail-header">
+      <span class="badge badge-agent">AG</span>
+      <span class="title">ReviewerAgent</span>
+      <span class="status-badge">● Success</span>
+    </div>
+    <div class="detail-body">
+      <div class="chips-row">
+        <div class="meta-chip">Latency <b class="blue">2.7s</b></div>
+        <div class="meta-chip">Model <b>anthropic/claude-haiku-4-5</b></div>
+        <div class="meta-chip">LLM calls <b>2</b></div>
+        <div class="meta-chip">In tokens <b>1,500</b></div>
+        <div class="meta-chip">Out tokens <b>250</b></div>
+        <div class="meta-chip">Tool calls <b>4</b></div>
+        <div class="meta-chip">Iterations <b>3</b></div>
+      </div>
+
+      <div class="section">
+        <div class="section-header"><span class="dot" style="background:var(--orange)"></span>Events (1)</div>
+        <div class="event-card">
+          <div class="ev-head">
+            <span class="ev-time">+ 120 ms</span>
+            <span class="ev-type warn">hook.fired</span>
+          </div>
+          <div class="ev-kv">event=<b>BEFORE_LLM_CALL</b> · decision=<b>INJECT</b> · effects=<b>1</b></div>
+          <div class="ev-kv">reason=<b>—</b></div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header"><span class="dot"></span>Input</div>
+        <div class="section-body" style="font-family:var(--mono); font-size:11px;">
+          "review staged changes"
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header"><span class="dot" style="background:var(--green)"></span>Output</div>
+        <div class="section-body" style="font-family:var(--mono); font-size:11px;">
+          Found 2 critical issues, 4 suggestions …
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-header"><span class="dot" style="background:var(--muted)"></span>System Prompt <span style="margin-left:auto; color:var(--muted)">▸</span></div>
+      </div>
+    </div>
+  </aside>
+
+</div>
+
+<script>
+  // scenario switcher
+  const buttons = document.querySelectorAll('.scenario-bar button[data-scn]');
+  const scenarios = document.querySelectorAll('.scenario[data-scn]');
+  const metaSvc = document.getElementById('svc-name');
+  const metaTrace = document.getElementById('trace-id');
+  const metaCtx = document.getElementById('ctx-id');
+  const metaDur = document.getElementById('trace-duration');
+
+  const meta = {
+    dev_workflow: { svc: 'DEV_WORKFLOW', id: '8b7e4c…', ctx: 'c19f…', dur: '· 4.2s · completed' },
+    deferred:     { svc: 'bash',         id: 'c4d2…',  ctx: 'c22a…', dur: '· 8.4s · completed (active 1.2s)' },
+    rejection:    { svc: 'DEV_WORKFLOW', id: '2e91…',  ctx: 'c03b…', dur: '· 140ms · rejected' },
+    cancellation: { svc: 'playwright',   id: 'fa01…',  ctx: 'c88e…', dur: '· 2.2s · canceled' },
+    standalone:   { svc: 'local',        id: 'd04f…',  ctx: '—',     dur: '· 2.3s · ok' },
+  };
+
+  buttons.forEach(btn => btn.addEventListener('click', () => {
+    const scn = btn.dataset.scn;
+    buttons.forEach(b => b.classList.toggle('active', b === btn));
+    scenarios.forEach(s => s.classList.toggle('active', s.dataset.scn === scn));
+    const m = meta[scn];
+    if (m) {
+      metaSvc.textContent = m.svc;
+      metaTrace.textContent = m.id;
+      metaCtx.textContent = m.ctx;
+      metaDur.textContent = m.dur;
+    }
+  }));
+
+  // toggle events visibility
+  const tEvents = document.getElementById('toggle-events');
+  tEvents.addEventListener('click', () => {
+    tEvents.classList.toggle('on');
+    document.body.classList.toggle('show-events');
+  });
+
+  // toggle chips visibility
+  const tChips = document.getElementById('toggle-chips');
+  tChips.addEventListener('click', () => {
+    tChips.classList.toggle('on');
+    document.querySelectorAll('.chip').forEach(c => {
+      c.style.display = tChips.classList.contains('on') ? '' : 'none';
+    });
+  });
+
+  // row selection
+  document.querySelectorAll('.row').forEach(row => {
+    row.addEventListener('click', () => {
+      document.querySelectorAll('.row').forEach(r => r.classList.remove('selected'));
+      row.classList.add('selected');
+    });
+  });
+
+  // chevron toggle (cosmetic)
+  document.querySelectorAll('.chev:not(.leaf)').forEach(c => {
+    c.addEventListener('click', (e) => {
+      e.stopPropagation();
+      c.classList.toggle('collapsed');
+    });
+  });
+</script>
+
+</body>
+</html>
