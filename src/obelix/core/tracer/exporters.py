@@ -5,7 +5,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from obelix.core.tracer.models import Span, SpanStatus, SpanType, TraceSession
+from obelix.core.tracer.models import (
+    Span,
+    SpanEvent,
+    SpanStatus,
+    SpanType,
+    TraceSession,
+)
 from obelix.infrastructure.logging import get_logger, restore_console, suppress_console
 
 logger = get_logger(__name__)
@@ -36,6 +42,12 @@ class TracerExporter(ABC):
     async def end_trace(
         self, trace_id: str, status: SpanStatus, end_time: datetime | None
     ) -> None: ...
+
+    async def on_event(  # noqa: B027 - intentional default no-op hook
+        self, span: Span, event: SpanEvent, service_name: str
+    ) -> None:
+        """Called when a SpanEvent is added to a span. Default: no-op."""
+        pass
 
     @abstractmethod
     async def shutdown(self) -> None: ...
