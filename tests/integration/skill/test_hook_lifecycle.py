@@ -1,38 +1,13 @@
 """End-to-end: a skill-with-hooks registers, fires, and is cleaned up per query."""
 
-from pathlib import Path
-
 import pytest
 
 from obelix.core.agent.base_agent import BaseAgent
 from obelix.core.agent.hooks import AgentEvent
 from obelix.core.model.assistant_message import AssistantMessage
 from obelix.core.model.tool_message import ToolCall
-from obelix.infrastructure.providers import Providers
-from obelix.ports.outbound.llm_provider import AbstractLLMProvider
 
-FIXTURES = Path(__file__).parent.parent.parent / "fixtures" / "skills"
-
-
-class StubProvider(AbstractLLMProvider):
-    """Scripted provider."""
-
-    model_id = "stub-model"
-
-    def __init__(self, responses):
-        self._responses = list(responses)
-        self._idx = 0
-
-    @property
-    def provider_type(self):
-        return Providers.ANTHROPIC
-
-    async def invoke(self, messages, tools, response_schema=None):
-        if self._idx >= len(self._responses):
-            raise RuntimeError("Unscripted provider call")
-        resp = self._responses[self._idx]
-        self._idx += 1
-        return resp
+from .conftest import FIXTURES, StubProvider
 
 
 @pytest.mark.asyncio

@@ -1,26 +1,12 @@
 """End-to-end: invalid skills_config aggregates all issues into one error."""
 
-from pathlib import Path
-
 import pytest
 
 from obelix.core.agent.base_agent import BaseAgent
 from obelix.core.skill.skill import SkillValidationError
-from obelix.infrastructure.providers import Providers
-from obelix.ports.outbound.llm_provider import AbstractLLMProvider
 
-FIXTURES = Path(__file__).parent.parent.parent / "fixtures" / "skills"
-
-
-class _StubProvider(AbstractLLMProvider):
-    model_id = "stub-model"
-
-    @property
-    def provider_type(self):
-        return Providers.ANTHROPIC
-
-    async def invoke(self, messages, tools, response_schema=None):
-        raise NotImplementedError
+from .conftest import FIXTURES
+from .conftest import StubProvider as _StubProvider
 
 
 def test_agent_construction_fails_cleanly_on_invalid_skills():
