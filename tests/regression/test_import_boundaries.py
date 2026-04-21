@@ -21,19 +21,25 @@ def _direct_imports(graph, module: str) -> set[str]:
 class TestSkillCoreLeaf:
     """`obelix.core.skill.skill` is the leaf of the DAG — no same-package imports."""
 
-    def test_skill_module_does_not_import_from_other_core_skill_modules(self, graph):
+    def test_skill_module_imports_nothing_from_core_skill_at_module_scope(self, graph):
+        """No top-level imports from sibling core.skill.* modules.
+
+        `SkillValidationError._default_message()` lazy-imports `reporting`,
+        which some grimp versions surface as an import edge. That inline
+        import is intentional: it breaks the reporting ↔ validation error
+        cycle without promoting `reporting` to a module-level dependency.
+        The rule therefore allows *only* `reporting` as the named exception.
+        """
         direct = _direct_imports(graph, "obelix.core.skill.skill")
-        forbidden = {
+        siblings = {
             m
             for m in direct
             if m.startswith("obelix.core.skill.") and m != "obelix.core.skill.skill"
         }
-        # Allow `obelix.core.skill.reporting` because SkillValidationError
-        # lazy-imports it inside `_default_message()` — grimp picks up
-        # inline imports too; check to see if this is flagged.
-        # If it is, we document it as the one exception.
-        # Accept ONLY reporting as the lazy import exception.
-        assert forbidden <= {"obelix.core.skill.reporting"}
+        assert siblings <= {"obelix.core.skill.reporting"}, (
+            f"skill.py may only import `reporting` lazily; got extras: "
+            f"{siblings - {'obelix.core.skill.reporting'}}"
+        )
 
 
 class TestManagerIsolation:
@@ -63,11 +69,6 @@ class TestValidationPurity:
     def test_validation_does_not_import_yaml(self, graph):
         direct = _direct_imports(graph, "obelix.core.skill.validation")
         assert "yaml" not in direct
-
-    def test_validation_does_not_import_pathlib_operations(self, graph):
-        """pathlib.Path is OK for type hints but no file IO should happen here."""
-        # Can't easily enforce via grimp; covered by unit tests (no IO).
-        pass  # documented — unit tests enforce this
 
 
 class TestSkillToolIsolation:

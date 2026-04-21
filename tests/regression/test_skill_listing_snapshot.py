@@ -75,7 +75,42 @@ def test_truncation_preserves_all_names():
     long = "x" * 400
     skills = [_mk(f"sk{i:02d}", long) for i in range(5)]
     mgr = SkillManager(providers=[_fake_provider(skills)])
-    # 30 chars per desc + overhead — enough that descriptions truncate with "…"
+    # Enough per-entry budget that descriptions truncate with "…"
     out = mgr.format_listing(200)
     for i in range(5):
         assert f"sk{i:02d}" in out
+
+
+def test_truncation_marker_is_ellipsis():
+    """The truncation marker is U+2026 (…), not ASCII '...'. Locked-in glyph."""
+    long = "x" * 400
+    skills = [_mk(f"sk{i}", long) for i in range(5)]
+    mgr = SkillManager(providers=[_fake_provider(skills)])
+    out = mgr.format_listing(200)
+    assert "…" in out
+    assert "..." not in out
+
+
+def test_listing_never_leaks_body():
+    """The skill body must never appear in the listing — only name/description/when_to_use."""
+    body_marker = "SECRET_BODY_CONTENT_XYZ"
+    skills = [
+        Skill(
+            name="alpha",
+            description="desc",
+            body=body_marker,
+            base_dir=None,
+            when_to_use="when Xing",
+        )
+    ]
+    mgr = SkillManager(providers=[_fake_provider(skills)])
+    out = mgr.format_listing(10_000)
+    assert body_marker not in out
+
+
+def test_when_to_use_uses_em_dash_separator():
+    """When `when_to_use` is present, the separator is '—' (em-dash)."""
+    skills = [_mk("a", "desc", when="use X")]
+    mgr = SkillManager(providers=[_fake_provider(skills)])
+    out = mgr.format_listing(10_000)
+    assert "desc — use X" in out
