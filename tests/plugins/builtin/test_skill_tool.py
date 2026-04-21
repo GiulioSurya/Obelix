@@ -221,18 +221,26 @@ class TestInlineInvocation:
         """When no session_id provided, a stable UUID is used for the tool instance."""
         import uuid as uuid_lib
 
-        real_skill = Skill(
-            name="s",
+        # Two distinct skills so idempotence (Task 7.3) does not short-circuit
+        # the second call; both share the tool instance's session id.
+        skill_a = Skill(
+            name="s1",
+            description="d",
+            body="sid=${OBELIX_SESSION_ID}",
+            base_dir=None,
+        )
+        skill_b = Skill(
+            name="s2",
             description="d",
             body="sid=${OBELIX_SESSION_ID}",
             base_dir=None,
         )
         provider = MagicMock()
-        provider.discover.return_value = [real_skill]
+        provider.discover.return_value = [skill_a, skill_b]
         mgr = SkillManager(providers=[provider])
         skill_tool = make_skill_tool(mgr)  # no session_id
-        result1 = _invoke_execute(skill_tool, name="s", args="")
-        result2 = _invoke_execute(skill_tool, name="s", args="")
+        result1 = _invoke_execute(skill_tool, name="s1", args="")
+        result2 = _invoke_execute(skill_tool, name="s2", args="")
         # Same tool instance -> same session id across calls
         assert result1.result == result2.result
         # The payload is exactly "sid=" + a valid UUID string (36 chars)
@@ -270,3 +278,139 @@ class TestInlineInvocation:
         result = _invoke_execute(skill_tool, name="my-skill", args="a b c")
         err_text = (result.error or "") + str(result.result or "")
         assert "my-skill" in err_text
+
+
+class TestIdempotence:
+    """A skill invoked twice in the same query returns 'already active' the second time."""
+
+    def test_second_invocation_returns_already_active(self):
+        mgr = _mgr_with(_skill("alpha", body="Body of alpha"))
+        skill_tool = make_skill_tool(mgr)
+        # First invocation: full body
+        r1 = _invoke_execute(skill_tool, name="alpha", args="")
+        assert r1.result == "Body of alpha"
+        # Second invocation of SAME tool instance, SAME skill: idempotent
+        r2 = _invoke_execute(skill_tool, name="alpha", args="")
+        from obelix.core.model.tool_message import ToolStatus
+
+        assert r2.status == ToolStatus.SUCCESS
+        assert "already active" in (r2.result or "").lower()
+
+    def test_different_skills_not_affected(self):
+        mgr = _mgr_with(
+            _skill("alpha", body="Body A"),
+            _skill("beta", body="Body B"),
+        )
+        skill_tool = make_skill_tool(mgr)
+        r1 = _invoke_execute(skill_tool, name="alpha", args="")
+        r2 = _invoke_execute(skill_tool, name="beta", args="")
+        assert r1.result == "Body A"
+        assert r2.result == "Body B"  # beta not affected by alpha being active
+
+    def test_idempotence_is_per_tool_instance(self):
+        mgr = _mgr_with(_skill("alpha", body="Body A"))
+        tool1 = make_skill_tool(mgr)
+        _invoke_execute(tool1, name="alpha", args="")
+        # Fresh tool instance has fresh active-set
+        tool2 = make_skill_tool(mgr)
+        r2 = _invoke_execute(tool2, name="alpha", args="")
+        assert r2.result == "Body A"
+
+
+class TestHookRegistration:
+    """Skill frontmatter hooks are registered on the parent agent at first invoke."""
+
+    def test_skill_without_hooks_no_registration(self):
+        mgr = _mgr_with(_skill("alpha", body="Body"))
+        parent = MagicMock()
+        skill_tool = make_skill_tool(mgr, parent_agent=parent)
+        _invoke_execute(skill_tool, name="alpha", args="")
+        # parent.on(...) never called
+        assert not parent.on.called
+
+    def test_skill_with_hooks_registers_on_parent(self):
+        real_skill = Skill(
+            name="alpha",
+            description="d",
+            body="Body",
+            base_dir=None,
+            hooks={"on_tool_error": "Retry carefully"},
+        )
+        provider = MagicMock()
+        provider.discover.return_value = [real_skill]
+        mgr = SkillManager(providers=[provider])
+        parent = MagicMock()
+        skill_tool = make_skill_tool(mgr, parent_agent=parent)
+        _invoke_execute(skill_tool, name="alpha", args="")
+        # parent.on(AgentEvent.ON_TOOL_ERROR) was called
+        from obelix.core.agent.hooks import AgentEvent
+
+        parent.on.assert_any_call(AgentEvent.ON_TOOL_ERROR)
+
+    def test_multiple_hooks_all_registered(self):
+        real_skill = Skill(
+            name="alpha",
+            description="d",
+            body="Body",
+            base_dir=None,
+            hooks={
+                "on_tool_error": "A",
+                "query_end": "B",
+                "before_llm_call": "C",
+            },
+        )
+        provider = MagicMock()
+        provider.discover.return_value = [real_skill]
+        mgr = SkillManager(providers=[provider])
+        parent = MagicMock()
+        skill_tool = make_skill_tool(mgr, parent_agent=parent)
+        _invoke_execute(skill_tool, name="alpha", args="")
+        from obelix.core.agent.hooks import AgentEvent
+
+        expected_events = {
+            AgentEvent.ON_TOOL_ERROR,
+            AgentEvent.QUERY_END,
+            AgentEvent.BEFORE_LLM_CALL,
+        }
+        called_events = {c.args[0] for c in parent.on.call_args_list}
+        assert expected_events <= called_events
+
+    def test_hooks_not_re_registered_on_second_invocation(self):
+        """Idempotence also covers hook registration — not duplicated."""
+        real_skill = Skill(
+            name="alpha",
+            description="d",
+            body="Body",
+            base_dir=None,
+            hooks={"on_tool_error": "Retry"},
+        )
+        provider = MagicMock()
+        provider.discover.return_value = [real_skill]
+        mgr = SkillManager(providers=[provider])
+        parent = MagicMock()
+        skill_tool = make_skill_tool(mgr, parent_agent=parent)
+        _invoke_execute(skill_tool, name="alpha", args="")
+        n_calls_first = parent.on.call_count
+        _invoke_execute(skill_tool, name="alpha", args="")
+        # Second invocation must NOT re-register
+        assert parent.on.call_count == n_calls_first
+
+    def test_no_parent_agent_hooks_silently_skipped(self):
+        """When parent_agent=None, hooks are silently not registered (log-only)."""
+        real_skill = Skill(
+            name="alpha",
+            description="d",
+            body="Body",
+            base_dir=None,
+            hooks={"on_tool_error": "Retry"},
+        )
+        provider = MagicMock()
+        provider.discover.return_value = [real_skill]
+        mgr = SkillManager(providers=[provider])
+        skill_tool = make_skill_tool(mgr, parent_agent=None)  # no parent
+        r = _invoke_execute(skill_tool, name="alpha", args="")
+        # Execution must succeed regardless
+        from obelix.core.model.tool_message import ToolStatus
+
+        assert r.status == ToolStatus.SUCCESS
+        assert r.result == "Body"
