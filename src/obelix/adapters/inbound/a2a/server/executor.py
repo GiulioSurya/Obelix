@@ -49,6 +49,7 @@ from obelix.adapters.inbound.a2a.server.helpers import (
     agent_message,
 )
 from obelix.core.agent.exceptions import TaskRejectedError
+from obelix.core.model.assistant_message import AssistantResponse
 from obelix.core.model.human_message import HumanMessage
 from obelix.core.model.tool_message import ToolMessage, ToolResult, ToolStatus
 from obelix.core.tracer.context import (
@@ -275,6 +276,15 @@ class ObelixAgentExecutor(AgentExecutor):
         )
 
         stream = None
+        # Captured on the success path to emit an ``assistant`` span as a
+        # sibling of ``agent`` under ``a2a_task``. Stays ``None`` on
+        # cancel / reject / failure / deferred suspension so those paths
+        # do NOT emit an assistant span. Initialized BEFORE the try block so
+        # that if any call below (e.g. tracer ``start_span`` on the human
+        # span) raises, the ``except`` / ``finally`` / post-block
+        # ``final_response is not None`` check does not hit
+        # ``UnboundLocalError``.
+        final_response: AssistantResponse | None = None
         try:
             # For resume: restore the trace context from the first invocation
             # so the resume appears under the same trace in the tracer UI.
@@ -306,11 +316,6 @@ class ObelixAgentExecutor(AgentExecutor):
 
             artifact_id = str(uuid.uuid4())
             first_chunk = True
-            # Captured on the success path to emit an ``assistant`` span as a
-            # sibling of ``agent`` under ``a2a_task``. Stays ``None`` on
-            # cancel / reject / failure / deferred suspension so those paths
-            # do NOT emit an assistant span.
-            final_response = None
 
             async for event in stream:
                 # === Agent canceled by user ===

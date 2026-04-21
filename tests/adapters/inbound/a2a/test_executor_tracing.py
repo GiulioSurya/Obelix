@@ -109,3 +109,43 @@ async def test_nested_agent_does_not_emit_duplicate_human_assistant(
     assert len(assistant_spans) == 1, (
         f"expected 1 assistant span, got {len(assistant_spans)}"
     )
+
+
+@pytest.mark.asyncio
+async def test_executor_does_not_unboundlocalerror_on_tracer_failure(
+    executor_with_tracer,
+):
+    """
+    If the tracer raises during start_span/end_span of the human span (or anywhere
+    before final_response is assigned), the executor must not crash with
+    UnboundLocalError on the assistant span emission block.
+    """
+    send_message, spy = executor_with_tracer
+
+    # Patch the Tracer.start_span to raise on the human span call (2nd start_span
+    # invocation: 1st is the a2a_task root, 2nd is the human span).
+    from obelix.core.tracer import tracer as tracer_mod
+
+    original_start_span = tracer_mod.Tracer.start_span
+    call_count = {"n": 0}
+
+    async def flaky_start_span(self, span_type, name, *args, **kwargs):
+        call_count["n"] += 1
+        # Let a2a_task (1st call) succeed, fail on human span (2nd call)
+        if call_count["n"] == 2:
+            raise RuntimeError("flaky exporter")
+        return await original_start_span(self, span_type, name, *args, **kwargs)
+
+    tracer_mod.Tracer.start_span = flaky_start_span
+    try:
+        # Should not raise UnboundLocalError — should propagate the RuntimeError
+        # or gracefully continue. Accept either:
+        try:
+            await send_message("hi")
+        except RuntimeError as e:
+            assert "flaky" in str(e)
+        except NameError as e:
+            # UnboundLocalError is a subclass of NameError
+            pytest.fail(f"UnboundLocalError leaked: {e}")
+    finally:
+        tracer_mod.Tracer.start_span = original_start_span
