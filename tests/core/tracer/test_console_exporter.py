@@ -258,3 +258,33 @@ async def test_deferred_wait_renders_as_suspend_divider():
     assert "bash" in out
     # Divider markers (dashes) should frame the line
     assert "───" in out or "---" in out
+
+
+def test_deferred_wait_line_encodes_on_windows_cp1252():
+    """The deferred_wait divider must not crash on Windows's default cp1252 console."""
+    exp = ConsoleExporter(verbosity=2, use_color=False)
+    span = Span(
+        trace_id="x" * 12,
+        span_type=SpanType.deferred_wait,
+        name="deferred_wait",
+        start_time=datetime.now(UTC),
+        metadata={"tool_name": "bash"},
+    )
+    span.duration_ms = 7000.0
+    line = exp._fmt_deferred_wait_line(span)
+    # Must round-trip through cp1252 without raising
+    line.encode("cp1252")
+
+
+def test_deferred_wait_line_no_duration_no_unicode_crash():
+    """Edge case: if duration_ms is None, empty-duration marker must also encode."""
+    exp = ConsoleExporter(verbosity=2, use_color=False)
+    span = Span(
+        trace_id="x" * 12,
+        span_type=SpanType.deferred_wait,
+        name="deferred_wait",
+        start_time=datetime.now(UTC),
+        metadata={"tool_name": "bash"},
+    )
+    line = exp._fmt_deferred_wait_line(span)
+    line.encode("cp1252")

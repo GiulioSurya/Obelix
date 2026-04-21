@@ -17,6 +17,18 @@ from obelix.infrastructure.logging import get_logger, restore_console, suppress_
 logger = get_logger(__name__)
 
 
+def _supports_unicode() -> bool:
+    """Return True if stdout can encode common box-drawing / em-dash chars."""
+    import sys
+
+    enc = getattr(sys.stdout, "encoding", None) or ""
+    return enc.lower().startswith(("utf", "u8", "u-8"))
+
+
+_SUSPEND_SEP = "───" if _supports_unicode() else "---"
+_EMPTY_DUR = "—" if _supports_unicode() else "-"
+
+
 @dataclass
 class _TraceStats:
     """Accumulated stats for a single trace (used by ConsoleExporter footer)."""
@@ -338,10 +350,12 @@ class ConsoleExporter(TracerExporter):
         return "  ".join(parts)
 
     def _fmt_deferred_wait_line(self, span: Span) -> str:
-        dur = self._fmt_duration(span.duration_ms) or "—"
+        dur = self._fmt_duration(span.duration_ms) or _EMPTY_DUR
         tool = span.metadata.get("tool_name", "")
-        sep = "───"
-        return self._colorize(f"{sep} SUSPEND {dur} tool={tool} {sep}", "deferred_wait")
+        return self._colorize(
+            f"{_SUSPEND_SEP} SUSPEND {dur} tool={tool} {_SUSPEND_SEP}",
+            "deferred_wait",
+        )
 
     def _fmt_human_line(self, span: Span) -> str:
         # Preserve existing behavior: show the query text (truncated).
