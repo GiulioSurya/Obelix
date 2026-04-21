@@ -38,6 +38,8 @@ BaseAgent(
     response_schema: type[BaseModel] | None = None,
     tracer: Tracer | None = None,
     planning: bool = False,
+    mcp_config: str | Path | MCPServerConfig | list | None = None,
+    skills_config: str | Path | list | None = None,
 )
 ```
 
@@ -181,6 +183,22 @@ agent = BaseAgent(
 For best results, pair with high reasoning effort on the provider:
 - Anthropic: `thinking_mode=True`
 - OpenAI/LiteLLM: `reasoning_effort="high"`
+
+### skills_config
+
+Path(s) to skill directories to expose to the agent. Accepts a single skill directory, a directory of skill directories, or a list of either; as `str`, `Path`, or a list thereof. `None` (default) disables skills. Empty strings are rejected — pass `None` to opt out.
+
+When set, the agent discovers and validates every `SKILL.md`, registers a built-in `Skill` tool, and injects a lazy-loaded listing (name + description only) into the system prompt. Invalid skills raise `SkillValidationError` at construction with every issue aggregated.
+
+```python
+agent = BaseAgent(
+    system_message="You are a code reviewer.",
+    provider=provider,
+    skills_config="./skills",  # directory of skill directories
+)
+```
+
+See the [Skills Guide](skills.md) for authoring `SKILL.md`, frontmatter reference, placeholders, hook frontmatter, and fork execution.
 
 ---
 
