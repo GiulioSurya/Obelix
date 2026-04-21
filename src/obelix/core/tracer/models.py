@@ -45,6 +45,7 @@ class Span(BaseModel):
     status: SpanStatus = SpanStatus.ok
     error: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    events: list[SpanEvent] = Field(default_factory=list)
 
 
 class TraceSession(BaseModel):

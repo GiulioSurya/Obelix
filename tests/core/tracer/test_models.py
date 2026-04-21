@@ -1,6 +1,6 @@
 """Tests for tracer data models."""
 
-from obelix.core.tracer.models import SpanEvent, SpanType
+from obelix.core.tracer.models import Span, SpanEvent, SpanType
 
 
 class TestSpanType:
@@ -44,3 +44,24 @@ class TestSpanEvent:
         assert dumped["name"] == "a2a.state_change"
         assert dumped["attributes"]["to"] == "rejected"
         assert "timestamp" in dumped
+
+
+class TestSpanEvents:
+    def test_span_has_empty_events_by_default(self):
+        sp = Span(trace_id="t1", span_type=SpanType.agent, name="a")
+        assert sp.events == []
+
+    def test_events_can_be_appended(self):
+        sp = Span(trace_id="t1", span_type=SpanType.agent, name="a")
+        sp.events.append(
+            SpanEvent(name="hook.fired", attributes={"decision": "REJECT"})
+        )
+        assert len(sp.events) == 1
+        assert sp.events[0].name == "hook.fired"
+
+    def test_events_included_in_dump(self):
+        sp = Span(trace_id="t1", span_type=SpanType.agent, name="a")
+        sp.events.append(SpanEvent(name="memory.pull", attributes={"from_agent": "x"}))
+        dumped = sp.model_dump(mode="json")
+        assert len(dumped["events"]) == 1
+        assert dumped["events"][0]["name"] == "memory.pull"
