@@ -123,27 +123,31 @@ async def start_tool_span(
 ) -> None:
     """Start a span for a tool call, dispatching on skill / sub_agent / tool.
 
-    The SkillTool (``tool_name == "Skill"``) is a built-in tool that drives
-    the skills subsystem; its calls get a ``SpanType.skill`` named after the
-    invoked skill (not the string "Skill") plus ``mode``/``source`` metadata.
-    SubAgentWrapper calls get ``SpanType.sub_agent``. Everything else gets
-    ``SpanType.tool``.
+    The SkillTool (``tool_name == SKILL_TOOL_NAME``) is a built-in tool that
+    drives the skills subsystem; its calls get a ``SpanType.skill`` named
+    after the invoked skill (not the SKILL_TOOL_NAME literal) plus
+    ``mode``/``source`` metadata. SubAgentWrapper calls get
+    ``SpanType.sub_agent``. Everything else gets ``SpanType.tool``.
     """
     if not tracer:
         return
     from obelix.core.agent.subagent_wrapper import SubAgentWrapper
     from obelix.core.tracer.models import SpanType
 
+    # Deferred import: skill_tool imports BaseAgent (which imports this module
+    # via base_agent), so importing at module scope would create a cycle.
+    from obelix.plugins.builtin.skill_tool import SKILL_TOOL_NAME
+
     tool = next(
         (t for t in registered_tools if getattr(t, "tool_name", None) == call.name),
         None,
     )
 
-    # Skill branch: SkillTool carries tool_name == "Skill" (the decorator sets
-    # this) and exposes its SkillManager via the private _manager attribute
-    # populated by make_skill_tool(). Arguments shape produced by the LLM:
-    # {"name": "<skill_name>", "args": "<shell-args>"}.
-    if tool is not None and getattr(tool, "tool_name", None) == "Skill":
+    # Skill branch: SkillTool carries tool_name == SKILL_TOOL_NAME (the
+    # decorator sets this) and exposes its SkillManager via the private
+    # _manager attribute populated by make_skill_tool(). Arguments shape
+    # produced by the LLM: {"name": "<skill_name>", "args": "<shell-args>"}.
+    if tool is not None and getattr(tool, "tool_name", None) == SKILL_TOOL_NAME:
         arguments = call.arguments if isinstance(call.arguments, dict) else {}
         skill_name = arguments.get("name") or call.name
         skill_args = arguments.get("args")

@@ -219,3 +219,22 @@ class TestSkillSpanDispatch:
         await agent.execute_query_async("do something")
         tool_spans = [s for s in spy.spans if s.span_type.value == "tool"]
         assert any(s.name == "calc" for s in tool_spans)
+
+
+class TestSubAgentSpanDispatch:
+    """Verifies the tracer dispatches a SpanType.sub_agent for SubAgentWrapper calls."""
+
+    @pytest.mark.asyncio
+    async def test_sub_agent_invocation_emits_sub_agent_span(
+        self, make_agent_with_sub_agent_and_tracer
+    ):
+        """Invoking a registered sub-agent yields a span with type=sub_agent.
+
+        The span name matches the registered sub-agent name (the tool_call.name
+        used by the parent's LLM), not the child agent's class name.
+        """
+        agent, spy = make_agent_with_sub_agent_and_tracer(sub_agent_name="child")
+        await agent.execute_query_async("delegate to child")
+        sub_agent_spans = [s for s in spy.spans if s.span_type.value == "sub_agent"]
+        assert len(sub_agent_spans) >= 1
+        assert any(s.name == "child" for s in sub_agent_spans)

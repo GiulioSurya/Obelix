@@ -197,6 +197,88 @@ def make_agent_with_skill_and_tracer(tmp_path):
 
 
 @pytest.fixture
+def make_agent_with_sub_agent_and_tracer(spy_tracer_exporter):
+    """Factory producing a ``(BaseAgent, _SpyTracerExporter)`` pair with a sub-agent.
+
+    The parent agent's mocked provider invokes the registered sub-agent on the
+    first iteration (via a tool call with the sub-agent's registered name),
+    then returns plain text on the second iteration to close its loop. The
+    child agent's mocked provider returns a single plain-text response so its
+    own loop closes on the first iteration.
+
+    Both agents share the same ``Tracer``, so completed spans from both
+    surface on the same exporter. The child is registered via
+    :meth:`BaseAgent.register_agent` with ``stateless=True`` to match the
+    most common real-world usage (parallel-safe sub-agents).
+    """
+
+    def _factory(sub_agent_name: str) -> tuple[BaseAgent, _SpyTracerExporter]:
+        exporter = spy_tracer_exporter
+        tracer = Tracer(exporter=exporter)
+
+        # Child agent: a single plain-text response closes its loop immediately.
+        child_provider = MagicMock()
+        child_provider.provider_type = "mock"
+        child_provider.model_id = "mock-child-model"
+        child_provider.invoke = AsyncMock(
+            side_effect=[_mock_assistant_text("child response")]
+        )
+
+        def _child_no_stream(*a, **kw):
+            raise NotImplementedError
+
+        child_provider.invoke_stream = MagicMock(side_effect=_child_no_stream)
+
+        child = BaseAgent(
+            system_message="child system",
+            provider=child_provider,
+            tracer=tracer,
+            max_iterations=3,
+        )
+
+        # Parent agent: first response invokes the sub-agent by its registered
+        # name, second response is plain text that ends the parent loop.
+        response_1 = AssistantMessage(
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id="tc-sub",
+                    name=sub_agent_name,
+                    arguments={"query": "go"},
+                )
+            ],
+            usage=Usage(input_tokens=20, output_tokens=10, total_tokens=30),
+        )
+        response_2 = _mock_assistant_text("done")
+
+        parent_provider = MagicMock()
+        parent_provider.provider_type = "mock"
+        parent_provider.model_id = "mock-parent-model"
+        parent_provider.invoke = AsyncMock(side_effect=[response_1, response_2])
+
+        def _parent_no_stream(*a, **kw):
+            raise NotImplementedError
+
+        parent_provider.invoke_stream = MagicMock(side_effect=_parent_no_stream)
+
+        parent = BaseAgent(
+            system_message="parent system",
+            provider=parent_provider,
+            tracer=tracer,
+            max_iterations=5,
+        )
+        parent.register_agent(
+            child,
+            name=sub_agent_name,
+            description="child sub-agent",
+            stateless=True,
+        )
+        return parent, exporter
+
+    return _factory
+
+
+@pytest.fixture
 def make_agent_with_regular_tool_and_tracer():
     """Factory producing a ``(BaseAgent, _SpyTracerExporter)`` pair with a regular tool.
 
