@@ -111,3 +111,45 @@ async def test_add_event_serializes_non_json_attributes():
 
     json.dumps(attrs, default=str)  # must not raise
     assert attrs["count"] == 3
+
+
+class TestHTTPExporterPayload:
+    def test_span_payload_includes_events(self):
+        from datetime import UTC, datetime
+
+        from obelix.core.tracer.exporters import HTTPExporter
+        from obelix.core.tracer.models import Span, SpanEvent, SpanType
+
+        exp = HTTPExporter(endpoint="http://x/ingest")
+        sp = Span(
+            trace_id="t1",
+            span_type=SpanType.agent,
+            name="ag",
+            end_time=datetime.now(UTC),
+            duration_ms=10.0,
+        )
+        sp.events.append(
+            SpanEvent(name="hook.fired", attributes={"decision": "REJECT"})
+        )
+        payload = exp._span_to_payload(sp)
+        assert "events" in payload
+        assert len(payload["events"]) == 1
+        assert payload["events"][0]["name"] == "hook.fired"
+        assert payload["events"][0]["attributes"] == {"decision": "REJECT"}
+
+    def test_span_payload_events_empty_when_no_events(self):
+        from datetime import UTC, datetime
+
+        from obelix.core.tracer.exporters import HTTPExporter
+        from obelix.core.tracer.models import Span, SpanType
+
+        exp = HTTPExporter(endpoint="http://x/ingest")
+        sp = Span(
+            trace_id="t1",
+            span_type=SpanType.tool,
+            name="t",
+            end_time=datetime.now(UTC),
+            duration_ms=10.0,
+        )
+        payload = exp._span_to_payload(sp)
+        assert payload["events"] == []

@@ -531,6 +531,14 @@ class HTTPExporter(TracerExporter):
             "status": span.status,
             "error": span.error,
             "metadata": span.metadata,
+            "events": [
+                {
+                    "name": e.name,
+                    "timestamp": e.timestamp.timestamp(),
+                    "attributes": e.attributes,
+                }
+                for e in span.events
+            ],
         }
 
     def _to_ingest_payload(self, trace: TraceSession) -> dict:
