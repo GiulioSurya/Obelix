@@ -107,7 +107,7 @@ async def test_renders_deferred_wait_span_basic():
 
         await exp.end_trace(trace.trace_id, SpanStatus.ok, span.end_time)
     out = buf.getvalue()
-    assert "DW" in out or "deferred_wait" in out
+    assert "SUSPEND" in out
 
 
 @pytest.mark.asyncio
@@ -232,3 +232,29 @@ async def test_chip_counter_shows_in_closed_span_line():
     out = buf.getvalue()
     # The agent close-out line must include either numeric counters ("hk:1", "mp:1") or equivalent chip markers
     assert "hk:1" in out or "mp:1" in out or "⚡" in out or "⇩" in out
+
+
+@pytest.mark.asyncio
+async def test_deferred_wait_renders_as_suspend_divider():
+    exp = ConsoleExporter(verbosity=2, use_color=False)
+    trace = TraceSession(name="t", trace_id="x" * 12)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        await exp.start_trace(trace, "svc")
+        span = Span(
+            trace_id=trace.trace_id,
+            span_type=SpanType.deferred_wait,
+            name="deferred_wait",
+            start_time=datetime.now(UTC),
+            metadata={"tool_name": "bash"},
+        )
+        await exp.export_span(span, "svc")
+        span.end_time = datetime.now(UTC)
+        span.duration_ms = 7000.0
+        await exp.export_span(span, "svc")
+    out = buf.getvalue()
+    assert "SUSPEND" in out
+    assert "7.0s" in out
+    assert "bash" in out
+    # Divider markers (dashes) should frame the line
+    assert "───" in out or "---" in out

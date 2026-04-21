@@ -338,12 +338,10 @@ class ConsoleExporter(TracerExporter):
         return "  ".join(parts)
 
     def _fmt_deferred_wait_line(self, span: Span) -> str:
-        # Basic single-line rendering; full "SUSPEND divider" comes in Task 9.
         dur = self._fmt_duration(span.duration_ms) or "—"
         tool = span.metadata.get("tool_name", "")
-        return self._colorize(
-            f"[DW] deferred_wait  {dur}  tool={tool}", "deferred_wait"
-        )
+        sep = "───"
+        return self._colorize(f"{sep} SUSPEND {dur} tool={tool} {sep}", "deferred_wait")
 
     def _fmt_human_line(self, span: Span) -> str:
         # Preserve existing behavior: show the query text (truncated).
