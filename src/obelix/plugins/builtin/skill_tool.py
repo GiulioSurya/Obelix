@@ -66,6 +66,31 @@ def _register_skill_hooks(agent, registered: list, skill: Skill) -> None:
         registered.append((event, hook))
 
 
+def _install_cleanup_hook(
+    agent, registered_hooks: list, active_skills: set, cleanup_flag: list | None = None
+) -> None:
+    """Install a QUERY_END hook that unregisters all skill-scoped hooks.
+
+    The cleanup hook ALSO removes itself so subsequent queries aren't
+    polluted. Active-skills set is cleared so idempotence resets per query.
+    """
+    cleanup_hook = agent.on(AgentEvent.QUERY_END)
+
+    def _cleanup_effect(status):
+        # Unregister each skill-scoped hook
+        for event, hook in list(registered_hooks):
+            status.agent._unregister_hook(event, hook)
+        # Remove the cleanup hook itself
+        status.agent._unregister_hook(AgentEvent.QUERY_END, cleanup_hook)
+        # Reset per-query state so next invocation starts clean
+        registered_hooks.clear()
+        active_skills.clear()
+        if cleanup_flag is not None:
+            cleanup_flag[0] = False
+
+    cleanup_hook.handle(HookDecision.CONTINUE, effects=[_cleanup_effect])
+
+
 def make_skill_tool(
     manager: SkillManager,
     listing_budget: int = DEFAULT_LISTING_BUDGET,
@@ -98,6 +123,7 @@ def make_skill_tool(
     # _registered_hooks to unregister skill-scoped hooks at QUERY_END.
     active_skills: set[str] = set()
     registered_hooks: list = []
+    cleanup_installed = [False]  # list-wrapped for mutability in nested closure
 
     @tool(
         name="Skill",
@@ -147,6 +173,14 @@ def make_skill_tool(
             # Only after successful substitution: register hooks and mark active.
             if skill.hooks and parent_agent is not None:
                 _register_skill_hooks(parent_agent, registered_hooks, skill)
+                if not cleanup_installed[0]:
+                    _install_cleanup_hook(
+                        parent_agent,
+                        registered_hooks,
+                        active_skills,
+                        cleanup_installed,
+                    )
+                    cleanup_installed[0] = True
             active_skills.add(self.name)
             return rendered
 

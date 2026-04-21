@@ -466,3 +466,135 @@ class TestHookRegistrationRealAgent:
         assert len(parent.conversation_history) == 1
         msg = parent.conversation_history[0]
         assert msg.content == "Retry with care."
+
+
+class TestHookCleanupOnQueryEnd:
+    """Skill-scoped hooks are removed at QUERY_END so subsequent queries start clean."""
+
+    def test_cleanup_hook_registered_once_per_tool_instance(self):
+        """QUERY_END cleanup hook is installed exactly once, not per skill invocation."""
+        real_skill_a = Skill(
+            name="a",
+            description="d",
+            body="A",
+            base_dir=None,
+            hooks={"on_tool_error": "retry A"},
+        )
+        real_skill_b = Skill(
+            name="b",
+            description="d",
+            body="B",
+            base_dir=None,
+            hooks={"on_tool_error": "retry B"},
+        )
+        provider = MagicMock()
+        provider.discover.return_value = [real_skill_a, real_skill_b]
+        mgr = SkillManager(providers=[provider])
+        parent = MagicMock()
+        skill_tool = make_skill_tool(mgr, parent_agent=parent)
+        _invoke_execute(skill_tool, name="a", args="")
+        _invoke_execute(skill_tool, name="b", args="")
+        # Count parent.on(AgentEvent.QUERY_END) calls
+        from obelix.core.agent.hooks import AgentEvent
+
+        query_end_calls = [
+            c for c in parent.on.call_args_list if c.args[0] == AgentEvent.QUERY_END
+        ]
+        assert len(query_end_calls) == 1
+
+    def test_cleanup_not_registered_when_no_skill_has_hooks(self):
+        """If no skill has hooks, no cleanup hook is needed."""
+        real_skill = Skill(
+            name="plain",
+            description="d",
+            body="Body",
+            base_dir=None,
+            hooks={},
+        )
+        provider = MagicMock()
+        provider.discover.return_value = [real_skill]
+        mgr = SkillManager(providers=[provider])
+        parent = MagicMock()
+        skill_tool = make_skill_tool(mgr, parent_agent=parent)
+        _invoke_execute(skill_tool, name="plain", args="")
+        from obelix.core.agent.hooks import AgentEvent
+
+        query_end_calls = [
+            c for c in parent.on.call_args_list if c.args[0] == AgentEvent.QUERY_END
+        ]
+        assert len(query_end_calls) == 0
+
+    def test_cleanup_fires_unregister_for_each_skill_hook_real_agent(self):
+        """Integration: QUERY_END cleanup actually removes the registered hooks."""
+        import asyncio
+
+        from obelix.core.agent.base_agent import BaseAgent
+        from obelix.core.agent.hooks import AgentEvent, AgentStatus
+
+        parent = BaseAgent.__new__(BaseAgent)
+        parent._hooks = {event: [] for event in AgentEvent}
+        parent.conversation_history = []
+
+        real_skill = Skill(
+            name="a",
+            description="d",
+            body="A",
+            base_dir=None,
+            hooks={"on_tool_error": "retry", "before_llm_call": "pre"},
+        )
+        provider = MagicMock()
+        provider.discover.return_value = [real_skill]
+        mgr = SkillManager(providers=[provider])
+        skill_tool = make_skill_tool(mgr, parent_agent=parent)
+        _invoke_execute(skill_tool, name="a", args="")
+
+        # Before cleanup: 2 skill hooks + 1 query_end cleanup hook registered
+        assert len(parent._hooks[AgentEvent.ON_TOOL_ERROR]) == 1
+        assert len(parent._hooks[AgentEvent.BEFORE_LLM_CALL]) == 1
+        assert len(parent._hooks[AgentEvent.QUERY_END]) == 1
+
+        # Fire QUERY_END — cleanup should remove all skill-scoped hooks
+        cleanup_hook = parent._hooks[AgentEvent.QUERY_END][0]
+        status = AgentStatus(event=AgentEvent.QUERY_END, agent=parent)
+        asyncio.run(cleanup_hook.execute(status))
+
+        # After cleanup: skill hooks removed, QUERY_END also self-removed
+        assert len(parent._hooks[AgentEvent.ON_TOOL_ERROR]) == 0
+        assert len(parent._hooks[AgentEvent.BEFORE_LLM_CALL]) == 0
+        assert len(parent._hooks[AgentEvent.QUERY_END]) == 0
+
+    def test_cleanup_resets_active_skills_for_next_query(self):
+        """After QUERY_END fires, invoking the same skill again returns the body (not 'already active')."""
+        import asyncio
+
+        from obelix.core.agent.base_agent import BaseAgent
+        from obelix.core.agent.hooks import AgentEvent, AgentStatus
+
+        parent = BaseAgent.__new__(BaseAgent)
+        parent._hooks = {event: [] for event in AgentEvent}
+        parent.conversation_history = []
+
+        real_skill = Skill(
+            name="a",
+            description="d",
+            body="A body",
+            base_dir=None,
+            hooks={"on_tool_error": "retry"},
+        )
+        provider = MagicMock()
+        provider.discover.return_value = [real_skill]
+        mgr = SkillManager(providers=[provider])
+        skill_tool = make_skill_tool(mgr, parent_agent=parent)
+        r1 = _invoke_execute(skill_tool, name="a", args="")
+        assert r1.result == "A body"
+        r2 = _invoke_execute(skill_tool, name="a", args="")
+        assert "already active" in r2.result.lower()
+
+        # Fire QUERY_END cleanup
+        cleanup_hook = parent._hooks[AgentEvent.QUERY_END][0]
+        status = AgentStatus(event=AgentEvent.QUERY_END, agent=parent)
+        asyncio.run(cleanup_hook.execute(status))
+
+        # Now a fresh invocation should succeed normally (not "already active")
+        r3 = _invoke_execute(skill_tool, name="a", args="")
+        assert r3.result == "A body"
