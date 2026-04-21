@@ -169,3 +169,32 @@ class TestMCPManagerDisconnect:
         # Should not raise
         await manager.disconnect()
         assert manager.is_connected() is False
+
+
+class TestResolveServerName:
+    def test_namespaced_name_extracts_server(self):
+        manager = MCPManager(config=[_make_config("alpha"), _make_config("beta")])
+        assert manager._resolve_server_name("mcp__beta__mytool") == "beta"
+
+    def test_prefixed_three_parts_exact(self):
+        manager = MCPManager(config=[_make_config("s1")])
+        assert manager._resolve_server_name("mcp__s1__search") == "s1"
+
+    def test_name_with_extra_underscores_inside_tool(self):
+        """Tool names may contain extra segments — server is always parts[1]."""
+        manager = MCPManager(config=[_make_config("srv")])
+        assert manager._resolve_server_name("mcp__srv__long__tool__name") == "srv"
+
+    def test_unprefixed_name_falls_back_to_first_config(self):
+        """When the SDK does not prefix, fall back to the first configured server."""
+        manager = MCPManager(config=[_make_config("first"), _make_config("second")])
+        assert manager._resolve_server_name("plain_tool_name") == "first"
+
+    def test_two_parts_only_falls_back(self):
+        """`mcp__x` (only 2 parts) is not a valid prefix — fall back."""
+        manager = MCPManager(config=[_make_config("first")])
+        assert manager._resolve_server_name("mcp__x") == "first"
+
+    def test_empty_config_returns_empty_string(self):
+        manager = MCPManager(config=[])
+        assert manager._resolve_server_name("whatever") == ""

@@ -4,6 +4,7 @@ import inspect
 import time
 from collections.abc import AsyncIterator
 from contextlib import aclosing
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
@@ -11,10 +12,9 @@ from pydantic import BaseModel
 from obelix.infrastructure.logging import get_logger
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from obelix.adapters.outbound.mcp.config import MCPServerConfig
     from obelix.core.agent.shared_memory import SharedMemoryGraph
+    from obelix.core.skill.manager import SkillManager
     from obelix.core.tracer.tracer import Tracer
 
 from obelix.core.agent.agent_tracing import (
@@ -66,6 +66,7 @@ class BaseAgent:
         tracer: "Tracer | None" = None,
         planning: bool = False,
         mcp_config: "str | Path | MCPServerConfig | list | None" = None,
+        skills_config: "str | Path | list | None" = None,
     ):
         self.system_message = SystemMessage(content=system_message)
         self.max_iterations = max_iterations
@@ -136,6 +137,67 @@ class BaseAgent:
                 "persistent connections."
             )
 
+        # Skills integration (optional)
+        self._skill_manager = None
+        if skills_config is not None:
+            self._skill_manager = self._build_skill_manager(skills_config)
+            if self._skill_manager.list_all():
+                session_id = None
+                if self._tracer is not None:
+                    session_id = getattr(self._tracer, "session_id", None)
+                from obelix.plugins.builtin.skill_tool import make_skill_tool
+
+                skill_tool = make_skill_tool(
+                    self._skill_manager,
+                    session_id=session_id,
+                    parent_agent=self,
+                )
+                self.register_tool(skill_tool)
+
+    def _build_skill_manager(
+        self, skills_config: "str | Path | list"
+    ) -> "SkillManager":
+        """Normalize skills_config into a SkillManager with FS + optional MCP providers."""
+        from obelix.adapters.outbound.skill.filesystem import FilesystemSkillProvider
+        from obelix.core.skill.manager import SkillManager
+
+        paths = self._normalize_skills_config(skills_config)
+        providers = [FilesystemSkillProvider(paths)]
+        if self._mcp_manager is not None:
+            from obelix.adapters.outbound.skill.mcp import MCPSkillProvider
+
+            providers.append(MCPSkillProvider(self._mcp_manager))
+        return SkillManager(providers)
+
+    @staticmethod
+    def _normalize_skills_config(cfg: "str | Path | list") -> list[Path]:
+        """Accept str, Path, list[str|Path] -> list[Path]. Reject other types.
+
+        Empty strings are rejected up-front: `Path("")` would silently resolve
+        to the current working directory and scan it for skills, which is
+        almost never what the caller intended.
+        """
+        if isinstance(cfg, (str, Path)):
+            if isinstance(cfg, str) and not cfg.strip():
+                raise ValueError(
+                    "skills_config string cannot be empty; pass None to disable skills"
+                )
+            return [Path(cfg)]
+        if isinstance(cfg, list):
+            out: list[Path] = []
+            for item in cfg:
+                if not isinstance(item, (str, Path)):
+                    raise TypeError(
+                        f"skills_config list items must be str or Path, got {type(item).__name__}"
+                    )
+                if isinstance(item, str) and not item.strip():
+                    raise ValueError("skills_config list cannot contain empty strings")
+                out.append(Path(item))
+            return out
+        raise TypeError(
+            f"skills_config must be str, Path, list, or None, got {type(cfg).__name__}"
+        )
+
     async def __aenter__(self):
         """Enter async context — connects MCP servers if configured."""
         if self._mcp_manager:
@@ -199,6 +261,15 @@ class BaseAgent:
         hook = Hook(event)
         self._hooks[event].append(hook)
         return hook
+
+    def _unregister_hook(self, event: AgentEvent, hook: Hook) -> None:
+        """Remove a previously registered hook. No-op if not present.
+
+        Internal API. Used by SkillTool to clean up skill-scoped hooks at
+        query end. Matches by object identity so two structurally identical
+        hooks can coexist and be removed independently.
+        """
+        self._hooks[event] = [h for h in self._hooks[event] if h is not hook]
 
     def _is_valid_value(self, value: Any, expected: Any) -> bool:
         if expected is None:

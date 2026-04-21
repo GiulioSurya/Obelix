@@ -397,3 +397,7 @@ build/
 
 # Playwright MCP session artifacts
 .playwright-mcp/
+
+# Personal maintainer docs (not shared)
+docs/a2a_compliance.md
+docs/skills_implementation_notes.md

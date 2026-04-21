@@ -7,6 +7,7 @@ Thin wrapper over the MCP SDK's ClientSessionGroup. Handles:
 """
 
 from contextlib import AsyncExitStack
+from dataclasses import dataclass
 from typing import Any
 
 from obelix.adapters.outbound.mcp.config import MCPServerConfig
@@ -17,6 +18,24 @@ from obelix.infrastructure.logging import get_logger
 from obelix.ports.outbound.mcp_provider import AbstractMCPProvider
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class MCPPrompt:
+    """Lightweight DTO: a prompt offered by an MCP server.
+
+    Produced by MCPManager.list_prompts() and consumed by MCPSkillProvider.
+    `arguments` holds the SDK-provided argument descriptors (typically
+    `mcp.types.PromptArgument` — only the `.name` attribute is read).
+    `template` is the prompt body when materialized; `None` means the
+    SDK exposed the prompt but didn't materialize its template (v1: always None).
+    """
+
+    name: str
+    description: str
+    arguments: list[Any]
+    server_name: str
+    template: str | None = None
 
 
 class MCPManager(AbstractMCPProvider):
@@ -84,6 +103,31 @@ class MCPManager(AbstractMCPProvider):
     def is_connected(self) -> bool:
         return self._connected
 
+    def list_prompts(self) -> list[MCPPrompt]:
+        """Return all prompts exposed by connected servers.
+
+        Returns [] when not connected, when _group is missing, or when the
+        SDK session group does not expose a prompts attribute.
+        """
+        if not self._connected or self._group is None:
+            return []
+        prompts_dict = getattr(self._group, "prompts", None) or {}
+        out: list[MCPPrompt] = []
+        for name, prompt in prompts_dict.items():
+            server_name = self._resolve_server_name(name)
+            # `None` and missing attribute both coerce to the respective empty default.
+            description = getattr(prompt, "description", None) or ""
+            arguments = list(getattr(prompt, "arguments", None) or [])
+            out.append(
+                MCPPrompt(
+                    name=name,
+                    description=description,
+                    arguments=arguments,
+                    server_name=server_name,
+                )
+            )
+        return out
+
     def get_resources(self) -> dict[str, list[MCPResourceAdapter]]:
         return self._resources
 
@@ -94,14 +138,19 @@ class MCPManager(AbstractMCPProvider):
         return ClientSessionGroup()
 
     def _resolve_server_name(self, tool_or_resource_name: str) -> str:
-        """Resolve which server a tool/resource came from.
+        """Resolve which server a tool/resource/prompt came from.
 
-        ClientSessionGroup may prefix names. For now, if we have a
-        single server, use its name. With multiple, use first as fallback.
+        ClientSessionGroup namespaces names as `mcp__<server>__<name>`.
+        When the name follows that convention, extract the server component.
+        Otherwise fall back to the first configured server (best effort for
+        SDK variations that don't prefix).
         """
-        if len(self._config) == 1:
+        parts = tool_or_resource_name.split("__")
+        if len(parts) >= 3 and parts[0] == "mcp":
+            return parts[1]
+        if self._config:
             return self._config[0].name
-        return self._config[0].name
+        return ""
 
 
 def _config_to_params(cfg: MCPServerConfig) -> Any:
