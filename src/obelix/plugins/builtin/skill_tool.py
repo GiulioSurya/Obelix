@@ -216,6 +216,12 @@ def make_skill_tool(
         ),
     )
     class SkillTool:
+        # Expose the SkillManager on the instance so tracing (and other
+        # introspection) can resolve mode/source without hacking the closure.
+        # Leading underscore keeps the @tool decorator from treating this as
+        # a Pydantic input field.
+        _manager = manager
+
         name: str = Field(..., description="Name of the skill to invoke")
         args: str = Field(
             default="", description="Optional arguments passed as $ARGUMENTS"

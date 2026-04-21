@@ -118,6 +118,121 @@ def make_agent_with_spy_tracer():
     return _factory
 
 
+@pytest.fixture
+def make_agent_with_skill_and_tracer(tmp_path):
+    """Factory producing a ``(BaseAgent, _SpyTracerExporter)`` pair wired with a skill.
+
+    Creates a temporary filesystem skill with the requested ``mode`` (context)
+    and returns an agent whose mocked provider invokes the SkillTool on its
+    first iteration, then returns plain text on the second. Only filesystem
+    source is supported by this fixture (MCP-backed skills need an MCPManager).
+    """
+
+    def _factory(
+        skill_name: str,
+        mode: str = "inline",
+        source: str = "filesystem",
+    ) -> tuple[BaseAgent, _SpyTracerExporter]:
+        if source != "filesystem":
+            raise NotImplementedError(
+                "Only source='filesystem' is supported by this fixture."
+            )
+        # Layout: tmp_path / <skill_name> / SKILL.md
+        skill_dir = tmp_path / skill_name
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(
+            f"---\ndescription: Test skill '{skill_name}'\ncontext: {mode}\n---\n"
+            f"Skill body for '{skill_name}'.\n",
+            encoding="utf-8",
+        )
+
+        exporter = _SpyTracerExporter()
+        tracer = Tracer(exporter=exporter)
+
+        # Response 1: agent calls the Skill tool with name=skill_name.
+        # Response 2: agent returns plain text, ending the loop.
+        response_1 = AssistantMessage(
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id="skill-call-1",
+                    name="Skill",
+                    arguments={"name": skill_name, "args": ""},
+                )
+            ],
+            usage=Usage(input_tokens=10, output_tokens=5, total_tokens=15),
+        )
+        response_2 = _mock_assistant_text("done")
+
+        # If mode=fork, the inner sub-agent also calls provider.invoke exactly
+        # once to close its own loop. Feed a plain-text response for it.
+        invoke_side_effect: list[AssistantMessage]
+        if mode == "fork":
+            fork_final = _mock_assistant_text("fork-finished")
+            invoke_side_effect = [response_1, fork_final, response_2]
+        else:
+            invoke_side_effect = [response_1, response_2]
+
+        provider = MagicMock()
+        provider.provider_type = "mock"
+        provider.model_id = "mock-model"
+        provider.invoke = AsyncMock(side_effect=invoke_side_effect)
+
+        def _no_stream(*a, **kw):
+            raise NotImplementedError
+
+        provider.invoke_stream = MagicMock(side_effect=_no_stream)
+
+        agent = BaseAgent(
+            system_message="test",
+            provider=provider,
+            tracer=tracer,
+            max_iterations=5,
+            skills_config=str(tmp_path),
+        )
+        return agent, exporter
+
+    return _factory
+
+
+@pytest.fixture
+def make_agent_with_regular_tool_and_tracer():
+    """Factory producing a ``(BaseAgent, _SpyTracerExporter)`` pair with a regular tool.
+
+    The provider's first response invokes a tool by ``tool_name`` with empty
+    arguments; its second response is plain text that closes the loop.
+    """
+
+    def _factory(tool_name: str) -> tuple[BaseAgent, _SpyTracerExporter]:
+        exporter = _SpyTracerExporter()
+        tracer = Tracer(exporter=exporter)
+
+        response_1 = _mock_assistant_with_tool_call(tool_name=tool_name)
+        response_2 = _mock_assistant_text("done")
+
+        provider = MagicMock()
+        provider.provider_type = "mock"
+        provider.model_id = "mock-model"
+        provider.invoke = AsyncMock(side_effect=[response_1, response_2])
+
+        def _no_stream(*a, **kw):
+            raise NotImplementedError
+
+        provider.invoke_stream = MagicMock(side_effect=_no_stream)
+
+        agent = BaseAgent(
+            system_message="test",
+            provider=provider,
+            tracer=tracer,
+            max_iterations=5,
+        )
+        agent.register_tool(_make_inline_tool(tool_name, {"ok": True}))
+        return agent, exporter
+
+    return _factory
+
+
 def _make_inline_tool(tool_name: str, result_value):
     """Build a minimal object satisfying the ``Tool`` protocol.
 

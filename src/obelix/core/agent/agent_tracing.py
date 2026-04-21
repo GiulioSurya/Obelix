@@ -121,25 +121,82 @@ async def start_tool_span(
     call: ToolCall,
     registered_tools: list[Tool],
 ) -> None:
-    """Start a tool execution span, detecting sub-agent vs regular tool."""
+    """Start a span for a tool call, dispatching on skill / sub_agent / tool.
+
+    The SkillTool (``tool_name == "Skill"``) is a built-in tool that drives
+    the skills subsystem; its calls get a ``SpanType.skill`` named after the
+    invoked skill (not the string "Skill") plus ``mode``/``source`` metadata.
+    SubAgentWrapper calls get ``SpanType.sub_agent``. Everything else gets
+    ``SpanType.tool``.
+    """
     if not tracer:
         return
     from obelix.core.agent.subagent_wrapper import SubAgentWrapper
     from obelix.core.tracer.models import SpanType
 
-    is_subagent = any(
-        isinstance(t, SubAgentWrapper) and t.tool_name == call.name
-        for t in registered_tools
+    tool = next(
+        (t for t in registered_tools if getattr(t, "tool_name", None) == call.name),
+        None,
     )
-    span_type = SpanType.sub_agent if is_subagent else SpanType.tool
+
+    # Skill branch: SkillTool carries tool_name == "Skill" (the decorator sets
+    # this) and exposes its SkillManager via the private _manager attribute
+    # populated by make_skill_tool(). Arguments shape produced by the LLM:
+    # {"name": "<skill_name>", "args": "<shell-args>"}.
+    if tool is not None and getattr(tool, "tool_name", None) == "Skill":
+        arguments = call.arguments if isinstance(call.arguments, dict) else {}
+        skill_name = arguments.get("name") or call.name
+        skill_args = arguments.get("args")
+        metadata: dict[str, Any] = {}
+        skill = _load_skill(tool, skill_name)
+        if skill is not None:
+            mode = getattr(skill, "context", None)
+            source = getattr(skill, "source", None)
+            if mode is not None:
+                metadata["mode"] = mode
+            if source is not None:
+                metadata["source"] = source
+        await tracer.start_span(
+            SpanType.skill,
+            skill_name,
+            input={"tool_call_id": call.id, "skill_args": skill_args},
+            metadata=metadata,
+        )
+        return
+
+    if isinstance(tool, SubAgentWrapper):
+        await tracer.start_span(
+            SpanType.sub_agent,
+            call.name,
+            input={"tool_call_id": call.id, "arguments": call.arguments},
+        )
+        return
+
     await tracer.start_span(
-        span_type,
+        SpanType.tool,
         call.name,
-        input={
-            "tool_call_id": call.id,
-            "arguments": call.arguments,
-        },
+        input={"tool_call_id": call.id, "arguments": call.arguments},
     )
+
+
+def _load_skill(skill_tool: Any, skill_name: str):
+    """Resolve the ``Skill`` object for ``skill_name`` from a SkillTool's manager.
+
+    Returns ``None`` when the tool is not a SkillTool (no ``_manager``), when
+    the manager does not expose ``load()``, or when the skill is not found.
+    Tracing must degrade gracefully: a miss here just omits the metadata
+    (``mode`` / ``source``) rather than crashing the tool dispatch.
+    """
+    manager = getattr(skill_tool, "_manager", None)
+    if manager is None:
+        return None
+    load = getattr(manager, "load", None)
+    if not callable(load):
+        return None
+    try:
+        return load(skill_name)
+    except Exception:
+        return None
 
 
 async def end_tool_span(
