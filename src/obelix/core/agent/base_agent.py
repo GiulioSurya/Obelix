@@ -4,6 +4,7 @@ import inspect
 import time
 from collections.abc import AsyncIterator
 from contextlib import aclosing
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
@@ -11,8 +12,6 @@ from pydantic import BaseModel
 from obelix.infrastructure.logging import get_logger
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from obelix.adapters.outbound.mcp.config import MCPServerConfig
     from obelix.core.agent.shared_memory import SharedMemoryGraph
     from obelix.core.tracer.tracer import Tracer
@@ -66,6 +65,7 @@ class BaseAgent:
         tracer: "Tracer | None" = None,
         planning: bool = False,
         mcp_config: "str | Path | MCPServerConfig | list | None" = None,
+        skills_config: "str | Path | list | None" = None,
     ):
         self.system_message = SystemMessage(content=system_message)
         self.max_iterations = max_iterations
@@ -135,6 +135,54 @@ class BaseAgent:
                 f"{len(configs)} server(s). Use 'async with agent:' for "
                 "persistent connections."
             )
+
+        # Skills integration (optional)
+        self._skill_manager = None
+        if skills_config is not None:
+            self._skill_manager = self._build_skill_manager(skills_config)
+            if self._skill_manager.list_all():
+                session_id = None
+                if self._tracer is not None:
+                    session_id = getattr(self._tracer, "session_id", None)
+                from obelix.plugins.builtin.skill_tool import make_skill_tool
+
+                skill_tool = make_skill_tool(
+                    self._skill_manager,
+                    session_id=session_id,
+                    parent_agent=self,
+                )
+                self.register_tool(skill_tool)
+
+    def _build_skill_manager(self, skills_config):
+        """Normalize skills_config into a SkillManager with FS + optional MCP providers."""
+        from obelix.adapters.outbound.skill.filesystem import FilesystemSkillProvider
+        from obelix.core.skill.manager import SkillManager
+
+        paths = self._normalize_skills_config(skills_config)
+        providers = [FilesystemSkillProvider(paths)]
+        if self._mcp_manager is not None:
+            from obelix.adapters.outbound.skill.mcp import MCPSkillProvider
+
+            providers.append(MCPSkillProvider(self._mcp_manager))
+        return SkillManager(providers)
+
+    @staticmethod
+    def _normalize_skills_config(cfg):
+        """Accept str, Path, list[str|Path] → list[Path]. Reject other types."""
+        if isinstance(cfg, (str, Path)):
+            return [Path(cfg)]
+        if isinstance(cfg, list):
+            out = []
+            for item in cfg:
+                if not isinstance(item, (str, Path)):
+                    raise TypeError(
+                        f"skills_config list items must be str or Path, got {type(item).__name__}"
+                    )
+                out.append(Path(item))
+            return out
+        raise TypeError(
+            f"skills_config must be str, Path, list, or None, got {type(cfg).__name__}"
+        )
 
     async def __aenter__(self):
         """Enter async context — connects MCP servers if configured."""
