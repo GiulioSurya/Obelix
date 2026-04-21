@@ -969,3 +969,71 @@ class TestGetConversationHistory:
         history = agent.get_conversation_history
         assert history is not agent.conversation_history
         assert history == agent.conversation_history
+
+
+# ---------------------------------------------------------------------------
+# Task 10: per-call LLM spans dropped, aggregated on agent span
+# ---------------------------------------------------------------------------
+
+
+class TestAgentSpanAggregatedLlmUsage:
+    """Verifies the Task 10 refactor: no more 'llm' spans, llm_usage on agent."""
+
+    @pytest.mark.asyncio
+    async def test_no_llm_spans_emitted_any_more(self, make_agent_with_spy_tracer):
+        """After the refactor, BaseAgent never emits a span with type 'llm'."""
+        from tests.core.agent.conftest import _mock_assistant_text
+
+        agent, spy = make_agent_with_spy_tracer(
+            responses=[_mock_assistant_text("done", usage_in=50, usage_out=10)]
+        )
+        await agent.execute_query_async("hi")
+        assert not any(
+            str(s.span_type) == "SpanType.llm" or s.span_type.value == "llm"
+            for s in spy.spans
+        )
+
+    @pytest.mark.asyncio
+    async def test_agent_span_aggregates_llm_usage_across_iterations(
+        self, make_agent_with_spy_tracer
+    ):
+        """Two LLM iterations produce a single aggregated llm_usage on the agent span."""
+        from tests.core.agent.conftest import (
+            _mock_assistant_text,
+            _mock_assistant_with_tool_call,
+        )
+
+        agent, spy = make_agent_with_spy_tracer(
+            responses=[
+                _mock_assistant_with_tool_call(
+                    tool_name="dummy", usage_in=800, usage_out=120
+                ),
+                _mock_assistant_text("final", usage_in=600, usage_out=80),
+            ],
+            tool_results={"dummy": {"ok": True}},
+        )
+        await agent.execute_query_async("go")
+        agent_spans = [s for s in spy.spans if s.span_type.value == "agent"]
+        assert len(agent_spans) == 1
+        usage = agent_spans[0].metadata.get("llm_usage")
+        assert usage is not None
+        assert usage["calls"] == 2
+        assert usage["input_tokens"] == 1400
+        assert usage["output_tokens"] == 200
+        assert usage["total_tokens"] == 1600
+
+    @pytest.mark.asyncio
+    async def test_agent_span_records_model_and_provider(
+        self, make_agent_with_spy_tracer
+    ):
+        """The agent span carries model_id and provider_type after execution."""
+        from tests.core.agent.conftest import _mock_assistant_text
+
+        agent, spy = make_agent_with_spy_tracer(
+            responses=[_mock_assistant_text("done")]
+        )
+        await agent.execute_query_async("hi")
+        agent_spans = [s for s in spy.spans if s.span_type.value == "agent"]
+        assert len(agent_spans) == 1
+        assert agent_spans[0].metadata.get("model_id") is not None
+        assert agent_spans[0].metadata.get("provider_type") is not None

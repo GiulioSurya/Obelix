@@ -18,13 +18,12 @@ if TYPE_CHECKING:
     from obelix.core.tracer.tracer import Tracer
 
 from obelix.core.agent.agent_tracing import (
+    accumulate_llm_call,
     emit_assistant_span,
     emit_human_span,
     end_agent_trace,
-    end_llm_span,
     end_tool_span,
     start_agent_trace,
-    start_llm_span,
     start_tool_span,
 )
 from obelix.core.agent.event_contracts import EventContract, get_event_contracts
@@ -523,12 +522,7 @@ class BaseAgent:
                     raise RuntimeError("Hook BEFORE_LLM_CALL requested FAIL")
 
                 # === LLM call ===
-                await start_llm_span(
-                    self._tracer,
-                    self.provider,
-                    self.conversation_history,
-                    self.registered_tools,
-                )
+                llm_started_at = time.monotonic()
 
                 assistant_msg: AssistantMessage | None = None
                 streamed_tokens = False
@@ -548,10 +542,6 @@ class BaseAgent:
                                     f"interrupted by user cancel"
                                 )
                                 await llm_stream.aclose()
-                                await end_llm_span(
-                                    self._tracer,
-                                    AssistantMessage(content="[canceled]"),
-                                )
                                 cancel_msg = AssistantMessage(
                                     content=(
                                         "[This task was interrupted and canceled "
@@ -596,7 +586,13 @@ class BaseAgent:
                         "invoke_stream() did not yield a final StreamEvent"
                     )
 
-                await end_llm_span(self._tracer, assistant_msg)
+                await accumulate_llm_call(
+                    self._tracer,
+                    assistant_msg=assistant_msg,
+                    provider_type=str(self.provider.provider_type),
+                    model_id=self.provider.model_id,
+                    duration_ms=(time.monotonic() - llm_started_at) * 1000,
+                )
 
                 # === AFTER_LLM_CALL hooks ===
                 outcome = await self._run_hooks(
