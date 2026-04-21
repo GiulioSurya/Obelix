@@ -23,6 +23,8 @@ class SpanStatus(StrEnum):
     ok = "ok"
     error = "error"
     timeout = "timeout"
+    rejected = "rejected"
+    canceled = "canceled"
 
 
 class SpanEvent(BaseModel):

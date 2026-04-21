@@ -1,6 +1,6 @@
 """Tests for tracer data models."""
 
-from obelix.core.tracer.models import Span, SpanEvent, SpanType
+from obelix.core.tracer.models import Span, SpanEvent, SpanStatus, SpanType
 
 
 class TestSpanType:
@@ -65,3 +65,14 @@ class TestSpanEvents:
         dumped = sp.model_dump(mode="json")
         assert len(dumped["events"]) == 1
         assert dumped["events"][0]["name"] == "memory.pull"
+
+
+class TestSpanStatus:
+    def test_existing_values(self):
+        assert SpanStatus.ok == "ok"
+        assert SpanStatus.error == "error"
+        assert SpanStatus.timeout == "timeout"
+
+    def test_a2a_values(self):
+        assert SpanStatus.rejected == "rejected"
+        assert SpanStatus.canceled == "canceled"
