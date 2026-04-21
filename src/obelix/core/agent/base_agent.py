@@ -448,8 +448,11 @@ class BaseAgent:
         if resume:
             # Resume after deferred: trace and agent span are still open
             # from the first invocation. Don't create new ones.
-            # We must close the root trace at the end.
-            is_root_trace = True
+            # Whether we own trace closure depends on whether an outer trace
+            # exists (restored by the A2A executor, for example).
+            from obelix.core.tracer.context import get_current_trace
+
+            is_root_trace = get_current_trace() is None
         else:
             is_root_trace = await start_agent_trace(
                 self._tracer,

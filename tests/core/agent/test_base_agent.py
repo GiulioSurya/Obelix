@@ -1126,3 +1126,95 @@ async def test_no_intermediate_assistant_spans_mid_loop(make_agent_with_spy_trac
     final_out = assistant_spans[0].output
     content = final_out.get("content") if isinstance(final_out, dict) else final_out
     assert content == "final answer"
+
+
+@pytest.mark.asyncio
+async def test_resume_nested_does_not_emit_or_end_outer_trace(
+    make_agent_with_spy_tracer,
+):
+    """
+    When resuming after a deferred call while an outer trace is active (A2A case),
+    BaseAgent must NOT emit human/assistant spans AND must NOT close the outer trace.
+    """
+    from obelix.core.model.usage import Usage
+    from obelix.core.tracer.context import get_current_trace
+    from obelix.core.tracer.models import SpanType
+
+    # On resume, the provider is invoked once and returns a plain-text final
+    # response (no further tool calls) so the loop closes on iteration 1.
+    final = AssistantMessage(
+        content="resumed final",
+        tool_calls=[],
+        usage=Usage(input_tokens=5, output_tokens=2, total_tokens=7),
+    )
+    agent, spy = make_agent_with_spy_tracer(responses=[final])
+
+    # Seed the agent conversation_history to mirror what the first invocation
+    # would have left behind before the deferred pause: a prior user turn, an
+    # assistant tool_call, and the resolved ToolMessage ready for the LLM.
+    deferred_call = ToolCall(id="t-deferred", name="dummy", arguments={})
+    agent.conversation_history.extend(
+        [
+            HumanMessage(content="original query"),
+            AssistantMessage(
+                content="",
+                tool_calls=[deferred_call],
+                usage=Usage(input_tokens=10, output_tokens=3, total_tokens=13),
+            ),
+            ToolMessage(
+                tool_results=[
+                    ToolResult(
+                        tool_call_id="t-deferred",
+                        tool_name="dummy",
+                        result={"ok": True},
+                        status=ToolStatus.SUCCESS,
+                    )
+                ]
+            ),
+        ]
+    )
+
+    # Simulate the A2A executor state on resume: outer trace + a2a_task span
+    # + the agent span that was left open when the first invocation paused for
+    # the deferred tool (resume_after_deferred expects this span to exist).
+    await agent._tracer.start_trace("outer")
+    await agent._tracer.start_span(SpanType.a2a_task, "outer-task")
+    await agent._tracer.start_span(SpanType.agent, "BaseAgent")
+    outer_trace = get_current_trace()
+    try:
+        async for _ in agent.resume_after_deferred():
+            # Drain the stream; we only care about spans, not tokens.
+            pass
+    finally:
+        # resume_after_deferred closes the inner agent span on exit (its own
+        # responsibility). If the outer trace survived, tear it down here so
+        # we don't leak state into other tests.
+        if get_current_trace() is outer_trace:
+            await agent._tracer.end_span()  # close a2a_task
+            await agent._tracer.end_trace()
+
+    # Resume path must not double-emit human/assistant spans.
+    human_spans = [s for s in spy.spans if s.span_type.value == "human"]
+    assistant_spans = [s for s in spy.spans if s.span_type.value == "assistant"]
+    assert human_spans == [], (
+        f"nested resume must not emit human spans; got {human_spans}"
+    )
+    assert assistant_spans == [], (
+        f"nested resume must not emit assistant spans; got {assistant_spans}"
+    )
+
+    # And must NOT have closed the outer trace: end_time stays unset until the
+    # test's finally block tears it down explicitly.
+    assert outer_trace is not None
+    # After our teardown the trace is ended; the critical invariant is that
+    # resume_after_deferred itself did not mark it terminated while the outer
+    # a2a_task span was still conceptually open. We assert that by checking
+    # the number of `end_trace` calls reaching the exporter: exactly one,
+    # triggered by the test's own end_trace() above.
+    closed_traces = [
+        s for s in spy.spans if s.span_type is SpanType.a2a_task and s.end_time
+    ]
+    assert len(closed_traces) == 1, (
+        "outer a2a_task span must be closed exactly once (by the test), not by "
+        "resume_after_deferred"
+    )
