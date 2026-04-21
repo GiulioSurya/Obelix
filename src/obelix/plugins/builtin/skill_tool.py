@@ -17,6 +17,8 @@ import uuid
 
 from pydantic import Field
 
+from obelix.core.agent.hooks import AgentEvent, HookDecision
+from obelix.core.model.human_message import HumanMessage
 from obelix.core.skill.manager import SkillManager
 from obelix.core.skill.skill import Skill
 from obelix.core.skill.substitution import (
@@ -40,8 +42,6 @@ def _register_skill_hooks(agent, registered: list, skill: Skill) -> None:
     to the per-event value shape — we never attempt to transform the
     handler's value, we only nudge the model by injecting an instruction.
     """
-    from obelix.core.agent.hooks import AgentEvent, HookDecision
-    from obelix.core.model.human_message import HumanMessage
 
     def _make_effect(text: str):
         def _effect(status):
@@ -89,12 +89,15 @@ def make_skill_tool(
 
     `parent_agent`, when provided, receives frontmatter `hooks:` on first
     invocation of each skill (via duck-typed `.on(event)` returning a
-    Hook-like with `.inject(...)`). When None, hook registration is silently
-    skipped.
+    Hook-like with `.handle(decision, effects=...)`). When None, hook
+    registration is silently skipped.
     """
     resolved_session_id: str = session_id or str(uuid.uuid4())
-    _active_skills: set[str] = set()
-    _registered_hooks: list = []
+    # Per-tool-instance idempotence state: obtain a fresh tool via
+    # make_skill_tool() per query to reset these. Task 7.4 consumes
+    # _registered_hooks to unregister skill-scoped hooks at QUERY_END.
+    active_skills: set[str] = set()
+    registered_hooks: list = []
 
     @tool(
         name="Skill",
@@ -122,7 +125,7 @@ def make_skill_tool(
 
             # Idempotence: second invocation in the same query returns a
             # short marker instead of re-injecting the body.
-            if self.name in _active_skills:
+            if self.name in active_skills:
                 return (
                     f"Skill '{self.name}' is already active — "
                     "continue following its instructions."
@@ -143,8 +146,8 @@ def make_skill_tool(
 
             # Only after successful substitution: register hooks and mark active.
             if skill.hooks and parent_agent is not None:
-                _register_skill_hooks(parent_agent, _registered_hooks, skill)
-            _active_skills.add(self.name)
+                _register_skill_hooks(parent_agent, registered_hooks, skill)
+            active_skills.add(self.name)
             return rendered
 
         def system_prompt_fragment(self) -> str:
