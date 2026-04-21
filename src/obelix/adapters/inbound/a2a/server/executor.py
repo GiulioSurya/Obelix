@@ -292,8 +292,25 @@ class ObelixAgentExecutor(AgentExecutor):
             else:
                 stream = agent.execute_query_stream(user_text)
 
+            # Emit human span as direct child of a2a_task on initial
+            # invocation only. On resume the input is a DataPart (deferred
+            # tool response) conceptually continuing the same turn, not a
+            # new user query, so we skip emitting a second human span.
+            if self._tracer and not is_resume:
+                await self._tracer.start_span(
+                    SpanType.human,
+                    "human.input",
+                    input=user_text,
+                )
+                await self._tracer.end_span(output=user_text)
+
             artifact_id = str(uuid.uuid4())
             first_chunk = True
+            # Captured on the success path to emit an ``assistant`` span as a
+            # sibling of ``agent`` under ``a2a_task``. Stays ``None`` on
+            # cancel / reject / failure / deferred suspension so those paths
+            # do NOT emit an assistant span.
+            final_response = None
 
             async for event in stream:
                 # === Agent canceled by user ===
@@ -368,6 +385,7 @@ class ObelixAgentExecutor(AgentExecutor):
                 # === Final response ===
                 if event.is_final and not event.deferred_tool_calls:
                     response = event.assistant_response
+                    final_response = response
                     entry.history = agent.conversation_history[1:]
 
                     if first_chunk:
@@ -514,6 +532,22 @@ class ObelixAgentExecutor(AgentExecutor):
                         await aclose()
                     except TypeError:
                         pass  # not a real async generator (e.g. mock)
+
+        # Emit assistant span on the success path only. ``final_response`` is
+        # only set when the stream produced a terminal ``is_final`` event
+        # without deferred tool calls, so rejection / cancellation / failure /
+        # deferred suspension naturally skip this. We emit AFTER the stream's
+        # ``aclose()`` so the BaseAgent ``agent`` span has already ended —
+        # that way the ``assistant`` span becomes a direct child of
+        # ``a2a_task`` (sibling of ``agent``), per spec §6.
+        if self._tracer and final_response is not None:
+            content = getattr(final_response, "content", None)
+            await self._tracer.start_span(
+                SpanType.assistant,
+                "assistant.response",
+                input={"has_tool_calls": False},
+            )
+            await self._tracer.end_span(output={"content": content})
 
         # Normal termination (completed / rejected / failed): not suspended
         # for deferred input, so the caller should close the trace.
