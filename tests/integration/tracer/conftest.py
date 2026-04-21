@@ -1,16 +1,26 @@
 """Shared fixtures for ``tests/integration/tracer``.
 
-Provides ``dev_workflow_agents_with_spy``: a self-contained reproduction of the
-CoordinatorAgent + Reviewer + CommitAgent + SummaryAgent pipeline from
-``examples/dev_workflow_server.py`` — WITHOUT the A2A/server layer — wired with
-mocked LLM providers so the scenario replays a deterministic tool-call
-sequence. The returned ``spy`` exporter captures every completed span so tests
-can assert the full span taxonomy (agent / sub_agent / skill / human /
-assistant) and memory events.
+Provides:
+
+* ``dev_workflow_agents_with_spy``: a self-contained reproduction of the
+  CoordinatorAgent + Reviewer + CommitAgent + SummaryAgent pipeline from
+  ``examples/dev_workflow_server.py`` — WITHOUT the A2A/server layer — wired
+  with mocked LLM providers so the scenario replays a deterministic tool-call
+  sequence. The returned ``spy`` exporter captures every completed span so
+  tests can assert the full span taxonomy (agent / sub_agent / skill / human /
+  assistant) and memory events.
+* ``deferred_scenario_with_spy``: end-to-end reproduction of the A2A
+  deferred-tool suspend/resume flow — mirror of
+  ``executor_with_deferred_tool`` in ``tests/adapters/inbound/a2a/conftest.py``
+  scoped to the tracer integration suite. Exercises the full ``a2a_task`` +
+  ``deferred_wait`` lifecycle with mocked agents so tests can inspect the
+  resulting span tree.
 """
 
 from __future__ import annotations
 
+import uuid
+from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -354,3 +364,172 @@ def dev_workflow_agents_with_spy(
     )
 
     return coordinator, spy
+
+
+# ---------------------------------------------------------------------------
+# Deferred-tool scenario (mirror of executor_with_deferred_tool)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _DeferredRequestContext:
+    """Minimal stand-in for a2a ``RequestContext`` carrying an initial TextPart.
+
+    Matches the shape consumed by ``ObelixAgentExecutor.execute`` — task_id,
+    context_id, and a ``message`` with a single ``TextPart``.
+    """
+
+    task_id: str = "task-deferred-int-001"
+    context_id: str | None = "ctx-deferred-int-001"
+    text: str = "hello"
+
+    def __post_init__(self) -> None:
+        from a2a.types import Message, Part, Role, TextPart
+
+        self.message = Message(
+            role=Role.user,
+            parts=[Part(root=TextPart(text=self.text))],
+            message_id=f"msg-deferred-int-{uuid.uuid4()}",
+        )
+
+    def get_user_input(self) -> str | None:
+        return self.text
+
+
+@dataclass
+class _DeferredResumeContext:
+    """Minimal stand-in for a2a ``RequestContext`` carrying a DataPart (resume).
+
+    On resume, the message carries a DataPart with the structured answer, not
+    a TextPart. The executor uses ``context_id`` to match the original task.
+    """
+
+    task_id: str = "task-deferred-int-resume"
+    context_id: str | None = "ctx-deferred-int-001"
+    data: dict | None = None
+
+    def __post_init__(self) -> None:
+        from a2a.types import DataPart, Message, Part, Role
+
+        self.message = Message(
+            role=Role.user,
+            parts=[Part(root=DataPart(data=self.data or {"answer": "resumed"}))],
+            message_id=f"msg-resume-int-{uuid.uuid4()}",
+        )
+
+    def get_user_input(self) -> str | None:
+        return None
+
+
+class _DeferredEventQueue:
+    """Captures enqueued events so tests can inspect them if needed."""
+
+    def __init__(self) -> None:
+        self.events: list = []
+
+    async def enqueue_event(self, event) -> None:
+        self.events.append(event)
+
+
+@pytest.fixture
+def deferred_scenario_with_spy():
+    """Return ``(send_message, resume, spy_exporter)``.
+
+    Mirror of ``executor_with_deferred_tool`` from
+    ``tests/adapters/inbound/a2a/conftest.py`` scoped to the tracer integration
+    suite. First call to ``send_message`` drives the executor with a mock
+    agent whose first response yields ``deferred_tool_calls`` — the executor
+    emits ``input_required`` and opens the ``deferred_wait`` span. The call
+    to ``resume`` then delivers a DataPart response on the same
+    ``context_id``, triggering the resume path which closes the
+    ``deferred_wait`` span.
+
+    The mocked agent carries an ``is_deferred=True`` tool (``ask_user``) so
+    the deferred_tool_calls event matches the expected shape.
+    """
+    from obelix.adapters.inbound.a2a.server.executor import ObelixAgentExecutor
+    from obelix.core.model.assistant_message import AssistantResponse, StreamEvent
+    from obelix.core.model.system_message import SystemMessage
+    from obelix.core.model.tool_message import MCPToolSchema
+
+    spy = _SpyExporter()
+    tracer = Tracer(exporter=spy)
+
+    created: list[MagicMock] = []
+    context_id = "ctx-deferred-int-001"
+
+    class _DeferredToolStub:
+        tool_name = "ask_user"
+        tool_description = "Ask the user a question (deferred)."
+        is_deferred = True
+
+        async def execute(self, tool_call):  # pragma: no cover - not used
+            return None
+
+        def create_schema(self):  # pragma: no cover - not used
+            return MCPToolSchema(
+                name=self.tool_name,
+                description=self.tool_description,
+                inputSchema={"type": "object", "properties": {}},
+            )
+
+    def factory() -> MagicMock:
+        agent = MagicMock()
+        agent.system_message = SystemMessage(content="You are a test agent.")
+        agent.conversation_history = [agent.system_message]
+        agent.registered_tools = [_DeferredToolStub()]
+        agent._tracer = tracer
+
+        call_count = len(created)
+        if call_count == 0:
+            # First invocation: yield deferred tool calls
+            async def first_stream(query):
+                yield StreamEvent(
+                    deferred_tool_calls=[
+                        ToolCall(
+                            id="tc-deferred-int-1",
+                            name="ask_user",
+                            arguments={"question": "something?"},
+                        )
+                    ],
+                    is_final=True,
+                )
+
+            agent.execute_query_stream = MagicMock(side_effect=first_stream)
+        else:
+            # Resume invocation: yield a final assistant response
+            async def resume_stream():
+                yield StreamEvent(
+                    is_final=True,
+                    assistant_response=AssistantResponse(
+                        agent_name="test_agent",
+                        content="resumed done",
+                    ),
+                )
+
+            agent.resume_after_deferred = MagicMock(side_effect=resume_stream)
+
+        created.append(agent)
+        return agent
+
+    executor = ObelixAgentExecutor(factory, tracer=tracer)
+
+    async def send_message(text: str) -> None:
+        ctx = _DeferredRequestContext(
+            context_id=context_id,
+            text=text,
+            task_id="task-deferred-int-send",
+        )
+        queue = _DeferredEventQueue()
+        await executor.execute(ctx, queue)
+
+    async def resume(data: dict) -> None:
+        ctx = _DeferredResumeContext(
+            context_id=context_id,
+            data=data,
+            task_id="task-deferred-int-resume",
+        )
+        queue = _DeferredEventQueue()
+        await executor.execute(ctx, queue)
+
+    return send_message, resume, spy
