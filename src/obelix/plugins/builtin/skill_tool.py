@@ -1,15 +1,22 @@
 """SkillTool: built-in tool exposed to the LLM to invoke skills.
 
-v1 scaffold: renders the listing via system_prompt_fragment and exposes a
-minimal tool schema. Actual invocation logic (inline, fork, hooks) lands in
-subsequent tasks (7.2 through 7.5).
+Task 7.2: execute() wires in placeholder substitution via
+`substitute_placeholders` and propagates substitution errors. Unknown skills
+and invalid args are raised as exceptions so the @tool decorator converts
+them to ToolStatus.ERROR.
 """
 
 from __future__ import annotations
 
+import uuid
+
 from pydantic import Field
 
 from obelix.core.skill.manager import SkillManager
+from obelix.core.skill.substitution import (
+    SkillInvocationError,
+    substitute_placeholders,
+)
 from obelix.core.tool.tool_decorator import tool
 
 # ~1% of a 200k-token context window, expressed in characters.
@@ -27,15 +34,22 @@ def make_skill_tool(
     agent. The instance's `system_prompt_fragment()` yields the listing to
     inject at construction time.
 
-    Each call produces a fresh tool class closing over `manager` and
-    `listing_budget`; do not rely on class identity across invocations.
+    Each call produces a fresh tool class closing over `manager`,
+    `listing_budget`, and `session_id`; do not rely on class identity across
+    invocations.
 
-    `session_id` is accepted for forward compatibility with Task 7.2
-    (placeholder substitution). The scaffold ignores it — no eager UUID
-    generation, no unused binding. It becomes load-bearing at 7.2.
+    `session_id`, when provided, is substituted into ${OBELIX_SESSION_ID}.
+    When omitted, a UUID is generated lazily on first use and cached in the
+    closure, so every invocation of the same tool instance sees the same id.
     """
-    # session_id intentionally unused at this stage — see 7.2.
-    _ = session_id  # noqa: F841 — keeps the parameter reachable for tooling.
+    # Stable session id for this tool instance — generated on first need
+    # when the caller did not provide one, then cached inside the closure.
+    _session_state = {"id": session_id}
+
+    def _session() -> str:
+        if _session_state["id"] is None:
+            _session_state["id"] = str(uuid.uuid4())
+        return _session_state["id"]
 
     @tool(
         name="Skill",
@@ -51,13 +65,24 @@ def make_skill_tool(
         )
 
         def execute(self) -> str:
-            # Actual invocation logic lands in Task 7.2. For now a clear stub
-            # so register_tool() works and tests can verify wiring.
             skill = manager.load(self.name)
             if skill is None:
                 available = ", ".join(s.name for s in manager.list_all())
-                return f"Skill '{self.name}' not found. Available: {available}"
-            return skill.body
+                raise RuntimeError(
+                    f"Skill '{self.name}' not found. Available: {available}"
+                )
+            try:
+                return substitute_placeholders(
+                    skill.body,
+                    self.args,
+                    skill.arguments,
+                    skill.base_dir,
+                    _session(),
+                )
+            except SkillInvocationError as e:
+                # Re-raise as RuntimeError so the @tool wrapper converts to
+                # ToolStatus.ERROR with this message.
+                raise RuntimeError(str(e)) from e
 
         def system_prompt_fragment(self) -> str:
             listing = manager.format_listing(listing_budget)
