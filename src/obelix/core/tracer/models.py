@@ -9,12 +9,12 @@ from pydantic import BaseModel, Field
 
 
 class SpanType(StrEnum):
+    a2a_task = "a2a_task"
     agent = "agent"
-    llm = "llm"
-    tool = "tool"
     sub_agent = "sub_agent"
-    memory = "memory"
-    hook = "hook"
+    skill = "skill"
+    tool = "tool"
+    deferred_wait = "deferred_wait"
     human = "human"
     assistant = "assistant"
 
