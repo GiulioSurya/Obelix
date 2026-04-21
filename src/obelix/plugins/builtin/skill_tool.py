@@ -8,6 +8,10 @@ them to ToolStatus.ERROR.
 Task 7.3: adds idempotent invocation (same skill invoked twice in the same
 query returns an "already active" marker instead of re-injecting its body)
 and registers frontmatter `hooks:` on the parent agent at first invoke.
+
+Task 7.4: installs a QUERY_END cleanup hook that unregisters all
+skill-scoped hooks at the end of each query, resets idempotence state,
+and re-arms itself for the next query cycle.
 """
 
 from __future__ import annotations
@@ -67,26 +71,27 @@ def _register_skill_hooks(agent, registered: list, skill: Skill) -> None:
 
 
 def _install_cleanup_hook(
-    agent, registered_hooks: list, active_skills: set, cleanup_flag: list | None = None
+    agent, registered_hooks: list, active_skills: set, cleanup_flag: list
 ) -> None:
     """Install a QUERY_END hook that unregisters all skill-scoped hooks.
 
     The cleanup hook ALSO removes itself so subsequent queries aren't
     polluted. Active-skills set is cleared so idempotence resets per query.
+    `cleanup_flag` is a 1-element mutable list wrapping a bool, reset to
+    False inside the effect so the next query can re-install cleanup.
     """
     cleanup_hook = agent.on(AgentEvent.QUERY_END)
 
     def _cleanup_effect(status):
         # Unregister each skill-scoped hook
-        for event, hook in list(registered_hooks):
+        for event, hook in registered_hooks:
             status.agent._unregister_hook(event, hook)
         # Remove the cleanup hook itself
         status.agent._unregister_hook(AgentEvent.QUERY_END, cleanup_hook)
         # Reset per-query state so next invocation starts clean
         registered_hooks.clear()
         active_skills.clear()
-        if cleanup_flag is not None:
-            cleanup_flag[0] = False
+        cleanup_flag[0] = False
 
     cleanup_hook.handle(HookDecision.CONTINUE, effects=[_cleanup_effect])
 

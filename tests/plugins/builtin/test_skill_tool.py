@@ -598,3 +598,46 @@ class TestHookCleanupOnQueryEnd:
         # Now a fresh invocation should succeed normally (not "already active")
         r3 = _invoke_execute(skill_tool, name="a", args="")
         assert r3.result == "A body"
+
+    def test_two_query_cycles_each_installs_fresh_cleanup_hook(self):
+        """After Query 1 cleanup fires, Query 2 invocation installs a NEW cleanup hook."""
+        import asyncio
+
+        from obelix.core.agent.base_agent import BaseAgent
+        from obelix.core.agent.hooks import AgentEvent, AgentStatus
+
+        parent = BaseAgent.__new__(BaseAgent)
+        parent._hooks = {event: [] for event in AgentEvent}
+        parent.conversation_history = []
+
+        real_skill = Skill(
+            name="a",
+            description="d",
+            body="A",
+            base_dir=None,
+            hooks={"on_tool_error": "retry"},
+        )
+        provider = MagicMock()
+        provider.discover.return_value = [real_skill]
+        mgr = SkillManager(providers=[provider])
+        skill_tool = make_skill_tool(mgr, parent_agent=parent)
+
+        # Query 1
+        _invoke_execute(skill_tool, name="a", args="")
+        assert len(parent._hooks[AgentEvent.ON_TOOL_ERROR]) == 1
+        assert len(parent._hooks[AgentEvent.QUERY_END]) == 1
+        cleanup1 = parent._hooks[AgentEvent.QUERY_END][0]
+        asyncio.run(
+            cleanup1.execute(AgentStatus(event=AgentEvent.QUERY_END, agent=parent))
+        )
+        # All gone after cleanup
+        assert len(parent._hooks[AgentEvent.ON_TOOL_ERROR]) == 0
+        assert len(parent._hooks[AgentEvent.QUERY_END]) == 0
+
+        # Query 2 — invoking the skill again must install a FRESH cleanup hook
+        _invoke_execute(skill_tool, name="a", args="")
+        assert len(parent._hooks[AgentEvent.ON_TOOL_ERROR]) == 1
+        assert len(parent._hooks[AgentEvent.QUERY_END]) == 1
+        cleanup2 = parent._hooks[AgentEvent.QUERY_END][0]
+        # Must be a new hook instance, not the previous one
+        assert cleanup2 is not cleanup1
