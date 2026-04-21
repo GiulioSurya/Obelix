@@ -57,12 +57,14 @@ from obelix.core.tracer.context import (
     set_current_span,
     set_current_trace,
 )
+from obelix.core.tracer.models import SpanType
 from obelix.infrastructure.logging import get_logger
 
 if TYPE_CHECKING:
     from a2a.server.agent_execution.context import RequestContext
 
     from obelix.core.agent.base_agent import BaseAgent
+    from obelix.core.tracer.tracer import Tracer
 
 logger = get_logger(__name__)
 
@@ -88,10 +90,12 @@ class ObelixAgentExecutor(AgentExecutor):
         agent_factory: Callable[[], BaseAgent],
         *,
         max_contexts: int = DEFAULT_MAX_CONTEXTS,
+        tracer: Tracer | None = None,
     ) -> None:
         self._agent_factory = agent_factory
         self._store = ContextStore(max_contexts)
         self._store_lock = asyncio.Lock()
+        self._tracer = tracer
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         task_id = context.task_id
@@ -161,7 +165,86 @@ class ObelixAgentExecutor(AgentExecutor):
         event_queue: EventQueue,
         is_resume: bool = False,
     ) -> None:
-        """Run the agent with isolated context and persist history."""
+        """Run the agent with isolated context and persist history.
+
+        When a tracer is configured, opens an ``a2a_task`` span as the trace
+        root before delegating to the agent. The agent's own span becomes a
+        child of it. On deferred-tool suspension the trace and ``a2a_task``
+        span are left open so ``resume_after_deferred`` can continue inside
+        them; they are closed on any terminal outcome (completed / failed /
+        rejected / canceled) or on the resume invocation that finishes them.
+        """
+
+        tracer = self._tracer
+        # Open a2a_task root span on first invocation; on resume we reuse the
+        # trace + a2a_task span that are already restored by ``_run_agent_impl``
+        # via ``set_current_trace`` / ``set_current_span``.
+        a2a_task_span = None
+        trace_opened_here = False
+        if tracer and not is_resume:
+            await tracer.start_trace(
+                name="a2a.task",
+                metadata={"task_id": task_id, "context_id": context_id},
+            )
+            a2a_task_span = await tracer.start_span(
+                SpanType.a2a_task,
+                name=f"task {task_id[:8] if task_id else 'unknown'}",
+                input={"context_id": context_id},
+                metadata={"task_id": task_id, "context_id": context_id},
+            )
+            trace_opened_here = True
+
+        # Tracks whether the executor suspended for a deferred tool. When
+        # True, the finally block leaves the trace + a2a_task span open so
+        # ``resume_after_deferred`` can continue inside them.
+        deferred_suspended = False
+
+        try:
+            deferred_suspended = await self._run_agent_impl(
+                task_id=task_id,
+                context_id=context_id,
+                user_text=user_text,
+                attachments=attachments,
+                entry=entry,
+                event_queue=event_queue,
+                is_resume=is_resume,
+            )
+        finally:
+            if tracer and not deferred_suspended and (trace_opened_here or is_resume):
+                # Re-pin the a2a_task span as current before closing. On the
+                # initial invocation this is defensive (agent's generator
+                # finally should have already restored it); on resume we
+                # need to walk the trace to find it.
+                task_span = a2a_task_span
+                if task_span is None:
+                    trace = get_current_trace()
+                    if trace is not None:
+                        task_span = next(
+                            (
+                                s
+                                for s in trace.spans
+                                if s.span_type == SpanType.a2a_task
+                                and s.end_time is None
+                            ),
+                            None,
+                        )
+                if task_span is not None:
+                    set_current_span(task_span)
+                await tracer.end_span()
+                await tracer.end_trace()
+
+    async def _run_agent_impl(
+        self,
+        *,
+        task_id: str,
+        context_id: str,
+        user_text: str,
+        attachments: list,
+        entry,
+        event_queue: EventQueue,
+        is_resume: bool = False,
+    ) -> bool:
+        """Inner agent runner. Returns True if suspended for a deferred tool."""
 
         logger.info(
             f"[A2A] Executing agent | task_id={task_id} context_id={context_id} "
@@ -228,7 +311,7 @@ class ObelixAgentExecutor(AgentExecutor):
                         )
                     )
                     logger.info(f"[A2A] Agent canceled by user | task_id={task_id}")
-                    return
+                    return False
 
                 # === Deferred tool detected: emit input-required ===
                 if event.deferred_tool_calls:
@@ -264,7 +347,7 @@ class ObelixAgentExecutor(AgentExecutor):
                         f"context_id={context_id} "
                         f"deferred_count={len(event.deferred_tool_calls)}"
                     )
-                    return
+                    return True
 
                 # === Streaming token ===
                 if event.token:
@@ -431,6 +514,10 @@ class ObelixAgentExecutor(AgentExecutor):
                         await aclose()
                     except TypeError:
                         pass  # not a real async generator (e.g. mock)
+
+        # Normal termination (completed / rejected / failed): not suspended
+        # for deferred input, so the caller should close the trace.
+        return False
 
     @staticmethod
     def _inject_client_info(agent: BaseAgent, client_info: dict) -> None:

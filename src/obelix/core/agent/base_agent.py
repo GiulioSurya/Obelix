@@ -414,8 +414,15 @@ class BaseAgent:
                     response = event.assistant_response
         """
         self._validate_query_input(query)
-        async for event in self._execute_loop(query, stream=True):
-            yield event
+        # Wrap the inner generator in ``aclosing`` so that when the caller
+        # closes *this* generator (via GC or explicit ``aclose``), the inner
+        # ``_execute_loop`` generator is also closed — which runs its own
+        # ``finally`` block (closing the tracer agent span). Without this,
+        # the inner ``finally`` would only run at GC time, long after the
+        # caller finished.
+        async with aclosing(self._execute_loop(query, stream=True)) as loop:
+            async for event in loop:
+                yield event
 
     async def resume_after_deferred(self) -> AsyncIterator[StreamEvent]:
         """Resume the agent loop after a deferred tool response was injected.
@@ -425,8 +432,9 @@ class BaseAgent:
         without adding a new HumanMessage — the LLM sees the pending
         tool_call + tool_result and continues normally.
         """
-        async for event in self._execute_loop(None, stream=True, resume=True):
-            yield event
+        async with aclosing(self._execute_loop(None, stream=True, resume=True)) as loop:
+            async for event in loop:
+                yield event
 
     # ─── Unified Execution Loop ───────────────────────────────────────────────
 
