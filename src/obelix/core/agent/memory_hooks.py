@@ -48,7 +48,7 @@ def _has_memory_binding(status: AgentStatus) -> bool:
     return bool(agent.memory_graph and agent.agent_id)
 
 
-def _inject_shared_memory(status: AgentStatus) -> None:
+async def _inject_shared_memory(status: AgentStatus) -> None:
     """Pull and inject shared context from predecessor agents."""
     agent = status.agent
     if not agent.memory_graph or not agent.agent_id:
@@ -59,6 +59,7 @@ def _inject_shared_memory(status: AgentStatus) -> None:
         return
 
     history = agent.conversation_history
+    tracer = getattr(agent, "_tracer", None)
 
     for mem in memories:
         existing_idx = None
@@ -91,6 +92,18 @@ def _inject_shared_memory(status: AgentStatus) -> None:
         logger.debug(
             f"[SharedMemory] Injected context | target_agent={agent.agent_id} source={mem.source_id} chars={len(mem.content)}"
         )
+
+        if tracer is not None:
+            await tracer.add_event(
+                "memory.pull",
+                {
+                    "from_agent": mem.source_id,
+                    "policy": mem.policy.value
+                    if hasattr(mem.policy, "value")
+                    else str(mem.policy),
+                    "bytes": len(mem.content or ""),
+                },
+            )
 
 
 async def _publish_to_memory(status: AgentStatus) -> None:

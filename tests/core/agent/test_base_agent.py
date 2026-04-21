@@ -799,7 +799,8 @@ class TestRegisterAgent:
 class TestSharedMemoryNoOp:
     """Tests for shared memory hooks when memory_graph is None."""
 
-    def test_inject_shared_memory_noop_without_graph(self, mock_provider):
+    @pytest.mark.asyncio
+    async def test_inject_shared_memory_noop_without_graph(self, mock_provider):
         """_inject_shared_memory does nothing when memory_graph is None."""
         from obelix.core.agent.memory_hooks import _inject_shared_memory
 
@@ -808,7 +809,7 @@ class TestSharedMemoryNoOp:
         history_len = len(agent.conversation_history)
         status = MagicMock()
         status.agent = agent
-        _inject_shared_memory(status)
+        await _inject_shared_memory(status)
         assert len(agent.conversation_history) == history_len
 
     @pytest.mark.asyncio
@@ -824,7 +825,8 @@ class TestSharedMemoryNoOp:
         # Should not raise
         await _publish_to_memory(status)
 
-    def test_inject_shared_memory_noop_without_agent_id(self, mock_provider):
+    @pytest.mark.asyncio
+    async def test_inject_shared_memory_noop_without_agent_id(self, mock_provider):
         """_inject_shared_memory does nothing when agent_id is None."""
         from obelix.core.agent.memory_hooks import _inject_shared_memory
 
@@ -834,7 +836,7 @@ class TestSharedMemoryNoOp:
         history_len = len(agent.conversation_history)
         status = MagicMock()
         status.agent = agent
-        _inject_shared_memory(status)
+        await _inject_shared_memory(status)
         assert len(agent.conversation_history) == history_len
 
 
