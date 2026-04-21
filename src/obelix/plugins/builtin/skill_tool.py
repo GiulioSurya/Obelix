@@ -99,7 +99,10 @@ def _make_fork_agent(parent_agent, rendered_body: str) -> BaseAgent:
         tracer=getattr(parent_agent, "_tracer", None),
     )
     for t in getattr(parent_agent, "registered_tools", []):
-        inner.register_tool(t)
+        # Exclude SkillTool from the fork's tool set: the inner agent must not
+        # be able to invoke skills, otherwise it would fork recursively into itself.
+        if getattr(t, "tool_name", None) != "Skill":
+            inner.register_tool(t)
     return inner
 
 
