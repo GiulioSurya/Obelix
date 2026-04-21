@@ -80,46 +80,26 @@ def _register_skill_hooks(agent, registered: list, skill: Skill) -> None:
         registered.append((event, hook))
 
 
-def _make_fork_agent(parent_agent, rendered_body: str):
+def _make_fork_agent(parent_agent, rendered_body: str) -> BaseAgent:
     """Build the ephemeral inner agent for fork execution.
 
-    Uses a fresh ``BaseAgent`` when the parent exposes a real provider
-    (with a string ``model_id``); falls back to a shallow copy otherwise
-    so MagicMock-based unit tests work without constructing a full agent.
-    In both cases the inner agent inherits the parent's provider,
-    registered tools, and ``max_iterations`` (default 15). Memory and
-    conversation history are NOT inherited — the inner agent starts from
-    a fresh system message equal to the rendered skill body.
+    The inner agent starts from a fresh system message (the rendered skill
+    body) and inherits the parent's provider, registered tools, and
+    ``max_iterations`` (default 15). Memory and conversation history are
+    NOT inherited — this is the isolation contract of a forked skill.
+
+    Raises whatever ``BaseAgent.__init__`` raises on a misconfigured
+    parent (e.g. a provider without a string ``model_id``). Callers treat
+    this as a skill-invocation failure.
     """
-    from obelix.core.model.system_message import SystemMessage
-
-    try:
-        inner = BaseAgent(
-            system_message=rendered_body,
-            provider=parent_agent.provider,
-            max_iterations=getattr(parent_agent, "max_iterations", 15),
-        )
-        for t in getattr(parent_agent, "registered_tools", []):
-            inner.register_tool(t)
-        return inner
-    except Exception as e:  # noqa: BLE001
-        # Fallback for mock/exotic providers: shallow-copy-shaped object
-        # with only the attributes SubAgentWrapper + tests read.
-        logger.debug(
-            "[skill] fork: BaseAgent construction failed (%s); "
-            "using attribute-only fallback",
-            e,
-        )
-        import copy as _copy
-
-        inner = _copy.copy(parent_agent)
-        inner.system_message = SystemMessage(content=rendered_body)
-        inner.conversation_history = [inner.system_message]
-        inner.max_iterations = getattr(parent_agent, "max_iterations", 15)
-        inner.registered_tools = list(getattr(parent_agent, "registered_tools", []))
-        # Fresh hook registry so inner-agent hooks don't leak to parent.
-        inner._hooks = {event: [] for event in AgentEvent}
-        return inner
+    inner = BaseAgent(
+        system_message=rendered_body,
+        provider=parent_agent.provider,
+        max_iterations=getattr(parent_agent, "max_iterations", 15),
+    )
+    for t in getattr(parent_agent, "registered_tools", []):
+        inner.register_tool(t)
+    return inner
 
 
 async def _execute_fork(skill: Skill, rendered_body: str, parent_agent) -> str:
@@ -155,7 +135,13 @@ async def _execute_fork(skill: Skill, rendered_body: str, parent_agent) -> str:
         raise SkillInvocationError(
             f"Skill '{skill.name}' (fork) failed: {result.error}"
         )
-    return result.result or ""
+    if not result.result:
+        # A successful fork with empty content is almost always a bug (e.g.,
+        # the sub-agent exhausted iterations or produced no synthesis). Log
+        # and surface as error so the caller isn't left holding an empty
+        # string silently.
+        raise SkillInvocationError(f"Skill '{skill.name}' (fork) produced no content")
+    return result.result
 
 
 def _install_cleanup_hook(

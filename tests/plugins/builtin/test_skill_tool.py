@@ -667,6 +667,7 @@ class TestForkExecution:
 
         parent = MagicMock()
         parent.provider = MagicMock()
+        parent.provider.model_id = "mock-model"
         parent.registered_tools = []
         parent.max_iterations = 15
 
@@ -714,6 +715,7 @@ class TestForkExecution:
         mgr = SkillManager(providers=[provider])
 
         parent_provider = MagicMock()
+        parent_provider.model_id = "mock-model"
         parent_tool = MagicMock()
         parent_tool.tool_name = "parent_tool"
         parent = MagicMock()
@@ -767,6 +769,7 @@ class TestForkExecution:
 
         parent = MagicMock()
         parent.provider = MagicMock()
+        parent.provider.model_id = "mock-model"
         parent.registered_tools = []
         parent.max_iterations = 15
 
@@ -804,6 +807,7 @@ class TestForkExecution:
         mgr = SkillManager(providers=[provider])
         parent = MagicMock()
         parent.provider = MagicMock()
+        parent.provider.model_id = "mock-model"
         parent.registered_tools = []
         parent.max_iterations = 15
 
@@ -837,6 +841,7 @@ class TestForkExecution:
         mgr = SkillManager(providers=[provider])
         parent = MagicMock()
         parent.provider = MagicMock()
+        parent.provider.model_id = "mock-model"
         parent.registered_tools = []
         parent.max_iterations = 15
 
@@ -873,6 +878,111 @@ class TestForkExecution:
         from obelix.core.model.tool_message import ToolStatus
 
         assert result.status == ToolStatus.ERROR
+
+
+class TestForkExecutionEdgeCases:
+    """Edge cases for fork execution surfaced during review."""
+
+    def test_empty_fork_result_raises_error(self, monkeypatch):
+        """Fork that returns empty/None content must not silently succeed."""
+        from obelix.plugins.builtin import skill_tool as st_mod
+
+        real_skill = Skill(
+            name="fork_skill",
+            description="d",
+            body="Body",
+            base_dir=None,
+            context="fork",
+        )
+        provider = MagicMock()
+        provider.discover.return_value = [real_skill]
+        mgr = SkillManager(providers=[provider])
+        parent = MagicMock()
+        parent.provider = MagicMock()
+        parent.provider.model_id = "mock-model"
+        parent.registered_tools = []
+        parent.max_iterations = 15
+
+        class _EmptySub:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def execute(self, tool_call):
+                from obelix.core.model.tool_message import ToolResult, ToolStatus
+
+                return ToolResult(
+                    tool_name=tool_call.name,
+                    tool_call_id=tool_call.id,
+                    result=None,
+                    status=ToolStatus.SUCCESS,
+                )
+
+        monkeypatch.setattr(st_mod, "SubAgentWrapper", _EmptySub)
+        skill_tool = make_skill_tool(mgr, parent_agent=parent)
+        result = _invoke_execute(skill_tool, name="fork_skill", args="")
+        from obelix.core.model.tool_message import ToolStatus
+
+        assert result.status == ToolStatus.ERROR
+        assert "no content" in (result.error or "").lower()
+
+    def test_fork_hook_fires_on_inner_agent(self, monkeypatch):
+        """Fork skill hooks are registered on the inner agent and actually execute."""
+        import asyncio as _asyncio
+
+        from obelix.core.agent.hooks import AgentEvent, AgentStatus
+        from obelix.plugins.builtin import skill_tool as st_mod
+
+        real_skill = Skill(
+            name="fork_skill",
+            description="d",
+            body="Body",
+            base_dir=None,
+            context="fork",
+            hooks={"on_tool_error": "Retry the fork task"},
+        )
+        provider = MagicMock()
+        provider.discover.return_value = [real_skill]
+        mgr = SkillManager(providers=[provider])
+        parent = MagicMock()
+        parent.provider = MagicMock()
+        parent.provider.model_id = "mock-model"
+        parent.registered_tools = []
+        parent.max_iterations = 15
+
+        captured_inner = {}
+
+        class _CapturingSub:
+            def __init__(self, agent, *, name, description, stateless=False):
+                captured_inner["agent"] = agent
+
+            async def execute(self, tool_call):
+                from obelix.core.model.tool_message import ToolResult, ToolStatus
+
+                return ToolResult(
+                    tool_name=tool_call.name,
+                    tool_call_id=tool_call.id,
+                    result="ok",
+                    status=ToolStatus.SUCCESS,
+                )
+
+        monkeypatch.setattr(st_mod, "SubAgentWrapper", _CapturingSub)
+        skill_tool = make_skill_tool(mgr, parent_agent=parent)
+        _invoke_execute(skill_tool, name="fork_skill", args="")
+
+        inner = captured_inner["agent"]
+        # Exactly one hook registered on ON_TOOL_ERROR on the INNER agent
+        inner_hooks = inner._hooks[AgentEvent.ON_TOOL_ERROR]
+        assert len(inner_hooks) == 1
+
+        # Fire the hook — its effect appends HumanMessage to inner's history
+        status = AgentStatus(event=AgentEvent.ON_TOOL_ERROR, agent=inner)
+        _asyncio.run(inner_hooks[0].execute(status))
+
+        injected = inner.conversation_history[-1]
+        assert injected.content == "Retry the fork task"
+
+        # The parent agent's hooks registry was NOT touched
+        assert parent.on.called is False
 
 
 class TestForkExecutionRealAgent:
