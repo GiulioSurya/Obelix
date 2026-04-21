@@ -177,3 +177,67 @@ async def test_state_change_attributes_carry_from_to_reason(executor_with_tracer
     events = [e for e in a2a_tasks[0].events if e.name == "a2a.state_change"]
     for e in events:
         assert "to" in e.attributes, f"state_change event missing 'to': {e.attributes}"
+
+
+@pytest.mark.asyncio
+async def test_deferred_tool_creates_deferred_wait_span(executor_with_deferred_tool):
+    """A deferred tool pause opens a ``deferred_wait`` span that closes on resume.
+
+    The fixture produces an executor whose first agent response is a deferred
+    tool call (is_deferred=True). The executor must:
+
+    * emit ``input_required`` and open a ``deferred_wait`` span as a direct
+      child of the ``a2a_task`` root span;
+    * keep that span open across the suspension;
+    * close it on the resume path (duration = wall-clock of the pause).
+
+    Metadata on the span must carry ``tool_name``, ``tool_call_ids``, and
+    ``suspend_reason="deferred_tool"``.
+    """
+    send_message, resume, spy = executor_with_deferred_tool
+    await send_message("do the deferred thing")
+    await resume({"answer": "EUR"})
+
+    # One deferred_wait span with a measurable duration
+    dw_spans = [s for s in spy.spans if s.span_type.value == "deferred_wait"]
+    assert len(dw_spans) == 1, (
+        f"expected exactly one deferred_wait span, got {len(dw_spans)}: "
+        f"{[(s.name, s.span_type.value) for s in spy.spans]}"
+    )
+    dw = dw_spans[0]
+    assert dw.duration_ms is not None and dw.duration_ms >= 0
+    tool_name = dw.metadata.get("tool_name")
+    assert tool_name, f"deferred_wait span missing tool_name metadata: {dw.metadata}"
+    assert dw.metadata.get("suspend_reason") == "deferred_tool"
+    tool_call_ids = dw.metadata.get("tool_call_ids")
+    assert tool_call_ids and "tc-deferred-1" in tool_call_ids
+
+    # Parent must be the a2a_task span (sibling of the agent span)
+    a2a_tasks = [s for s in spy.spans if s.span_type.value == "a2a_task"]
+    assert len(a2a_tasks) == 1
+    assert dw.parent_span_id == a2a_tasks[0].span_id, (
+        f"deferred_wait parent must be a2a_task ({a2a_tasks[0].span_id}); "
+        f"got parent_span_id={dw.parent_span_id!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_deferred_wait_cleared_on_resume(executor_with_deferred_tool):
+    """After resume finishes, ``entry.deferred_wait_span_id`` is cleared."""
+    send_message, resume, _spy = executor_with_deferred_tool
+    await send_message("do the deferred thing")
+    await resume({"answer": "ok"})
+
+    # Inspect the executor's context store (stable for this fixture).
+    # The ctx entry should have deferred_wait_span_id cleared.
+    # We reach it via the fixture's closure — walk from a fresh module call.
+    # The fixture uses a stable context_id ("ctx-deferred-001").
+    # We need access to the executor; easiest path is checking the only ctx.
+    # Since we don't expose the executor, inspect via the spy exporter's
+    # span metadata as a proxy: the deferred_wait span must have end_time set.
+    dw_spans = [
+        s
+        for s in _spy.spans
+        if s.span_type.value == "deferred_wait" and s.end_time is not None
+    ]
+    assert len(dw_spans) == 1

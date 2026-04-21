@@ -132,6 +132,84 @@ class ObelixAgentExecutor(AgentExecutor):
         finally:
             set_current_span(prior)
 
+    async def _open_deferred_wait_span(
+        self,
+        entry,
+        deferred_tool_calls,
+    ) -> None:
+        """Open a ``deferred_wait`` span covering the input_required pause.
+
+        Temporarily pins the current span to ``a2a_task`` so the new span
+        becomes a direct child of the task root (sibling of the agent span).
+        The span is left OPEN — it is closed on the resume path (or on
+        cancel). Records ``tool_name``, ``tool_call_ids`` and a fixed
+        ``suspend_reason="deferred_tool"`` in the span metadata.
+
+        No-op if no tracer is configured, no current trace, or no a2a_task
+        span is present on the current trace.
+        """
+        if not self._tracer:
+            return
+        trace = get_current_trace()
+        if trace is None:
+            return
+        a2a_span = next(
+            (s for s in trace.spans if s.span_type == SpanType.a2a_task),
+            None,
+        )
+        if a2a_span is None:
+            return
+        prior = get_current_span()
+        set_current_span(a2a_span)
+        try:
+            tool_name = deferred_tool_calls[0].name if deferred_tool_calls else None
+            tool_call_ids = [c.id for c in deferred_tool_calls]
+            span = await self._tracer.start_span(
+                SpanType.deferred_wait,
+                name="deferred_wait",
+                metadata={
+                    "tool_name": tool_name,
+                    "tool_call_ids": tool_call_ids,
+                    "suspend_reason": "deferred_tool",
+                },
+            )
+            entry.deferred_wait_span_id = span.span_id
+        finally:
+            # Restore the prior current span — the ``deferred_wait`` span
+            # stays open and the a2a_task / agent spans remain the logical
+            # frames for the rest of the suspension window.
+            set_current_span(prior)
+
+    async def _close_deferred_wait_span(self, entry) -> None:
+        """Close the open ``deferred_wait`` span (if any) saved on ``entry``.
+
+        Pins the current span to the open ``deferred_wait`` span, ends it,
+        then restores the prior current span. Clears
+        ``entry.deferred_wait_span_id`` afterwards so no stale id remains.
+        No-op if no tracer, no current trace, or no span id is recorded.
+        """
+        if not self._tracer or not entry.deferred_wait_span_id:
+            return
+        trace = get_current_trace()
+        if trace is None:
+            entry.deferred_wait_span_id = None
+            return
+        dw_span = next(
+            (s for s in trace.spans if s.span_id == entry.deferred_wait_span_id),
+            None,
+        )
+        if dw_span is None:
+            entry.deferred_wait_span_id = None
+            return
+        prior = get_current_span()
+        set_current_span(dw_span)
+        try:
+            await self._tracer.end_span()
+        finally:
+            # Restore whatever span was current before we touched context.
+            set_current_span(prior)
+            entry.deferred_wait_span_id = None
+
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         task_id = context.task_id
         context_id = context.context_id or "default"
@@ -342,6 +420,10 @@ class ObelixAgentExecutor(AgentExecutor):
                     set_current_span(entry.trace_span)
                     entry.trace_session = None
                     entry.trace_span = None
+                # Close the ``deferred_wait`` span that was opened at the
+                # suspension point. Duration now reflects the wall-clock
+                # time the task spent in ``input_required``.
+                await self._close_deferred_wait_span(entry)
                 stream = agent.resume_after_deferred()
             elif attachments:
                 # Pass as HumanMessage with attachments for multimodal
@@ -396,6 +478,14 @@ class ObelixAgentExecutor(AgentExecutor):
                     # Save trace context so the resume continues the same trace
                     entry.trace_session = get_current_trace()
                     entry.trace_span = get_current_span()
+
+                    # Open a ``deferred_wait`` span as a direct child of the
+                    # ``a2a_task`` root, covering the input_required pause.
+                    # The span stays OPEN across the suspension — it will be
+                    # closed on the resume path (or on cancel).
+                    await self._open_deferred_wait_span(
+                        entry, event.deferred_tool_calls
+                    )
 
                     # Build DataPart message from deferred tool calls
                     deferred_parts = deferred_calls_to_a2a_parts(

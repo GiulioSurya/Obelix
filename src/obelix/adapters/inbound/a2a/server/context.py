@@ -31,6 +31,7 @@ class ContextEntry:
         "deferred_tools",
         "trace_session",
         "trace_span",
+        "deferred_wait_span_id",
         "active_agent",
         "client_info",
     )
@@ -43,6 +44,10 @@ class ContextEntry:
         self.deferred_tools: list | None = None  # tool snapshot for OutputSchema lookup
         self.trace_session = None  # TraceSession saved when loop stops for deferred
         self.trace_span = None  # Current span saved when loop stops for deferred
+        # Span id of the open ``deferred_wait`` span that wraps the
+        # input_required pause. Set when the executor suspends on a deferred
+        # tool; cleared after the span is ended on resume (or on cancel).
+        self.deferred_wait_span_id: str | None = None
         self.active_agent: BaseAgent | None = None  # ref to running agent for cancel
         self.client_info: dict | None = None  # client shell environment for BashTool
 
