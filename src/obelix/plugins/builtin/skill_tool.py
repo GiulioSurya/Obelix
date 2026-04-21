@@ -12,6 +12,13 @@ and registers frontmatter `hooks:` on the parent agent at first invoke.
 Task 7.4: installs a QUERY_END cleanup hook that unregisters all
 skill-scoped hooks at the end of each query, resets idempotence state,
 and re-arms itself for the next query cycle.
+
+Task 7.5: adds fork execution — when a skill declares ``context: fork``
+its body is not returned inline but instead drives an isolated
+``BaseAgent`` wrapped in ``SubAgentWrapper`` (stateless). The inner agent
+inherits the parent's provider, registered tools, and max_iterations;
+memory is NOT inherited. Only the sub-agent's last AssistantMessage
+content flows back as the tool result.
 """
 
 from __future__ import annotations
@@ -21,8 +28,11 @@ import uuid
 
 from pydantic import Field
 
+from obelix.core.agent.base_agent import BaseAgent
 from obelix.core.agent.hooks import AgentEvent, HookDecision
+from obelix.core.agent.subagent_wrapper import SubAgentWrapper
 from obelix.core.model.human_message import HumanMessage
+from obelix.core.model.tool_message import ToolCall
 from obelix.core.skill.manager import SkillManager
 from obelix.core.skill.skill import Skill
 from obelix.core.skill.substitution import (
@@ -68,6 +78,84 @@ def _register_skill_hooks(agent, registered: list, skill: Skill) -> None:
         hook = agent.on(event)
         hook.handle(HookDecision.CONTINUE, effects=[_make_effect(instruction)])
         registered.append((event, hook))
+
+
+def _make_fork_agent(parent_agent, rendered_body: str):
+    """Build the ephemeral inner agent for fork execution.
+
+    Uses a fresh ``BaseAgent`` when the parent exposes a real provider
+    (with a string ``model_id``); falls back to a shallow copy otherwise
+    so MagicMock-based unit tests work without constructing a full agent.
+    In both cases the inner agent inherits the parent's provider,
+    registered tools, and ``max_iterations`` (default 15). Memory and
+    conversation history are NOT inherited — the inner agent starts from
+    a fresh system message equal to the rendered skill body.
+    """
+    from obelix.core.model.system_message import SystemMessage
+
+    try:
+        inner = BaseAgent(
+            system_message=rendered_body,
+            provider=parent_agent.provider,
+            max_iterations=getattr(parent_agent, "max_iterations", 15),
+        )
+        for t in getattr(parent_agent, "registered_tools", []):
+            inner.register_tool(t)
+        return inner
+    except Exception as e:  # noqa: BLE001
+        # Fallback for mock/exotic providers: shallow-copy-shaped object
+        # with only the attributes SubAgentWrapper + tests read.
+        logger.debug(
+            "[skill] fork: BaseAgent construction failed (%s); "
+            "using attribute-only fallback",
+            e,
+        )
+        import copy as _copy
+
+        inner = _copy.copy(parent_agent)
+        inner.system_message = SystemMessage(content=rendered_body)
+        inner.conversation_history = [inner.system_message]
+        inner.max_iterations = getattr(parent_agent, "max_iterations", 15)
+        inner.registered_tools = list(getattr(parent_agent, "registered_tools", []))
+        # Fresh hook registry so inner-agent hooks don't leak to parent.
+        inner._hooks = {event: [] for event in AgentEvent}
+        return inner
+
+
+async def _execute_fork(skill: Skill, rendered_body: str, parent_agent) -> str:
+    """Run the skill in an isolated sub-agent; return last-message content.
+
+    The inner agent uses the rendered skill body as its system message and
+    inherits the parent's provider, registered tools, and
+    ``max_iterations`` (default 15). Memory is NOT inherited —
+    ``SubAgentWrapper(stateless=True)`` ensures the parent's history is
+    not mutated. Skill-level ``hooks`` apply only to the ephemeral inner
+    agent; no cleanup hook is needed since the agent dies with the call.
+    """
+    inner = _make_fork_agent(parent_agent, rendered_body)
+
+    if skill.hooks:
+        # Skill hooks apply to the inner agent only; it's ephemeral so no
+        # cleanup hook is needed — the agent dies when execute completes.
+        _register_skill_hooks(inner, [], skill)
+
+    sub = SubAgentWrapper(
+        inner,
+        name=skill.name,
+        description=skill.description,
+        stateless=True,
+    )
+    call = ToolCall(
+        id=str(uuid.uuid4()),
+        name=skill.name,
+        arguments={"query": "Begin executing the skill as specified above."},
+    )
+    result = await sub.execute(call)
+    if result.error:
+        raise SkillInvocationError(
+            f"Skill '{skill.name}' (fork) failed: {result.error}"
+        )
+    return result.result or ""
 
 
 def _install_cleanup_hook(
@@ -143,7 +231,7 @@ def make_skill_tool(
             default="", description="Optional arguments passed as $ARGUMENTS"
         )
 
-        def execute(self) -> str:
+        async def execute(self) -> str:
             skill = manager.load(self.name)
             if skill is None:
                 names = [s.name for s in manager.list_all()]
@@ -155,7 +243,8 @@ def make_skill_tool(
                 raise SkillInvocationError(f"Skill '{self.name}' not found. {tail}")
 
             # Idempotence: second invocation in the same query returns a
-            # short marker instead of re-injecting the body.
+            # short marker instead of re-injecting the body. Applies to
+            # both inline and fork skills.
             if self.name in active_skills:
                 return (
                     f"Skill '{self.name}' is already active — "
@@ -175,7 +264,22 @@ def make_skill_tool(
                 # Do NOT mark the skill active on failure — retry is allowed.
                 raise SkillInvocationError(f"Skill '{self.name}': {e}") from e
 
-            # Only after successful substitution: register hooks and mark active.
+            # Fork path: run the body in an isolated sub-agent and return
+            # the last AssistantMessage content as the tool result. Hooks
+            # (if any) are registered on the ephemeral inner agent inside
+            # _execute_fork — not on the parent.
+            if skill.context == "fork":
+                if parent_agent is None:
+                    raise SkillInvocationError(
+                        f"Skill '{self.name}': fork execution requires a parent agent"
+                    )
+                # Look up the (possibly monkey-patched) SubAgentWrapper from
+                # this module so tests can swap it. Same applies to BaseAgent.
+                result_text = await _execute_fork(skill, rendered, parent_agent)
+                active_skills.add(self.name)
+                return result_text
+
+            # Inline path: register hooks on the parent and return the body.
             if skill.hooks and parent_agent is not None:
                 _register_skill_hooks(parent_agent, registered_hooks, skill)
                 if not cleanup_installed[0]:

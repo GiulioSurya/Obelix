@@ -641,3 +641,235 @@ class TestHookCleanupOnQueryEnd:
         cleanup2 = parent._hooks[AgentEvent.QUERY_END][0]
         # Must be a new hook instance, not the previous one
         assert cleanup2 is not cleanup1
+
+
+class TestForkExecution:
+    """Skills with context='fork' run in an isolated sub-agent."""
+
+    def _fork_skill(self, body: str = "Fork body", hooks: dict | None = None) -> Skill:
+        return Skill(
+            name="fork_skill",
+            description="A forked skill",
+            body=body,
+            base_dir=None,
+            context="fork",
+            hooks=hooks or {},
+        )
+
+    def test_fork_skill_invokes_subagent(self, monkeypatch):
+        """When context=='fork', SubAgentWrapper is used and the result flows back."""
+        from obelix.plugins.builtin import skill_tool as st_mod
+
+        real_skill = self._fork_skill(body="Execute the protocol")
+        provider = MagicMock()
+        provider.discover.return_value = [real_skill]
+        mgr = SkillManager(providers=[provider])
+
+        parent = MagicMock()
+        parent.provider = MagicMock()
+        parent.registered_tools = []
+        parent.max_iterations = 15
+
+        # Track what SubAgentWrapper receives + pretend it succeeded
+        calls = {}
+
+        class _FakeSub:
+            def __init__(self, agent, *, name, description, stateless=False):
+                calls["agent_system_message"] = str(agent.system_message.content)
+                calls["name"] = name
+                calls["description"] = description
+                calls["stateless"] = stateless
+
+            async def execute(self, tool_call):
+                from obelix.core.model.tool_message import ToolResult, ToolStatus
+
+                calls["tool_call"] = tool_call
+                return ToolResult(
+                    tool_name=tool_call.name,
+                    tool_call_id=tool_call.id,
+                    result="Fork result text",
+                    status=ToolStatus.SUCCESS,
+                )
+
+        monkeypatch.setattr(st_mod, "SubAgentWrapper", _FakeSub)
+
+        skill_tool = make_skill_tool(mgr, parent_agent=parent)
+        result = _invoke_execute(skill_tool, name="fork_skill", args="")
+
+        from obelix.core.model.tool_message import ToolStatus
+
+        assert result.status == ToolStatus.SUCCESS
+        assert result.result == "Fork result text"
+        assert calls["stateless"] is True
+        assert "Execute the protocol" in calls["agent_system_message"]
+        assert calls["name"] == "fork_skill"
+
+    def test_fork_skill_inherits_provider_and_tools(self, monkeypatch):
+        """Inner agent sees the parent's provider and registered_tools."""
+        from obelix.plugins.builtin import skill_tool as st_mod
+
+        real_skill = self._fork_skill()
+        provider = MagicMock()
+        provider.discover.return_value = [real_skill]
+        mgr = SkillManager(providers=[provider])
+
+        parent_provider = MagicMock()
+        parent_tool = MagicMock()
+        parent_tool.tool_name = "parent_tool"
+        parent = MagicMock()
+        parent.provider = parent_provider
+        parent.registered_tools = [parent_tool]
+        parent.max_iterations = 7
+
+        captured = {}
+
+        class _FakeSub:
+            def __init__(self, agent, *, name, description, stateless=False):
+                captured["provider"] = agent.provider
+                captured["tool_names"] = [
+                    getattr(t, "tool_name", None) for t in agent.registered_tools
+                ]
+                captured["max_iter"] = agent.max_iterations
+
+            async def execute(self, tool_call):
+                from obelix.core.model.tool_message import ToolResult, ToolStatus
+
+                return ToolResult(
+                    tool_name=tool_call.name,
+                    tool_call_id=tool_call.id,
+                    result="ok",
+                    status=ToolStatus.SUCCESS,
+                )
+
+        monkeypatch.setattr(st_mod, "SubAgentWrapper", _FakeSub)
+
+        skill_tool = make_skill_tool(mgr, parent_agent=parent)
+        _invoke_execute(skill_tool, name="fork_skill", args="")
+
+        assert captured["provider"] is parent_provider
+        assert "parent_tool" in captured["tool_names"]
+        assert captured["max_iter"] == 7
+
+    def test_fork_skill_args_and_placeholders_substituted(self, monkeypatch):
+        """$ARGUMENTS and meta placeholders are resolved BEFORE the body hits the sub-agent."""
+        from obelix.plugins.builtin import skill_tool as st_mod
+
+        real_skill = Skill(
+            name="fork_skill",
+            description="d",
+            body="args=$ARGUMENTS sid=${OBELIX_SESSION_ID}",
+            base_dir=None,
+            context="fork",
+        )
+        provider = MagicMock()
+        provider.discover.return_value = [real_skill]
+        mgr = SkillManager(providers=[provider])
+
+        parent = MagicMock()
+        parent.provider = MagicMock()
+        parent.registered_tools = []
+        parent.max_iterations = 15
+
+        captured = {}
+
+        class _FakeSub:
+            def __init__(self, agent, *, name, description, stateless=False):
+                captured["system_message"] = str(agent.system_message.content)
+
+            async def execute(self, tool_call):
+                from obelix.core.model.tool_message import ToolResult, ToolStatus
+
+                return ToolResult(
+                    tool_name=tool_call.name,
+                    tool_call_id=tool_call.id,
+                    result="ok",
+                    status=ToolStatus.SUCCESS,
+                )
+
+        monkeypatch.setattr(st_mod, "SubAgentWrapper", _FakeSub)
+
+        skill_tool = make_skill_tool(mgr, session_id="SID-X", parent_agent=parent)
+        _invoke_execute(skill_tool, name="fork_skill", args="hello world")
+
+        assert "args=hello world" in captured["system_message"]
+        assert "sid=SID-X" in captured["system_message"]
+
+    def test_fork_skill_returns_last_assistant_content(self, monkeypatch):
+        """The sub-agent's ToolResult.result becomes the outer call's result."""
+        from obelix.plugins.builtin import skill_tool as st_mod
+
+        real_skill = self._fork_skill()
+        provider = MagicMock()
+        provider.discover.return_value = [real_skill]
+        mgr = SkillManager(providers=[provider])
+        parent = MagicMock()
+        parent.provider = MagicMock()
+        parent.registered_tools = []
+        parent.max_iterations = 15
+
+        class _FakeSub:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def execute(self, tool_call):
+                from obelix.core.model.tool_message import ToolResult, ToolStatus
+
+                return ToolResult(
+                    tool_name=tool_call.name,
+                    tool_call_id=tool_call.id,
+                    result="Deep investigation complete. Root cause: X.",
+                    status=ToolStatus.SUCCESS,
+                )
+
+        monkeypatch.setattr(st_mod, "SubAgentWrapper", _FakeSub)
+
+        skill_tool = make_skill_tool(mgr, parent_agent=parent)
+        result = _invoke_execute(skill_tool, name="fork_skill", args="")
+        assert "Root cause: X" in result.result
+
+    def test_fork_skill_idempotence(self, monkeypatch):
+        """Second invocation of same fork skill returns 'already active'."""
+        from obelix.plugins.builtin import skill_tool as st_mod
+
+        real_skill = self._fork_skill()
+        provider = MagicMock()
+        provider.discover.return_value = [real_skill]
+        mgr = SkillManager(providers=[provider])
+        parent = MagicMock()
+        parent.provider = MagicMock()
+        parent.registered_tools = []
+        parent.max_iterations = 15
+
+        class _FakeSub:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def execute(self, tool_call):
+                from obelix.core.model.tool_message import ToolResult, ToolStatus
+
+                return ToolResult(
+                    tool_name=tool_call.name,
+                    tool_call_id=tool_call.id,
+                    result="first",
+                    status=ToolStatus.SUCCESS,
+                )
+
+        monkeypatch.setattr(st_mod, "SubAgentWrapper", _FakeSub)
+
+        skill_tool = make_skill_tool(mgr, parent_agent=parent)
+        r1 = _invoke_execute(skill_tool, name="fork_skill", args="")
+        assert r1.result == "first"
+        r2 = _invoke_execute(skill_tool, name="fork_skill", args="")
+        assert "already active" in r2.result.lower()
+
+    def test_fork_skill_without_parent_agent_returns_error(self):
+        """Fork requires a parent context — no parent means ERROR status."""
+        real_skill = self._fork_skill()
+        provider = MagicMock()
+        provider.discover.return_value = [real_skill]
+        mgr = SkillManager(providers=[provider])
+        skill_tool = make_skill_tool(mgr, parent_agent=None)
+        result = _invoke_execute(skill_tool, name="fork_skill", args="")
+        from obelix.core.model.tool_message import ToolStatus
+
+        assert result.status == ToolStatus.ERROR
