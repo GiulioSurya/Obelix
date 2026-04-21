@@ -7,6 +7,7 @@ instrumentation tests. It wires an ``ObelixAgentExecutor`` to a minimal
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock
@@ -22,15 +23,27 @@ from obelix.core.tracer.tracer import Tracer
 
 
 class _ExecutorSpyExporter(NoOpExporter):
-    """Capture every completed span for inspection by tests."""
+    """Capture every completed span for inspection by tests.
+
+    Also records the final ``status`` passed to ``end_trace`` keyed by
+    ``trace_id``, so tests can assert that a canceled trace ends with
+    ``SpanStatus.canceled`` (not the default ``ok``).
+    """
 
     def __init__(self) -> None:
         self.spans: list = []
+        # trace_id -> status value string (e.g. "canceled", "ok", "error").
+        self.trace_end_statuses: dict[str, str] = {}
 
     async def export_span(self, span, service_name):  # type: ignore[override]
         # Only record completed spans (end_time is populated by Tracer.end_span).
         if span.end_time is not None:
             self.spans.append(span)
+
+    async def end_trace(self, trace_id, status, end_time):  # type: ignore[override]
+        self.trace_end_statuses[trace_id] = (
+            status.value if hasattr(status, "value") else str(status)
+        )
 
 
 @dataclass
@@ -358,3 +371,77 @@ def executor_with_deferred_tool_and_cancel():
         await executor.cancel(ctx, queue)
 
     return send_message, resume, spy, executor_cancel
+
+
+@pytest.fixture
+def executor_with_cancelable_agent():
+    """Return ``(send_message, cancel_fn, spy)`` for in-flight cancel tests.
+
+    The agent's ``execute_query_stream`` waits on an ``asyncio.Event`` that
+    is set by ``agent.cancel()``. When cancel fires, the stream yields a
+    ``canceled=True`` StreamEvent. This lets the test:
+
+    1. Kick off ``send_message`` in a background task.
+    2. Call ``cancel_fn()`` while the agent is actively running
+       (``entry.active_agent`` is the mock agent, not ``None``).
+    3. Assert that the ``cancellation.requested`` event was emitted on the
+       ``a2a_task`` span via the in-flight branch (NOT the deferred branch).
+    """
+    from obelix.core.model.assistant_message import StreamEvent
+    from obelix.core.model.system_message import SystemMessage
+
+    spy = _ExecutorSpyExporter()
+    tracer = Tracer(exporter=spy)
+
+    context_id = "ctx-inflight-cancel-001"
+
+    def factory() -> MagicMock:
+        agent = MagicMock()
+        agent.system_message = SystemMessage(content="You are a test agent.")
+        agent.conversation_history = [agent.system_message]
+        agent.registered_tools = []
+        agent._tracer = tracer
+
+        cancel_event = asyncio.Event()
+
+        async def wait_for_cancel_stream(query):
+            # Wait for the cancel signal, then yield a canceled StreamEvent.
+            # Guarded by a small timeout so a misbehaving test can't hang.
+            try:
+                await asyncio.wait_for(cancel_event.wait(), timeout=2.0)
+            except TimeoutError:
+                yield StreamEvent(is_final=True, canceled=False)
+                return
+            yield StreamEvent(canceled=True, is_final=True)
+
+        agent.execute_query_stream = MagicMock(side_effect=wait_for_cancel_stream)
+
+        def cancel_impl():
+            # Simulate the BaseAgent.cancel() side-effect: unblock the stream
+            # so it yields a canceled StreamEvent.
+            cancel_event.set()
+
+        agent.cancel = MagicMock(side_effect=cancel_impl)
+        return agent
+
+    executor = ObelixAgentExecutor(factory, tracer=tracer)
+
+    async def send_message(text: str) -> None:
+        ctx = _FakeRequestContext(
+            context_id=context_id,
+            text=text,
+            task_id="task-tracing-inflight",
+        )
+        queue = _FakeEventQueue()
+        await executor.execute(ctx, queue)
+
+    async def cancel_fn() -> None:
+        ctx = _FakeRequestContext(
+            context_id=context_id,
+            text="",
+            task_id="task-tracing-inflight-cancel",
+        )
+        queue = _FakeEventQueue()
+        await executor.cancel(ctx, queue)
+
+    return send_message, cancel_fn, spy

@@ -136,27 +136,35 @@ class ObelixAgentExecutor(AgentExecutor):
         self,
         source: str = "client",
         iteration: int | None = None,
+        trace=None,
     ) -> None:
         """Emit a ``cancellation.requested`` event on the a2a_task span.
 
         Same pattern as :meth:`_emit_state`: pin the current span to the
         ``a2a_task`` root so the event attaches there (not to a nested
         agent/tool/deferred_wait span), then restore the prior current span.
-        No-op if no tracer is configured, no current trace, or no a2a_task
-        span exists on the current trace.
+        No-op if no tracer is configured, no trace available, or no a2a_task
+        span exists on the trace.
+
+        ``trace`` overrides the contextvar lookup. Used by ``cancel()`` to
+        emit the event via the entry's saved ``trace_session`` when running
+        in a different asyncio task (and therefore empty contextvars).
         """
         if not self._tracer:
             return
-        trace = get_current_trace()
-        if trace is None:
+        resolved_trace = trace if trace is not None else get_current_trace()
+        if resolved_trace is None:
             return
         a2a_span = next(
-            (s for s in trace.spans if s.span_type == SpanType.a2a_task),
+            (s for s in resolved_trace.spans if s.span_type == SpanType.a2a_task),
             None,
         )
         if a2a_span is None:
             return
-        prior = get_current_span()
+        prior_trace = get_current_trace()
+        prior_span = get_current_span()
+        # Pin both trace and span for add_event to resolve correctly.
+        set_current_trace(resolved_trace)
         set_current_span(a2a_span)
         try:
             attributes: dict[str, object] = {"source": source}
@@ -164,7 +172,8 @@ class ObelixAgentExecutor(AgentExecutor):
                 attributes["iteration"] = iteration
             await self._tracer.add_event("cancellation.requested", attributes)
         finally:
-            set_current_span(prior)
+            set_current_span(prior_span)
+            set_current_trace(prior_trace)
 
     async def _open_deferred_wait_span(
         self,
@@ -348,6 +357,12 @@ class ObelixAgentExecutor(AgentExecutor):
                 metadata={"task_id": task_id, "context_id": context_id},
             )
             trace_opened_here = True
+            # Store the live trace on the entry so ``cancel()`` (which runs in
+            # a different asyncio task and therefore has empty contextvars) can
+            # find it and emit ``cancellation.requested`` on the a2a_task span.
+            # The deferred-suspension path later overwrites this with the same
+            # trace when it saves context for resume.
+            entry.trace_session = get_current_trace()
 
         # Tracks whether the executor suspended for a deferred tool. When
         # True, the finally block leaves the trace + a2a_task span open so
@@ -385,13 +400,19 @@ class ObelixAgentExecutor(AgentExecutor):
                         )
                 if task_span is not None:
                     set_current_span(task_span)
-                # Propagate canceled status onto the a2a_task span when
-                # a cancel flowed through (either via CancelledError in the
-                # agent loop — see _run_agent_impl — or via a client-initiated
-                # cancel captured in entry.was_canceled).
+                # Propagate canceled status onto the a2a_task span AND the
+                # trace itself when a cancel flowed through (either via
+                # CancelledError in the agent loop — see _run_agent_impl —
+                # or via a client-initiated cancel captured in
+                # entry.was_canceled). Marking the trace status ensures
+                # consumers filtering by trace status see the cancellation
+                # (previously only the a2a_task span carried it).
                 status = SpanStatus.canceled if entry.was_canceled else SpanStatus.ok
                 await tracer.end_span(status=status)
-                await tracer.end_trace()
+                await tracer.end_trace(status=status)
+                # Clear the saved trace ref — the trace is now ended and any
+                # subsequent turn on this context will open a new one.
+                entry.trace_session = None
 
     async def _run_agent_impl(
         self,
@@ -801,6 +822,18 @@ class ObelixAgentExecutor(AgentExecutor):
         async with self._store_lock:
             entry = self._store.get_or_create(context_id)
 
+        # Emit cancellation.requested on the a2a_task span BEFORE branching
+        # into the in-flight / deferred paths. This way the event fires
+        # regardless of which branch handles the cancel. We pass the entry's
+        # saved trace explicitly because cancel() typically runs in a
+        # different asyncio task than execute(), so contextvars are empty.
+        # The helper is a no-op if no trace or no a2a_task span exists —
+        # safe even if no trace was ever opened.
+        await self._emit_cancellation_event(
+            source="client",
+            trace=entry.trace_session,
+        )
+
         if entry.active_agent:
             # Agent is running — signal cooperative cancellation.
             # The _execute_loop will detect the flag, yield a canceled
@@ -852,9 +885,10 @@ class ObelixAgentExecutor(AgentExecutor):
                 )
             )
             # Restore the trace context saved at suspension so tracer
-            # operations (deferred_wait close, cancellation.requested event,
-            # state_change event, a2a_task close, trace end) attach to the
-            # original task. Restore whatever was current before afterwards
+            # operations (deferred_wait close, state_change event, a2a_task
+            # close, trace end) attach to the original task. The
+            # ``cancellation.requested`` event was already emitted at the top
+            # of cancel(). Restore whatever was current before afterwards
             # (almost always None here).
             if self._tracer and saved_trace is not None:
                 prior_trace = get_current_trace()
@@ -866,19 +900,16 @@ class ObelixAgentExecutor(AgentExecutor):
                     # is recorded BEFORE the a2a_task span closes — addresses
                     # the Task 19 leak (span previously stayed open on cancel).
                     await self._close_deferred_wait_span(entry)
-                    # Emit cancellation.requested event on the a2a_task span
-                    # BEFORE state_change, so the event appears on the span
-                    # independently of the state transition.
-                    await self._emit_cancellation_event(source="client")
                     await self._emit_state(
                         from_state="input_required" if was_deferred else "working",
                         to_state="canceled",
                         reason="cancel_request",
                     )
                     # Finally, close the a2a_task span with canceled status
-                    # and end the trace. The suspended deferred path owns
-                    # the open trace, so cancel is the only place it can be
-                    # closed (no resume will come).
+                    # and end the trace with canceled status so consumers
+                    # filtering by trace status see the cancellation. The
+                    # suspended deferred path owns the open trace, so cancel
+                    # is the only place it can be closed (no resume will come).
                     entry.was_canceled = True
                     a2a_span = next(
                         (
@@ -891,7 +922,7 @@ class ObelixAgentExecutor(AgentExecutor):
                     if a2a_span is not None:
                         set_current_span(a2a_span)
                         await self._tracer.end_span(status=SpanStatus.canceled)
-                        await self._tracer.end_trace()
+                        await self._tracer.end_trace(status=SpanStatus.canceled)
                 finally:
                     set_current_trace(prior_trace)
                     set_current_span(prior_span)

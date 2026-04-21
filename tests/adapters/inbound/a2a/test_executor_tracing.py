@@ -6,6 +6,8 @@ the root of the trace, with the agent span becoming a child of it.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from obelix.core.tracer.models import SpanType
@@ -261,7 +263,7 @@ async def test_cancellation_emits_event_on_a2a_task(
         e for e in a2a_tasks[0].events if e.name == "cancellation.requested"
     ]
     assert len(cancel_events) == 1
-    assert cancel_events[0].attributes.get("source")
+    assert cancel_events[0].attributes.get("source") == "client"
 
 
 @pytest.mark.asyncio
@@ -290,3 +292,70 @@ async def test_cancel_marks_a2a_task_status_canceled(
     a2a_tasks = [s for s in spy.spans if s.span_type.value == "a2a_task"]
     assert len(a2a_tasks) == 1
     assert a2a_tasks[0].status.value == "canceled"
+
+
+@pytest.mark.asyncio
+async def test_inflight_cancel_emits_cancellation_event(
+    executor_with_cancelable_agent,
+):
+    """
+    Cancel arriving while the agent is actively running (in-flight cancel,
+    ``entry.active_agent is not None``) must emit a
+    ``cancellation.requested`` event on the ``a2a_task`` span.
+
+    Regression guard: the earlier implementation only emitted the event in
+    the deferred-cancel branch of ``ObelixAgentExecutor.cancel``. The
+    in-flight branch (which signals ``agent.cancel()``) silently skipped it,
+    so consumers lost visibility into client-initiated cancels on running
+    tasks.
+    """
+    send_message, cancel_fn, spy = executor_with_cancelable_agent
+
+    # Kick off the agent in the background. It will block waiting on the
+    # cancel event inside the mocked stream.
+    task = asyncio.create_task(send_message("long thing"))
+    # Yield control briefly so the executor reaches the agent loop and
+    # populates ``entry.active_agent`` before we call cancel.
+    await asyncio.sleep(0.05)
+    await cancel_fn()
+    # Drain the execute task — the cancel will have signaled the agent's
+    # stream to yield a canceled StreamEvent, so it returns cleanly.
+    try:
+        await asyncio.wait_for(task, timeout=2.0)
+    except Exception:  # pragma: no cover - defensive drain
+        pass
+
+    a2a_tasks = [s for s in spy.spans if s.span_type.value == "a2a_task"]
+    assert len(a2a_tasks) == 1, (
+        f"expected exactly one a2a_task span, got {len(a2a_tasks)}"
+    )
+    cancel_events = [
+        e for e in a2a_tasks[0].events if e.name == "cancellation.requested"
+    ]
+    assert len(cancel_events) >= 1, (
+        "no cancellation.requested event emitted on a2a_task span during "
+        "in-flight cancel"
+    )
+    assert cancel_events[0].attributes.get("source") == "client"
+
+
+@pytest.mark.asyncio
+async def test_cancel_marks_trace_status_canceled(
+    executor_with_deferred_tool_and_cancel,
+):
+    """After cancel, the trace itself (not just the a2a_task span) ends with
+    ``status=canceled``.
+
+    Consumers filtering traces by status would otherwise miss canceled ones
+    because the default ``end_trace`` status is ``ok``.
+    """
+    send_message, resume, spy, executor_cancel = executor_with_deferred_tool_and_cancel
+    await send_message("deferred thing")
+    await executor_cancel()
+
+    # The spy records the status passed to ``end_trace`` keyed by trace_id.
+    assert spy.trace_end_statuses, "no end_trace call captured by spy"
+    statuses = list(spy.trace_end_statuses.values())
+    assert "canceled" in statuses, (
+        f"expected at least one trace to end with status=canceled, got {statuses}"
+    )
