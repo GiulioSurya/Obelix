@@ -7,8 +7,6 @@ subsequent tasks (7.2 through 7.5).
 
 from __future__ import annotations
 
-import uuid
-
 from pydantic import Field
 
 from obelix.core.skill.manager import SkillManager
@@ -29,10 +27,15 @@ def make_skill_tool(
     agent. The instance's `system_prompt_fragment()` yields the listing to
     inject at construction time.
 
-    `session_id` is reserved for placeholder substitution in later tasks.
+    Each call produces a fresh tool class closing over `manager` and
+    `listing_budget`; do not rely on class identity across invocations.
+
+    `session_id` is accepted for forward compatibility with Task 7.2
+    (placeholder substitution). The scaffold ignores it — no eager UUID
+    generation, no unused binding. It becomes load-bearing at 7.2.
     """
-    # Reserved for future substitution logic (Task 7.2+).
-    _session = session_id or str(uuid.uuid4())
+    # session_id intentionally unused at this stage — see 7.2.
+    _ = session_id  # noqa: F841 — keeps the parameter reachable for tooling.
 
     @tool(
         name="Skill",
