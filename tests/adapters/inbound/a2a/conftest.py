@@ -445,3 +445,94 @@ def executor_with_cancelable_agent():
         await executor.cancel(ctx, queue)
 
     return send_message, cancel_fn, spy
+
+
+@pytest.fixture
+def executor_with_rejecting_agent():
+    """Return ``(send_message, spy_exporter)``.
+
+    The executor's agent raises ``TaskRejectedError`` on the first LLM call,
+    simulating a task the agent deliberately refuses to handle. Tests use
+    this to assert that rejection is propagated onto the ``a2a_task`` span
+    status (``SpanStatus.rejected``) and the trace status.
+    """
+    from obelix.core.agent.exceptions import TaskRejectedError
+
+    spy = _ExecutorSpyExporter()
+    tracer = Tracer(exporter=spy)
+
+    provider = MagicMock()
+    provider.provider_type = "mock"
+    provider.model_id = "mock-model"
+    provider.invoke = AsyncMock(
+        side_effect=TaskRejectedError("No input provided"),
+    )
+
+    def _no_stream(*a, **kw):
+        raise NotImplementedError
+
+    provider.invoke_stream = MagicMock(side_effect=_no_stream)
+
+    def agent_factory() -> BaseAgent:
+        return BaseAgent(
+            system_message="system",
+            provider=provider,
+            tracer=tracer,
+            max_iterations=2,
+        )
+
+    executor = ObelixAgentExecutor(agent_factory, tracer=tracer)
+
+    async def send_message(text: str) -> None:
+        ctx = _FakeRequestContext(
+            context_id="ctx-rejecting-001",
+            text=text,
+            task_id="task-rejecting-001",
+        )
+        queue = _FakeEventQueue()
+        await executor.execute(ctx, queue)
+
+    return send_message, spy
+
+
+@pytest.fixture
+def executor_with_failing_agent():
+    """Return ``(send_message, spy_exporter)``.
+
+    The executor's agent raises a generic ``RuntimeError`` on the first LLM
+    call. Tests use this to assert that a generic failure is propagated onto
+    the ``a2a_task`` span status (``SpanStatus.error``).
+    """
+    spy = _ExecutorSpyExporter()
+    tracer = Tracer(exporter=spy)
+
+    provider = MagicMock()
+    provider.provider_type = "mock"
+    provider.model_id = "mock-model"
+    provider.invoke = AsyncMock(side_effect=RuntimeError("boom"))
+
+    def _no_stream(*a, **kw):
+        raise NotImplementedError
+
+    provider.invoke_stream = MagicMock(side_effect=_no_stream)
+
+    def agent_factory() -> BaseAgent:
+        return BaseAgent(
+            system_message="system",
+            provider=provider,
+            tracer=tracer,
+            max_iterations=2,
+        )
+
+    executor = ObelixAgentExecutor(agent_factory, tracer=tracer)
+
+    async def send_message(text: str) -> None:
+        ctx = _FakeRequestContext(
+            context_id="ctx-failing-001",
+            text=text,
+            task_id="task-failing-001",
+        )
+        queue = _FakeEventQueue()
+        await executor.execute(ctx, queue)
+
+    return send_message, spy

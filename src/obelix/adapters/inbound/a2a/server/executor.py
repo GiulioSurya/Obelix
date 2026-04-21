@@ -400,19 +400,40 @@ class ObelixAgentExecutor(AgentExecutor):
                         )
                 if task_span is not None:
                     set_current_span(task_span)
-                # Propagate canceled status onto the a2a_task span AND the
-                # trace itself when a cancel flowed through (either via
-                # CancelledError in the agent loop — see _run_agent_impl —
-                # or via a client-initiated cancel captured in
-                # entry.was_canceled). Marking the trace status ensures
-                # consumers filtering by trace status see the cancellation
-                # (previously only the a2a_task span carried it).
-                status = SpanStatus.canceled if entry.was_canceled else SpanStatus.ok
-                await tracer.end_span(status=status)
-                await tracer.end_trace(status=status)
+                # Propagate terminal status onto the a2a_task span AND the
+                # trace itself. Precedence: cancel > rejected > failed > ok.
+                # Cancel takes priority because ``_run_agent_impl`` may set
+                # ``was_canceled`` alongside normal terminal flags if a cancel
+                # races with a response. ``was_rejected`` / ``was_failed`` are
+                # set by the corresponding ``except`` handlers; when neither
+                # fires we fall through to ``ok``. ``error`` (not passed on
+                # the cancel path) forwards the reason/exception message so
+                # consumers can render it in span views.
+                if entry.was_canceled:
+                    status = SpanStatus.canceled
+                    error: str | None = None
+                elif entry.was_rejected:
+                    status = SpanStatus.rejected
+                    error = entry.rejection_reason
+                elif entry.was_failed:
+                    status = SpanStatus.error
+                    error = entry.failure_error
+                else:
+                    status = SpanStatus.ok
+                    error = None
+                await tracer.end_span(status=status, error=error)
+                await tracer.end_trace(status=status, error=error)
                 # Clear the saved trace ref — the trace is now ended and any
-                # subsequent turn on this context will open a new one.
+                # subsequent turn on this context will open a new one. Reset
+                # the terminal-state flags so the next turn on this context
+                # starts clean (a retry after rejection/failure must not be
+                # marked terminal by stale flags).
                 entry.trace_session = None
+                entry.was_canceled = False
+                entry.was_rejected = False
+                entry.was_failed = False
+                entry.rejection_reason = None
+                entry.failure_error = None
 
     async def _run_agent_impl(
         self,
@@ -720,6 +741,11 @@ class ObelixAgentExecutor(AgentExecutor):
 
         except TaskRejectedError as e:
             entry.history = agent.conversation_history[1:]
+            # Propagate rejection onto the outer finally so the a2a_task span
+            # closes with ``SpanStatus.rejected`` and ``span.error`` carries
+            # the reason (default fallback matches the log message below).
+            entry.was_rejected = True
+            entry.rejection_reason = e.reason or "Task rejected"
             logger.info(
                 f"[A2A] Agent rejected task | task_id={task_id} reason={e.reason}"
             )
@@ -742,6 +768,11 @@ class ObelixAgentExecutor(AgentExecutor):
 
         except Exception as e:
             entry.history = agent.conversation_history[1:]
+            # Propagate failure onto the outer finally so the a2a_task span
+            # closes with ``SpanStatus.error`` and ``span.error`` carries the
+            # exception message.
+            entry.was_failed = True
+            entry.failure_error = str(e) or type(e).__name__
             logger.error(f"[A2A] Agent failed | task_id={task_id} error={e}")
             await event_queue.enqueue_event(
                 TaskStatusUpdateEvent(

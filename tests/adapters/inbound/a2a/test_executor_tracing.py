@@ -359,3 +359,37 @@ async def test_cancel_marks_trace_status_canceled(
     assert "canceled" in statuses, (
         f"expected at least one trace to end with status=canceled, got {statuses}"
     )
+
+
+@pytest.mark.asyncio
+async def test_rejection_marks_a2a_task_rejected(executor_with_rejecting_agent):
+    """When the agent raises TaskRejectedError, a2a_task status = rejected."""
+    send_message, spy = executor_with_rejecting_agent
+    await send_message("rejected please")
+
+    a2a_tasks = [s for s in spy.spans if s.span_type.value == "a2a_task"]
+    assert len(a2a_tasks) == 1
+    assert a2a_tasks[0].status.value == "rejected"
+    assert a2a_tasks[0].error  # rejection reason propagated
+
+
+@pytest.mark.asyncio
+async def test_rejection_marks_trace_rejected(executor_with_rejecting_agent):
+    """After rejection, the trace ends with ``status=rejected``."""
+    send_message, spy = executor_with_rejecting_agent
+    await send_message("rejected")
+    assert any(v == "rejected" for v in spy.trace_end_statuses.values())
+
+
+@pytest.mark.asyncio
+async def test_failure_marks_a2a_task_error(executor_with_failing_agent):
+    """When the agent raises a generic Exception, a2a_task status = error."""
+    send_message, spy = executor_with_failing_agent
+    # The executor swallows generic Exceptions in ``_run_agent_impl`` (emits
+    # TaskState.failed and returns normally), so no exception escapes.
+    await send_message("boom")
+
+    a2a_tasks = [s for s in spy.spans if s.span_type.value == "a2a_task"]
+    assert len(a2a_tasks) == 1
+    assert a2a_tasks[0].status.value == "error"
+    assert a2a_tasks[0].error  # exception message

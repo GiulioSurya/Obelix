@@ -35,6 +35,10 @@ class ContextEntry:
         "active_agent",
         "client_info",
         "was_canceled",
+        "was_rejected",
+        "was_failed",
+        "rejection_reason",
+        "failure_error",
     )
 
     def __init__(self) -> None:
@@ -56,6 +60,21 @@ class ContextEntry:
         # ``_run_agent`` finally closes the a2a_task span with
         # ``SpanStatus.canceled`` instead of the default ``ok``.
         self.was_canceled: bool = False
+        # Flag set by the ``except TaskRejectedError`` handler in
+        # ``_run_agent_impl`` so the outer ``_run_agent`` finally closes the
+        # a2a_task span with ``SpanStatus.rejected`` and forwards the reason
+        # as ``span.error``.
+        self.was_rejected: bool = False
+        # Flag set by the generic ``except Exception`` handler so the outer
+        # finally closes the a2a_task span with ``SpanStatus.error`` and
+        # forwards the exception message as ``span.error``.
+        self.was_failed: bool = False
+        # Rejection reason captured from ``TaskRejectedError.reason`` (or the
+        # str(e) fallback); propagated onto span.error on close.
+        self.rejection_reason: str | None = None
+        # Failure error message captured from ``str(e)`` of the generic
+        # Exception; propagated onto span.error on close.
+        self.failure_error: str | None = None
 
 
 class ContextStore:
