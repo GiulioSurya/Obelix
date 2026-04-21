@@ -200,23 +200,53 @@ class ConsoleExporter(TracerExporter):
         """Dispatch to the per-type formatter based on span.span_type."""
         t = span.span_type
         if t == SpanType.a2a_task:
-            return self._fmt_a2a_task_line(span)
-        if t == SpanType.agent:
-            return self._fmt_agent_line(span)
-        if t == SpanType.sub_agent:
-            return self._fmt_subagent_line(span)
-        if t == SpanType.skill:
-            return self._fmt_skill_line(span)
-        if t == SpanType.tool:
-            return self._fmt_tool_line(span)
-        if t == SpanType.deferred_wait:
-            return self._fmt_deferred_wait_line(span)
-        if t == SpanType.human:
-            return self._fmt_human_line(span)
-        if t == SpanType.assistant:
-            return self._fmt_assistant_line(span)
-        icon = self._ICONS.get(str(t), "[???]")
-        return f"{icon} {span.name}"
+            line = self._fmt_a2a_task_line(span)
+        elif t == SpanType.agent:
+            line = self._fmt_agent_line(span)
+        elif t == SpanType.sub_agent:
+            line = self._fmt_subagent_line(span)
+        elif t == SpanType.skill:
+            line = self._fmt_skill_line(span)
+        elif t == SpanType.tool:
+            line = self._fmt_tool_line(span)
+        elif t == SpanType.deferred_wait:
+            line = self._fmt_deferred_wait_line(span)
+        elif t == SpanType.human:
+            line = self._fmt_human_line(span)
+        elif t == SpanType.assistant:
+            line = self._fmt_assistant_line(span)
+        else:
+            icon = self._ICONS.get(str(t), "[???]")
+            line = f"{icon} {span.name}"
+        chips = self._fmt_event_chips(span)
+        return f"{line}  {chips}" if chips else line
+
+    def _fmt_event_line(self, event: SpanEvent) -> str:
+        attrs = event.attributes or {}
+        kv_parts = []
+        for k, v in attrs.items():
+            if v is None:
+                continue
+            kv_parts.append(f"{k}={v}")
+        kv = "  ".join(kv_parts)
+        return self._colorize(f"· {event.name}  {kv}", "dim")
+
+    def _fmt_event_chips(self, span: Span) -> str:
+        if not span.events:
+            return ""
+        counts: dict[str, int] = {}
+        for e in span.events:
+            counts[e.name] = counts.get(e.name, 0) + 1
+        parts: list[str] = []
+        if counts.get("hook.fired"):
+            parts.append(self._colorize(f"hk:{counts['hook.fired']}", "error"))
+        if counts.get("memory.pull"):
+            parts.append(self._colorize(f"mp:{counts['memory.pull']}", "dim"))
+        if counts.get("memory.publish"):
+            parts.append(self._colorize(f"mx:{counts['memory.publish']}", "dim"))
+        if counts.get("cancellation.requested"):
+            parts.append(self._colorize("⚠cancel", "error"))
+        return "  ".join(parts)
 
     def _fmt_a2a_task_line(self, span: Span) -> str:
         parts = [self._colorize(f"[TK] {span.name}", "a2a_task")]
@@ -519,6 +549,13 @@ class ConsoleExporter(TracerExporter):
         self._print(f"--- Trace {' | '.join(parts)} ---")
         print()
         restore_console()
+
+    async def on_event(self, span: Span, event: SpanEvent, service_name: str) -> None:
+        if self._verbosity < 2:
+            return
+        indent = self._get_indent(span.span_id)
+        line = self._fmt_event_line(event)
+        self._print(f"{indent}  {line}")
 
     async def shutdown(self) -> None:
         restore_console()
