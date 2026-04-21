@@ -14,6 +14,7 @@ This documentation covers how to build, compose, and deploy agents using Obelix.
 - **[Agent Factory Guide](agent_factory.md)** - Composing agents and managing sub-agents
 - **[A2A Server Guide](a2a_server.md)** - Exposing agents as HTTP services
 - **[Hooks API](hooks.md)** - Intercepting and modifying agent behavior
+- **[Skills Guide](skills.md)** - Authoring and wiring lazy-loaded skills
 
 ---
 
@@ -30,6 +31,7 @@ This documentation covers how to build, compose, and deploy agents using Obelix.
 | [A2A Server Guide](a2a_server.md) | Exposing agents as A2A-compliant HTTP services with JSON-RPC 2.0 |
 | [A2A Compliance](a2a_compliance.md) | Gap analysis vs [A2A spec RC v1.0](https://a2a-protocol.org/latest/specification/) and implementation roadmap |
 | [Hooks API](hooks.md) | Understanding and implementing hooks for agent customization (validation, error recovery, context injection) |
+| [Skills Guide](skills.md) | Authoring `SKILL.md` files, frontmatter reference, placeholders, hook frontmatter, fork execution |
 
 ### Key Features
 
