@@ -28,17 +28,24 @@ logger = get_logger(__name__)
 def register_memory_hooks(agent: BaseAgent) -> None:
     """Register shared memory injection and publication hooks on the agent.
 
-    Hooks check at RUNTIME if memory_graph exists.
-    If not (agent without shared memory), they do nothing.
+    Hooks guard at REGISTRATION with .when() on the memory_graph/agent_id
+    attributes. If the agent has no shared memory configured they are skipped
+    entirely — keeping the tracer ``hook.fired`` stream free of no-op chatter.
     """
-    agent.on(AgentEvent.BEFORE_LLM_CALL).handle(
+    agent.on(AgentEvent.BEFORE_LLM_CALL).when(_has_memory_binding).handle(
         decision=HookDecision.CONTINUE,
         effects=[_inject_shared_memory],
     )
-    agent.on(AgentEvent.BEFORE_FINAL_RESPONSE).handle(
+    agent.on(AgentEvent.BEFORE_FINAL_RESPONSE).when(_has_memory_binding).handle(
         decision=HookDecision.CONTINUE,
         effects=[_publish_to_memory],
     )
+
+
+def _has_memory_binding(status: AgentStatus) -> bool:
+    """True iff the agent has both a memory graph and an agent_id attached."""
+    agent = status.agent
+    return bool(agent.memory_graph and agent.agent_id)
 
 
 def _inject_shared_memory(status: AgentStatus) -> None:

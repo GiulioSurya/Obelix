@@ -71,6 +71,7 @@ class Outcome:
 
     decision: HookDecision
     value: Any
+    effects_count: int = 0
 
 
 @dataclass
@@ -175,10 +176,12 @@ class Hook:
                 f"[Hook] Condition matched — activating hook | event={self.event.value} condition={condition_name} decision={self._decision.value} iteration={agent_status.iteration}"
             )
 
+        effects_fired = 0
         for effect in self._effects:
             effect_result = effect(agent_status)
             if asyncio.iscoroutine(effect_result):
                 await effect_result
+            effects_fired += 1
 
         new_value = current_value
         if self._value is not None:
@@ -190,4 +193,4 @@ class Hook:
             else:
                 new_value = self._value
 
-        return Outcome(self._decision, new_value)
+        return Outcome(self._decision, new_value, effects_count=effects_fired)

@@ -300,6 +300,27 @@ class BaseAgent:
         for hook in self._hooks[event]:
             outcome = await hook.execute(agent_status, result_value)
 
+            # Emit hook.fired event when the hook actually changed behavior
+            # (decision != CONTINUE) or applied side effects. Plain CONTINUE
+            # with no effects is noise and therefore skipped.
+            if self._tracer is not None and (
+                outcome.decision != HookDecision.CONTINUE or outcome.effects_count
+            ):
+                reason: str | None = None
+                if outcome.decision in (HookDecision.REJECT, HookDecision.FAIL) and (
+                    isinstance(outcome.value, str)
+                ):
+                    reason = outcome.value
+                await self._tracer.add_event(
+                    "hook.fired",
+                    {
+                        "event": event.value,
+                        "decision": outcome.decision.value,
+                        "reason": reason,
+                        "effects_count": outcome.effects_count,
+                    },
+                )
+
             if outcome.decision == HookDecision.RETRY:
                 if not contract.retryable:
                     retryable = ", ".join(e.value for e in self._retryable_events())
