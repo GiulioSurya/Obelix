@@ -112,19 +112,18 @@ class TestToolExposure:
 
 
 def _invoke_execute(skill_tool_instance, **fields):
-    """Execute the underlying pydantic class with given fields.
+    """Execute the underlying @tool-wrapped class with given fields.
 
-    The @tool decorator wraps execute to accept a ToolCall, but tests can
-    exercise the underlying class by constructing it via pydantic and
-    calling the WRAPPED execute with a ToolCall object.
+    The @tool decorator wraps execute to accept a ToolCall and returns a
+    coroutine producing ToolResult. `asyncio.run` drives the coroutine
+    without relying on the deprecated global event loop.
     """
     from obelix.core.model.tool_message import ToolCall
 
     cls = type(skill_tool_instance)
-    # Build a fresh instance of the wrapped class
     instance = cls()
     call = ToolCall(id="test-1", name="Skill", arguments=fields)
-    return asyncio.get_event_loop().run_until_complete(instance.execute(call))
+    return asyncio.run(instance.execute(call))
 
 
 class TestInlineInvocation:
@@ -156,8 +155,6 @@ class TestInlineInvocation:
         assert result.result == "Got: hello world"
 
     def test_known_skill_with_named_positional_args(self):
-        from obelix.core.skill.skill import Skill
-
         real_skill = Skill(
             name="s",
             description="d",
@@ -173,8 +170,6 @@ class TestInlineInvocation:
         assert result.result == "path=foo.py depth=3"
 
     def test_args_overflow_returns_error(self):
-        from obelix.core.skill.skill import Skill
-
         real_skill = Skill(
             name="s",
             description="d",
@@ -194,10 +189,6 @@ class TestInlineInvocation:
         assert "expects" in err_text or "got" in err_text
 
     def test_obelix_skill_dir_substituted(self):
-        from pathlib import Path
-
-        from obelix.core.skill.skill import Skill
-
         real_skill = Skill(
             name="s",
             description="d",
@@ -213,8 +204,6 @@ class TestInlineInvocation:
         assert "s" in (result.result or "")
 
     def test_session_id_substituted_when_provided(self):
-        from obelix.core.skill.skill import Skill
-
         real_skill = Skill(
             name="s",
             description="d",
@@ -230,7 +219,7 @@ class TestInlineInvocation:
 
     def test_session_id_default_uuid_when_not_provided(self):
         """When no session_id provided, a stable UUID is used for the tool instance."""
-        from obelix.core.skill.skill import Skill
+        import uuid as uuid_lib
 
         real_skill = Skill(
             name="s",
@@ -246,6 +235,38 @@ class TestInlineInvocation:
         result2 = _invoke_execute(skill_tool, name="s", args="")
         # Same tool instance -> same session id across calls
         assert result1.result == result2.result
-        # And it's a non-empty UUID-like string
+        # The payload is exactly "sid=" + a valid UUID string (36 chars)
         assert result1.result.startswith("sid=")
-        assert len(result1.result) > len("sid=")
+        uuid_part = result1.result[len("sid=") :]
+        # Raises ValueError if not a valid UUID — stronger than length check
+        uuid_lib.UUID(uuid_part)
+        assert len(uuid_part) == 36
+
+    def test_unknown_skill_with_empty_manager_no_trailing_available(self):
+        """Empty manager produces a clean error message, not 'Available: '."""
+        mgr = _mgr_with()  # zero skills
+        skill_tool = make_skill_tool(mgr)
+        result = _invoke_execute(skill_tool, name="anything", args="")
+        from obelix.core.model.tool_message import ToolStatus
+
+        assert result.status == ToolStatus.ERROR
+        err_text = (result.error or "") + str(result.result or "")
+        assert "No skills registered" in err_text
+        assert "Available: " not in err_text  # no dangling trailer
+
+    def test_substitution_error_includes_skill_name(self):
+        """Args-overflow error mentions WHICH skill failed."""
+        real_skill = Skill(
+            name="my-skill",
+            description="d",
+            body="x=$x",
+            base_dir=None,
+            arguments=("x",),
+        )
+        provider = MagicMock()
+        provider.discover.return_value = [real_skill]
+        mgr = SkillManager(providers=[provider])
+        skill_tool = make_skill_tool(mgr)
+        result = _invoke_execute(skill_tool, name="my-skill", args="a b c")
+        err_text = (result.error or "") + str(result.result or "")
+        assert "my-skill" in err_text

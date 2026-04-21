@@ -39,17 +39,11 @@ def make_skill_tool(
     invocations.
 
     `session_id`, when provided, is substituted into ${OBELIX_SESSION_ID}.
-    When omitted, a UUID is generated lazily on first use and cached in the
-    closure, so every invocation of the same tool instance sees the same id.
+    When omitted, a UUID is generated at construction and reused across every
+    invocation of this tool instance — simpler and race-free compared to
+    lazy generation.
     """
-    # Stable session id for this tool instance — generated on first need
-    # when the caller did not provide one, then cached inside the closure.
-    _session_state = {"id": session_id}
-
-    def _session() -> str:
-        if _session_state["id"] is None:
-            _session_state["id"] = str(uuid.uuid4())
-        return _session_state["id"]
+    resolved_session_id: str = session_id or str(uuid.uuid4())
 
     @tool(
         name="Skill",
@@ -67,22 +61,24 @@ def make_skill_tool(
         def execute(self) -> str:
             skill = manager.load(self.name)
             if skill is None:
-                available = ", ".join(s.name for s in manager.list_all())
-                raise RuntimeError(
-                    f"Skill '{self.name}' not found. Available: {available}"
+                names = [s.name for s in manager.list_all()]
+                tail = (
+                    f"Available: {', '.join(names)}"
+                    if names
+                    else "No skills registered."
                 )
+                raise SkillInvocationError(f"Skill '{self.name}' not found. {tail}")
             try:
                 return substitute_placeholders(
                     skill.body,
                     self.args,
                     skill.arguments,
                     skill.base_dir,
-                    _session(),
+                    resolved_session_id,
                 )
             except SkillInvocationError as e:
-                # Re-raise as RuntimeError so the @tool wrapper converts to
-                # ToolStatus.ERROR with this message.
-                raise RuntimeError(str(e)) from e
+                # Prefix the skill name so the caller knows which skill failed.
+                raise SkillInvocationError(f"Skill '{self.name}': {e}") from e
 
         def system_prompt_fragment(self) -> str:
             listing = manager.format_listing(listing_budget)
