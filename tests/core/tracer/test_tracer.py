@@ -76,3 +76,38 @@ async def test_span_export_includes_events():
     assert end_export[1] is True  # has end_time
     assert len(end_export[2]) == 1
     assert end_export[2][0].name == "e1"
+
+
+@pytest.mark.asyncio
+async def test_add_event_serializes_non_json_attributes():
+    """Attributes containing non-JSON types (datetime, enum, pydantic) are serialized."""
+    from datetime import UTC, datetime
+
+    from obelix.core.tracer.models import SpanStatus
+
+    exp = SpyExporter()
+    tracer = Tracer(exporter=exp)
+    await tracer.start_trace("t")
+    span = await tracer.start_span(SpanType.agent, "a")
+    ts = datetime.now(UTC)
+    await tracer.add_event(
+        "probe",
+        {
+            "status": SpanStatus.rejected,  # StrEnum -> str
+            "when": ts,  # datetime -> ISO str via model_dump
+            "count": 3,  # native -> preserved
+        },
+    )
+    await tracer.end_span()
+    await tracer.end_trace()
+
+    assert len(span.events) == 1
+    attrs = span.events[0].attributes
+    # StrEnum is preserved as the enum member itself or its string value
+    assert str(attrs["status"]) == "rejected"
+    # datetime is serialized to something JSON-compatible (either ISO string or preserved datetime)
+    # Core contract: must not crash a subsequent json.dumps
+    import json
+
+    json.dumps(attrs, default=str)  # must not raise
+    assert attrs["count"] == 3

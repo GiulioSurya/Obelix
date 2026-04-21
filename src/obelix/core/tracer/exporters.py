@@ -47,7 +47,6 @@ class TracerExporter(ABC):
         self, span: Span, event: SpanEvent, service_name: str
     ) -> None:
         """Called when a SpanEvent is added to a span. Default: no-op."""
-        pass
 
     @abstractmethod
     async def shutdown(self) -> None: ...

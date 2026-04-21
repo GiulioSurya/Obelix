@@ -13,7 +13,13 @@ from obelix.core.tracer.context import (
     set_current_trace,
 )
 from obelix.core.tracer.exporters import TracerExporter
-from obelix.core.tracer.models import Span, SpanStatus, SpanType, TraceSession
+from obelix.core.tracer.models import (
+    Span,
+    SpanEvent,
+    SpanStatus,
+    SpanType,
+    TraceSession,
+)
 from obelix.infrastructure.logging import get_logger
 
 logger = get_logger(__name__)
@@ -153,12 +159,11 @@ class Tracer:
         attributes: dict[str, Any] | None = None,
     ) -> None:
         """Attach a point-in-time event to the current span. No-op if no span."""
-        from obelix.core.tracer.models import SpanEvent
-
         span = get_current_span()
         if span is None:
             return
-        event = SpanEvent(name=name, attributes=attributes or {})
+        serialized = {k: _serialize(v) for k, v in (attributes or {}).items()}
+        event = SpanEvent(name=name, attributes=serialized)
         span.events.append(event)
         await self._exporter.on_event(
             span=span, event=event, service_name=self.service_name
