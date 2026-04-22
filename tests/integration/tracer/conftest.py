@@ -533,3 +533,111 @@ def deferred_scenario_with_spy():
         await executor.execute(ctx, queue)
 
     return send_message, resume, spy
+
+
+# ---------------------------------------------------------------------------
+# Rejection scenario (real BaseAgent + A2A executor with a rejecting hook)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _RejectionRequestContext:
+    """Minimal stand-in for a2a ``RequestContext`` — rejection scenario.
+
+    Mirror of ``_FakeRequestContext`` in ``tests/adapters/inbound/a2a/conftest.py``
+    scoped to the tracer integration suite. Carries a single TextPart user
+    message; the task_id/context_id drive the A2A executor bookkeeping.
+    """
+
+    task_id: str = "task-reject-int-001"
+    context_id: str | None = "ctx-reject-int-001"
+    text: str = "please review"
+
+    def __post_init__(self) -> None:
+        from a2a.types import Message, Part, Role, TextPart
+
+        self.message = Message(
+            role=Role.user,
+            parts=[Part(root=TextPart(text=self.text))],
+            message_id=f"msg-reject-int-{uuid.uuid4()}",
+        )
+
+    def get_user_input(self) -> str | None:
+        return self.text
+
+
+class _RejectionEventQueue:
+    """Captures enqueued events so tests can inspect them if needed."""
+
+    def __init__(self) -> None:
+        self.events: list = []
+
+    async def enqueue_event(self, event) -> None:
+        self.events.append(event)
+
+
+@pytest.fixture
+def rejection_scenario_with_spy():
+    """Return ``(send_message, spy_exporter)``.
+
+    Wires a real ``BaseAgent`` behind ``ObelixAgentExecutor`` with a
+    ``BEFORE_LLM_CALL`` hook that rejects the task via ``.reject(reason)``.
+    The provider's ``invoke`` raises if ever called — the rejection fires
+    before the agent enters its LLM call, so no LLM call is expected.
+
+    Asserting through the A2A executor (rather than invoking ``BaseAgent``
+    directly) ensures the ``a2a_task`` root span is opened and the rejection
+    propagates into ``TaskState.rejected`` + ``a2a.state_change`` + trace
+    status, matching the shape seen by real A2A clients.
+    """
+    from obelix.adapters.inbound.a2a.server.executor import ObelixAgentExecutor
+    from obelix.core.agent.hooks import AgentEvent
+
+    spy = _SpyExporter()
+    tracer = Tracer(exporter=spy)
+
+    # Provider — must never be called. ``invoke`` raises so a silent failure
+    # surfaces loudly if the rejection path regresses.
+    provider = MagicMock()
+    provider.provider_type = "mock"
+    provider.model_id = "mock-model"
+
+    async def _boom(*a, **kw):
+        raise AssertionError("provider.invoke must not be called after REJECT")
+
+    provider.invoke = AsyncMock(side_effect=_boom)
+
+    def _no_stream(*a, **kw):
+        raise NotImplementedError
+
+    provider.invoke_stream = MagicMock(side_effect=_no_stream)
+
+    def agent_factory() -> BaseAgent:
+        # BaseAgent coerces the string into a SystemMessage internally —
+        # passing a plain str matches the shape used by
+        # ``executor_with_rejecting_agent`` in the a2a conftest.
+        agent = BaseAgent(
+            system_message="test system",
+            provider=provider,
+            tracer=tracer,
+            max_iterations=3,
+        )
+        # Register the rejecting hook — BEFORE_LLM_CALL fires before the
+        # provider is invoked so the loop terminates with TaskRejectedError.
+        agent.on(AgentEvent.BEFORE_LLM_CALL).reject("No input provided")
+        return agent
+
+    executor = ObelixAgentExecutor(agent_factory, tracer=tracer)
+
+    context_id = f"ctx-reject-int-{uuid.uuid4()}"
+
+    async def send_message(text: str) -> None:
+        ctx = _RejectionRequestContext(
+            context_id=context_id,
+            text=text,
+            task_id=f"task-reject-int-{uuid.uuid4()}",
+        )
+        queue = _RejectionEventQueue()
+        await executor.execute(ctx, queue)
+
+    return send_message, spy
