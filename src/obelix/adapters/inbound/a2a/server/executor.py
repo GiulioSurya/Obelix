@@ -18,6 +18,7 @@ injects it as a ToolMessage, and restarts the agent loop.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -64,6 +65,7 @@ from obelix.infrastructure.logging import get_logger
 if TYPE_CHECKING:
     from a2a.server.agent_execution.context import RequestContext
 
+    from obelix.adapters.inbound.a2a.server.context import ContextEntry
     from obelix.core.agent.base_agent import BaseAgent
     from obelix.core.tracer.tracer import Tracer
 
@@ -305,6 +307,15 @@ class ObelixAgentExecutor(AgentExecutor):
             if is_resume:
                 inject_deferred_response(entry, message)
 
+            # Drain pending remote-task notifications BEFORE starting the
+            # agent. Goes AFTER inject_deferred_response so the deferred
+            # ToolMessage stays adjacent to its AssistantMessage; remote-task
+            # notifications append after as fresh user-role messages. Runs
+            # for both first-turn and resume paths — no-op when empty.
+            if entry.pending_notifications:
+                entry.history.extend(entry.pending_notifications)
+                entry.pending_notifications.clear()
+
             await self._run_agent(
                 task_id=task_id,
                 context_id=context_id,
@@ -461,6 +472,11 @@ class ObelixAgentExecutor(AgentExecutor):
         # Inject client shell info into BashTool's ClientShellExecutor
         if entry.client_info:
             self._inject_client_info(agent, entry.client_info)
+
+        # Inject the per-request ContextEntry into outbound A2A tools
+        # (DispatchAgentTool, TaskListTool, etc.) so they can read/mutate
+        # entry.remote_tasks and entry.pending_notifications.
+        self._inject_context_entry(agent, entry, context_id)
 
         # Inject conversation history from this context
         if entry.history:
@@ -842,6 +858,43 @@ class ObelixAgentExecutor(AgentExecutor):
                 if fragment and fragment not in agent.system_message.content:
                     agent.system_message.content += fragment
                     logger.info("[A2A] Injected client shell info into system message")
+
+    @staticmethod
+    def _inject_context_entry(
+        agent: BaseAgent,
+        entry: ContextEntry,
+        context_id: str,
+    ) -> None:
+        """Inject the per-request ContextEntry (and surrounding context_id)
+        into outbound A2A tools that opt in via ``set_context_entry``.
+
+        Mirrors the precedent of ``_inject_client_info`` for BashTool but
+        targets a different family of tools (the outbound A2A tools that
+        track per-context remote_tasks and pending_notifications).
+
+        Tools have heterogeneous signatures:
+        - DispatchAgentTool: ``set_context_entry(entry, *, context_id)``
+        - RespondToRemoteTool, TaskListTool, TaskGetTool, TaskStopTool:
+          ``set_context_entry(entry)``
+
+        We use ``inspect.signature`` to detect which form to invoke,
+        so adding new tools with either signature is safe.
+        """
+        for tool in agent.registered_tools:
+            setter = getattr(tool, "set_context_entry", None)
+            if setter is None or not callable(setter):
+                continue
+            try:
+                sig = inspect.signature(setter)
+            except (TypeError, ValueError):
+                # Some MagicMock / C-extension setters can't be introspected;
+                # default to the single-arg form.
+                setter(entry)
+                continue
+            if "context_id" in sig.parameters:
+                setter(entry, context_id=context_id)
+            else:
+                setter(entry)
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         task_id = context.task_id
