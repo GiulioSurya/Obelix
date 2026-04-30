@@ -28,20 +28,27 @@ logger = get_logger(__name__)
 def register_memory_hooks(agent: BaseAgent) -> None:
     """Register shared memory injection and publication hooks on the agent.
 
-    Hooks check at RUNTIME if memory_graph exists.
-    If not (agent without shared memory), they do nothing.
+    Hooks guard at REGISTRATION with .when() on the memory_graph/agent_id
+    attributes. If the agent has no shared memory configured they are skipped
+    entirely — keeping the tracer ``hook.fired`` stream free of no-op chatter.
     """
-    agent.on(AgentEvent.BEFORE_LLM_CALL).handle(
+    agent.on(AgentEvent.BEFORE_LLM_CALL).when(_has_memory_binding).handle(
         decision=HookDecision.CONTINUE,
         effects=[_inject_shared_memory],
     )
-    agent.on(AgentEvent.BEFORE_FINAL_RESPONSE).handle(
+    agent.on(AgentEvent.BEFORE_FINAL_RESPONSE).when(_has_memory_binding).handle(
         decision=HookDecision.CONTINUE,
         effects=[_publish_to_memory],
     )
 
 
-def _inject_shared_memory(status: AgentStatus) -> None:
+def _has_memory_binding(status: AgentStatus) -> bool:
+    """True iff the agent has both a memory graph and an agent_id attached."""
+    agent = status.agent
+    return bool(agent.memory_graph and agent.agent_id)
+
+
+async def _inject_shared_memory(status: AgentStatus) -> None:
     """Pull and inject shared context from predecessor agents."""
     agent = status.agent
     if not agent.memory_graph or not agent.agent_id:
@@ -52,6 +59,7 @@ def _inject_shared_memory(status: AgentStatus) -> None:
         return
 
     history = agent.conversation_history
+    tracer = getattr(agent, "_tracer", None)
 
     for mem in memories:
         existing_idx = None
@@ -85,6 +93,18 @@ def _inject_shared_memory(status: AgentStatus) -> None:
             f"[SharedMemory] Injected context | target_agent={agent.agent_id} source={mem.source_id} chars={len(mem.content)}"
         )
 
+        if tracer is not None:
+            await tracer.add_event(
+                "memory.pull",
+                {
+                    "from_agent": mem.source_id,
+                    "policy": mem.policy.value
+                    if hasattr(mem.policy, "value")
+                    else str(mem.policy),
+                    "bytes": len(mem.content or ""),
+                },
+            )
+
 
 async def _publish_to_memory(status: AgentStatus) -> None:
     """Publish the agent's final response and last tool result to the shared memory graph."""
@@ -92,13 +112,19 @@ async def _publish_to_memory(status: AgentStatus) -> None:
     if not agent.memory_graph or not agent.agent_id:
         return
 
+    tracer = getattr(agent, "_tracer", None)
+
     if status.assistant_message and status.assistant_message.content:
-        await agent.memory_graph.publish(
-            agent.agent_id, status.assistant_message.content
-        )
+        final_content = status.assistant_message.content
+        await agent.memory_graph.publish(agent.agent_id, final_content)
         logger.debug(
-            f"[SharedMemory] Published final response | agent={agent.agent_id} chars={len(status.assistant_message.content)}"
+            f"[SharedMemory] Published final response | agent={agent.agent_id} chars={len(final_content)}"
         )
+        if tracer is not None:
+            await tracer.add_event(
+                "memory.publish",
+                {"kind": "final", "bytes": len(final_content)},
+            )
 
     last_tool_content = _extract_last_tool_result(agent.conversation_history)
     if last_tool_content:
@@ -108,6 +134,11 @@ async def _publish_to_memory(status: AgentStatus) -> None:
         logger.debug(
             f"[SharedMemory] Published tool result | agent={agent.agent_id} chars={len(last_tool_content)}"
         )
+        if tracer is not None:
+            await tracer.add_event(
+                "memory.publish",
+                {"kind": "tool_result", "bytes": len(last_tool_content)},
+            )
 
 
 def _extract_last_tool_result(

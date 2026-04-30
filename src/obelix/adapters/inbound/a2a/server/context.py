@@ -31,8 +31,14 @@ class ContextEntry:
         "deferred_tools",
         "trace_session",
         "trace_span",
+        "deferred_wait_span_id",
         "active_agent",
         "client_info",
+        "was_canceled",
+        "was_rejected",
+        "was_failed",
+        "rejection_reason",
+        "failure_error",
     )
 
     def __init__(self) -> None:
@@ -43,8 +49,32 @@ class ContextEntry:
         self.deferred_tools: list | None = None  # tool snapshot for OutputSchema lookup
         self.trace_session = None  # TraceSession saved when loop stops for deferred
         self.trace_span = None  # Current span saved when loop stops for deferred
+        # Span id of the open ``deferred_wait`` span that wraps the
+        # input_required pause. Set when the executor suspends on a deferred
+        # tool; cleared after the span is ended on resume (or on cancel).
+        self.deferred_wait_span_id: str | None = None
         self.active_agent: BaseAgent | None = None  # ref to running agent for cancel
         self.client_info: dict | None = None  # client shell environment for BashTool
+        # Flag set by ``cancel()`` (either via CancelledError in the agent
+        # loop or via the input_required cancel path) so the outer
+        # ``_run_agent`` finally closes the a2a_task span with
+        # ``SpanStatus.canceled`` instead of the default ``ok``.
+        self.was_canceled: bool = False
+        # Flag set by the ``except TaskRejectedError`` handler in
+        # ``_run_agent_impl`` so the outer ``_run_agent`` finally closes the
+        # a2a_task span with ``SpanStatus.rejected`` and forwards the reason
+        # as ``span.error``.
+        self.was_rejected: bool = False
+        # Flag set by the generic ``except Exception`` handler so the outer
+        # finally closes the a2a_task span with ``SpanStatus.error`` and
+        # forwards the exception message as ``span.error``.
+        self.was_failed: bool = False
+        # Rejection reason captured from ``TaskRejectedError.reason`` (or the
+        # str(e) fallback); propagated onto span.error on close.
+        self.rejection_reason: str | None = None
+        # Failure error message captured from ``str(e)`` of the generic
+        # Exception; propagated onto span.error on close.
+        self.failure_error: str | None = None
 
 
 class ContextStore:

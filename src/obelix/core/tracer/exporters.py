@@ -5,10 +5,28 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from obelix.core.tracer.models import Span, SpanStatus, SpanType, TraceSession
+from obelix.core.tracer.models import (
+    Span,
+    SpanEvent,
+    SpanStatus,
+    SpanType,
+    TraceSession,
+)
 from obelix.infrastructure.logging import get_logger, restore_console, suppress_console
 
 logger = get_logger(__name__)
+
+
+def _supports_unicode() -> bool:
+    """Return True if stdout can encode common box-drawing / em-dash chars."""
+    import sys
+
+    enc = getattr(sys.stdout, "encoding", None) or ""
+    return enc.lower().startswith(("utf", "u8", "u-8"))
+
+
+_SUSPEND_SEP = "───" if _supports_unicode() else "---"
+_EMPTY_DUR = "—" if _supports_unicode() else "-"
 
 
 @dataclass
@@ -36,6 +54,11 @@ class TracerExporter(ABC):
     async def end_trace(
         self, trace_id: str, status: SpanStatus, end_time: datetime | None
     ) -> None: ...
+
+    async def on_event(  # noqa: B027 - intentional default no-op hook
+        self, span: Span, event: SpanEvent, service_name: str
+    ) -> None:
+        """Called when a SpanEvent is added to a span. Default: no-op."""
 
     @abstractmethod
     async def shutdown(self) -> None: ...
@@ -71,26 +94,29 @@ class ConsoleExporter(TracerExporter):
 
     # ANSI color codes
     _COLORS: dict[str, str] = {
+        "a2a_task": "\033[1;35m",  # magenta bold — A2A task root
         "agent": "\033[1;36m",  # cyan bold
-        "llm": "\033[33m",  # yellow
+        "sub_agent": "\033[36m",  # cyan
+        "skill": "\033[1;36m",  # teal-cyan (bold)
         "tool": "\033[32m",  # green
-        "sub_agent": "\033[35m",  # magenta
-        "human": "\033[2m",  # dim/gray
+        "deferred_wait": "\033[33m",  # yellow
+        "human": "\033[2m",  # dim
         "assistant": "\033[37m",  # white
-        "error": "\033[31m",  # red
+        "error": "\033[31m",  # red (for errors, retained)
         "reset": "\033[0m",
         "dim": "\033[2m",
         "bold": "\033[1m",
     }
 
     _ICONS: dict[str, str] = {
-        "llm": "[LLM]",
-        "tool": "[TOL]",
-        "sub_agent": "[SUB]",
-        "human": "[USR]",
-        "assistant": "[AST]",
-        "memory": "[MEM]",
-        "hook": "[HKS]",
+        "a2a_task": "[TK]",
+        "agent": "[AG]",
+        "sub_agent": "[SA]",
+        "skill": "[SK]",
+        "tool": "[TL]",
+        "deferred_wait": "[DW]",
+        "human": "[H]",
+        "assistant": "[A]",
     }
 
     _PREFIX = "| "
@@ -182,33 +208,94 @@ class ConsoleExporter(TracerExporter):
 
     # -- span formatters --
 
-    def _fmt_llm_line(self, span: Span) -> str:
-        """Format a complete LLM span line."""
-        out = span.output if isinstance(span.output, dict) else {}
+    def _format_span_line(self, span: Span) -> str:
+        """Dispatch to the per-type formatter based on span.span_type."""
+        t = span.span_type
+        if t == SpanType.a2a_task:
+            line = self._fmt_a2a_task_line(span)
+        elif t == SpanType.agent:
+            line = self._fmt_agent_line(span)
+        elif t == SpanType.sub_agent:
+            line = self._fmt_subagent_line(span)
+        elif t == SpanType.skill:
+            line = self._fmt_skill_line(span)
+        elif t == SpanType.tool:
+            line = self._fmt_tool_line(span)
+        elif t == SpanType.deferred_wait:
+            line = self._fmt_deferred_wait_line(span)
+        elif t == SpanType.human:
+            line = self._fmt_human_line(span)
+        elif t == SpanType.assistant:
+            line = self._fmt_assistant_line(span)
+        else:
+            icon = self._ICONS.get(str(t), "[???]")
+            line = f"{icon} {span.name}"
+        chips = self._fmt_event_chips(span)
+        return f"{line}  {chips}" if chips else line
 
+    def _fmt_event_line(self, event: SpanEvent) -> str:
+        attrs = event.attributes or {}
+        kv_parts = []
+        for k, v in attrs.items():
+            if v is None:
+                continue
+            kv_parts.append(f"{k}={v}")
+        kv = "  ".join(kv_parts)
+        return self._colorize(f"· {event.name}  {kv}", "dim")
+
+    def _fmt_event_chips(self, span: Span) -> str:
+        if not span.events:
+            return ""
+        counts: dict[str, int] = {}
+        for e in span.events:
+            counts[e.name] = counts.get(e.name, 0) + 1
         parts: list[str] = []
+        if counts.get("hook.fired"):
+            parts.append(self._colorize(f"hk:{counts['hook.fired']}", "error"))
+        if counts.get("memory.pull"):
+            parts.append(self._colorize(f"mp:{counts['memory.pull']}", "dim"))
+        if counts.get("memory.publish"):
+            parts.append(self._colorize(f"mx:{counts['memory.publish']}", "dim"))
+        if counts.get("cancellation.requested"):
+            parts.append(self._colorize("⚠cancel", "error"))
+        return "  ".join(parts)
 
-        # Provider (short name: "llm.Providers.LITELLM" -> "litellm")
-        provider = span.name.split(".")[-1].lower() if "." in span.name else span.name
-        parts.append(self._colorize(f"[LLM] {provider}", "llm"))
-
-        # Duration
+    def _fmt_a2a_task_line(self, span: Span) -> str:
+        parts = [self._colorize(f"[TK] {span.name}", "a2a_task")]
+        status = span.metadata.get("final_state") or span.status.value
+        parts.append(f"status={status}")
         dur = self._fmt_duration(span.duration_ms)
         if dur:
             parts.append(dur)
+        return "  ".join(parts)
 
-        # Token usage (level 2+)
+    def _fmt_agent_line(self, span: Span) -> str:
+        parts = [self._colorize(f"[AG] {span.name}", "agent")]
+        dur = self._fmt_duration(span.duration_ms)
+        if dur:
+            parts.append(dur)
         if self._verbosity >= 2:
-            usage = out.get("usage")
+            usage = span.metadata.get("llm_usage")
             if isinstance(usage, dict):
+                calls = usage.get("calls", 0)
                 tin = usage.get("input_tokens", 0)
                 tout = usage.get("output_tokens", 0)
-                parts.append(f"{self._fmt_tokens(tin)}->{self._fmt_tokens(tout)} tok")
+                if calls:
+                    parts.append(f"{calls} calls")
+                if tin or tout:
+                    parts.append(
+                        f"{self._fmt_tokens(tin)}->{self._fmt_tokens(tout)} tok"
+                    )
+        return "  ".join(parts)
 
-            tc = out.get("tool_calls", 0)
-            if tc:
-                parts.append(f"{tc} calls")
-
+    def _fmt_skill_line(self, span: Span) -> str:
+        parts = [self._colorize(f"[SK] {span.name}", "skill")]
+        mode = span.metadata.get("mode")
+        if mode:
+            parts.append(f"mode={mode}")
+        dur = self._fmt_duration(span.duration_ms)
+        if dur:
+            parts.append(dur)
         return "  ".join(parts)
 
     def _fmt_tool_line(self, span: Span) -> str:
@@ -219,7 +306,7 @@ class ConsoleExporter(TracerExporter):
         parts: list[str] = []
 
         color = "error" if span.status == SpanStatus.error else "tool"
-        parts.append(self._colorize(f"[TOL] {span.name}", color))
+        parts.append(self._colorize(f"[TL] {span.name}", color))
 
         dur = self._fmt_duration(span.duration_ms)
         if dur:
@@ -251,7 +338,7 @@ class ConsoleExporter(TracerExporter):
         parts: list[str] = []
 
         color = "error" if span.status == SpanStatus.error else "sub_agent"
-        parts.append(self._colorize(f"[SUB] {span.name}", color))
+        parts.append(self._colorize(f"[SA] {span.name}", color))
 
         dur = self._fmt_duration(span.duration_ms)
         if dur:
@@ -262,32 +349,36 @@ class ConsoleExporter(TracerExporter):
 
         return "  ".join(parts)
 
+    def _fmt_deferred_wait_line(self, span: Span) -> str:
+        dur = self._fmt_duration(span.duration_ms) or _EMPTY_DUR
+        tool = span.metadata.get("tool_name", "")
+        return self._colorize(
+            f"{_SUSPEND_SEP} SUSPEND {dur} tool={tool} {_SUSPEND_SEP}",
+            "deferred_wait",
+        )
+
     def _fmt_human_line(self, span: Span) -> str:
-        """Format a human input line showing the actual content."""
+        # Preserve existing behavior: show the query text (truncated).
         content = ""
         if isinstance(span.input, str):
             content = span.input
         elif isinstance(span.output, str):
             content = span.output
-
         if not content:
-            return "HumanMessage: (empty)"
-
+            return "[H] (empty)"
         max_len = 500 if self._verbosity >= 3 else 150
         preview = self._truncate(content, max_len)
-        return f'HumanMessage: "{preview}"'
+        return f'[H] "{preview}"'
 
     def _fmt_assistant_line(self, span: Span) -> str:
-        """Format an assistant response line showing the actual content."""
+        # Preserve existing behavior: show the assistant content.
         out = span.output if isinstance(span.output, dict) else {}
         content = out.get("content")
-
         if not content:
-            return ""
-
+            return "[A] (empty)"
         max_len = 500 if self._verbosity >= 3 else 150
         preview = self._truncate(str(content), max_len)
-        return self._colorize(f'[AST] "{preview}"', "assistant")
+        return self._colorize(f'[A] "{preview}"', "assistant")
 
     # -- debug lines (level 3) --
 
@@ -297,16 +388,7 @@ class ConsoleExporter(TracerExporter):
         out = span.output if isinstance(span.output, dict) else {}
         inp = span.input if isinstance(span.input, dict) else {}
 
-        if span.span_type == SpanType.llm:
-            reasoning = out.get("reasoning")
-            if reasoning:
-                # Replace newlines so reasoning renders multi-line with prefix
-                reasoning_text = str(reasoning).replace("\n", f"\n{self._PREFIX}  ")
-                lines.append(
-                    f"{indent}  {self._colorize('  reasoning:', 'dim')} {reasoning_text}"
-                )
-
-        elif span.span_type == SpanType.tool:
+        if span.span_type == SpanType.tool:
             args = inp.get("arguments")
             if args:
                 lines.append(f"{indent}  {self._colorize('  args:', 'dim')} {args}")
@@ -331,13 +413,13 @@ class ConsoleExporter(TracerExporter):
         if not stats:
             return
 
-        if span.span_type == SpanType.llm:
-            stats.llm_calls += 1
-            out = span.output if isinstance(span.output, dict) else {}
-            usage = out.get("usage")
+        # Agents carry aggregated LLM usage under metadata.llm_usage.
+        if span.span_type == SpanType.agent:
+            usage = span.metadata.get("llm_usage")
             if isinstance(usage, dict):
-                stats.tokens_in += usage.get("input_tokens", 0)
-                stats.tokens_out += usage.get("output_tokens", 0)
+                stats.llm_calls += usage.get("calls", 0) or 0
+                stats.tokens_in += usage.get("input_tokens", 0) or 0
+                stats.tokens_out += usage.get("output_tokens", 0) or 0
 
         elif span.span_type in (SpanType.tool, SpanType.sub_agent):
             stats.tool_calls += 1
@@ -366,13 +448,25 @@ class ConsoleExporter(TracerExporter):
 
         indent = self._get_indent(span.span_id)
 
-        # Skip agent end spans (they're just structural containers)
+        # Agent end spans are normally structural containers whose header was
+        # already printed at start-time. But when an agent carries aggregated
+        # data (llm_usage), emit a one-line summary so the information isn't
+        # lost. For nested agents (depth > 1) we always render the summary.
         if span.span_type == SpanType.agent:
+            depth = self._depth.get(span.span_id, 0)
+            has_summary = isinstance(span.metadata.get("llm_usage"), dict)
+            if depth <= 1 and not has_summary:
+                self._depth.pop(span.span_id, None)
+                self._in_subagent.pop(span.span_id, None)
+                return
+            line = self._format_span_line(span)
+            self._print(f"{indent}{line}")
             self._depth.pop(span.span_id, None)
+            self._in_subagent.pop(span.span_id, None)
             return
 
         # Human spans: only show for the root agent (depth <= 2).
-        # Sub-agent human spans are redundant — the query is in the [SUB] args.
+        # Sub-agent human spans are redundant — the query is in the [SA] args.
         if span.span_type == SpanType.human:
             depth = self._depth.get(span.span_id, 0)
             if depth <= 2:
@@ -388,40 +482,36 @@ class ConsoleExporter(TracerExporter):
             self._in_subagent.pop(span.span_id, None)
             return
 
-        # If we're resuming the parent agent after a SUB, print a header
+        # If we're resuming the parent agent after a SA, print a header
         resume = getattr(self, "_pending_resume_agent", None)
         if resume and span.span_type in (
-            SpanType.llm,
             SpanType.tool,
             SpanType.assistant,
         ):
             self._print(self._colorize(f"{resume} (contd.):", "agent"))
             self._pending_resume_agent = None
 
-        # Format line based on type
-        line = ""
-        if span.span_type == SpanType.llm:
-            line = self._fmt_llm_line(span)
-        elif span.span_type == SpanType.tool:
-            line = self._fmt_tool_line(span)
-        elif span.span_type == SpanType.sub_agent:
-            line = self._fmt_subagent_line(span)
-            # After printing SUB, re-print parent agent header to show we're back
-            self._pending_resume_agent = self._resolve_parent_agent_name(span.span_id)
-        elif span.span_type == SpanType.assistant:
-            # Skip assistant spans inside sub-agents — result is in [SUB] debug lines
-            if self._is_in_subagent(span.span_id):
-                self._depth.pop(span.span_id, None)
-                self._in_subagent.pop(span.span_id, None)
-                return
-            line = self._fmt_assistant_line(span)
-            if not line:
-                self._depth.pop(span.span_id, None)
-                return
-        else:
-            icon = self._ICONS.get(span.span_type, "[???]")
-            line = f"{icon} {span.name}"
+        # Assistant spans nested in sub-agents: result already appears in [SA] debug
+        if span.span_type == SpanType.assistant and self._is_in_subagent(span.span_id):
+            self._depth.pop(span.span_id, None)
+            self._in_subagent.pop(span.span_id, None)
+            return
 
+        # Sub-agent: after printing, flag a resume header for the parent agent
+        if span.span_type == SpanType.sub_agent:
+            line = self._format_span_line(span)
+            self._print(f"{indent}{line}")
+            self._pending_resume_agent = self._resolve_parent_agent_name(span.span_id)
+            # Level 3: debug lines
+            if self._verbosity >= 3:
+                for dl in self._fmt_debug_lines(span, indent):
+                    self._print(dl)
+            self._depth.pop(span.span_id, None)
+            self._in_subagent.pop(span.span_id, None)
+            return
+
+        # All other span types: dispatch to formatter.
+        line = self._format_span_line(span)
         self._print(f"{indent}{line}")
 
         # Level 3: debug lines
@@ -472,6 +562,13 @@ class ConsoleExporter(TracerExporter):
         print()
         restore_console()
 
+    async def on_event(self, span: Span, event: SpanEvent, service_name: str) -> None:
+        if self._verbosity < 2:
+            return
+        indent = self._get_indent(span.span_id)
+        line = self._fmt_event_line(event)
+        self._print(f"{indent}  {line}")
+
     async def shutdown(self) -> None:
         restore_console()
         self._depth.clear()
@@ -520,6 +617,14 @@ class HTTPExporter(TracerExporter):
             "status": span.status,
             "error": span.error,
             "metadata": span.metadata,
+            "events": [
+                {
+                    "name": e.name,
+                    "timestamp": e.timestamp.timestamp(),
+                    "attributes": e.attributes,
+                }
+                for e in span.events
+            ],
         }
 
     def _to_ingest_payload(self, trace: TraceSession) -> dict:

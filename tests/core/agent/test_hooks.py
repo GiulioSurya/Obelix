@@ -409,3 +409,173 @@ class TestHookChaining:
         outcome3 = await hook.execute(status_iter3)
         assert outcome3.decision == HookDecision.FAIL
         assert outcome3.value == "too many iterations"
+
+
+# ---------------------------------------------------------------------------
+# Task 12: hook.fired events on tracer when decision != CONTINUE or effects > 0
+# ---------------------------------------------------------------------------
+
+
+class TestHookFiredEvent:
+    """Tests for the hook.fired SpanEvent emitted by BaseAgent._run_hooks."""
+
+    @pytest.mark.asyncio
+    async def test_hook_reject_emits_hook_fired_event(self, make_agent_with_spy_tracer):
+        """A hook that rejects BEFORE_LLM_CALL emits a hook.fired event on the agent span."""
+        from obelix.core.agent.exceptions import TaskRejectedError
+        from tests.core.agent.conftest import _mock_assistant_text
+
+        agent, spy = make_agent_with_spy_tracer(
+            responses=[_mock_assistant_text("never reached")]
+        )
+        agent.on(AgentEvent.BEFORE_LLM_CALL).reject("test-reason")
+
+        with pytest.raises(TaskRejectedError):
+            await agent.execute_query_async("hi")
+
+        agent_spans = [s for s in spy.spans if s.span_type.value == "agent"]
+        assert agent_spans
+        events = agent_spans[0].events
+        hook_events = [e for e in events if e.name == "hook.fired"]
+        assert len(hook_events) == 1
+        attrs = hook_events[0].attributes
+        assert attrs["event"] == "before_llm_call"
+        assert attrs["decision"] == "reject"
+        assert attrs["reason"] == "test-reason"
+        assert attrs["effects_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_hook_continue_without_effects_emits_nothing(
+        self, make_agent_with_spy_tracer
+    ):
+        """A hook whose condition is always False stays at CONTINUE and emits no event."""
+        from tests.core.agent.conftest import _mock_assistant_text
+
+        agent, spy = make_agent_with_spy_tracer(responses=[_mock_assistant_text("ok")])
+        # A .when(False) hook never fires; decision stays CONTINUE with no effects.
+        agent.on(AgentEvent.BEFORE_LLM_CALL).when(lambda s: False)
+
+        await agent.execute_query_async("hi")
+
+        agent_spans = [s for s in spy.spans if s.span_type.value == "agent"]
+        hook_events = [
+            e for s in agent_spans for e in s.events if e.name == "hook.fired"
+        ]
+        assert hook_events == []
+
+    @pytest.mark.asyncio
+    async def test_hook_stop_emits_hook_fired_event(self, make_agent_with_spy_tracer):
+        """A hook that stops the query emits hook.fired with decision=STOP."""
+        from obelix.core.model.assistant_message import AssistantMessage
+        from tests.core.agent.conftest import _mock_assistant_text
+
+        agent, spy = make_agent_with_spy_tracer(
+            responses=[_mock_assistant_text("ignored")]
+        )
+        # BEFORE_LLM_CALL contract requires STOP to carry an AssistantMessage value.
+        stop_msg = AssistantMessage(content="stopped-by-hook", tool_calls=[])
+        agent.on(AgentEvent.BEFORE_LLM_CALL).handle(HookDecision.STOP, value=stop_msg)
+
+        await agent.execute_query_async("hi")
+
+        agent_spans = [s for s in spy.spans if s.span_type.value == "agent"]
+        hook_events = [
+            e for s in agent_spans for e in s.events if e.name == "hook.fired"
+        ]
+        assert any(e.attributes["decision"] == "stop" for e in hook_events)
+
+    @pytest.mark.asyncio
+    async def test_hook_continue_with_effects_emits_hook_fired_event(
+        self, make_agent_with_spy_tracer
+    ):
+        """A CONTINUE hook that runs side effects still emits hook.fired."""
+        from tests.core.agent.conftest import _mock_assistant_text
+
+        agent, spy = make_agent_with_spy_tracer(responses=[_mock_assistant_text("ok")])
+        calls: list[int] = []
+        # Condition always True, decision CONTINUE (default), but an effect fires.
+        agent.on(AgentEvent.BEFORE_LLM_CALL).when(lambda s: True).handle(
+            HookDecision.CONTINUE,
+            effects=[lambda s: calls.append(s.iteration)],
+        )
+
+        await agent.execute_query_async("hi")
+
+        assert calls, "effect must have fired"
+        agent_spans = [s for s in spy.spans if s.span_type.value == "agent"]
+        hook_events = [
+            e for s in agent_spans for e in s.events if e.name == "hook.fired"
+        ]
+        # Exactly one iteration, so exactly one hook.fired emitted on CONTINUE+effects.
+        assert len(hook_events) == 1
+        attrs = hook_events[0].attributes
+        assert attrs["decision"] == "continue"
+        assert attrs["effects_count"] == 1
+        assert attrs["reason"] is None
+
+    @pytest.mark.asyncio
+    async def test_memory_configured_agent_emits_hook_fired_for_memory_hooks(
+        self,
+        spy_tracer_exporter,
+    ):
+        """A memory-configured agent must emit hook.fired events for memory_hooks."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from obelix.core.agent.base_agent import BaseAgent
+        from obelix.core.agent.shared_memory import (
+            PropagationPolicy,
+            SharedMemoryGraph,
+        )
+        from obelix.core.model.assistant_message import AssistantMessage
+        from obelix.core.model.usage import Usage
+        from obelix.core.tracer.tracer import Tracer
+
+        tracer = Tracer(exporter=spy_tracer_exporter)
+
+        # Build a two-node memory graph: predecessor -> current
+        graph = SharedMemoryGraph()
+        graph.add_agent("predecessor")
+        graph.add_agent("current")
+        graph.add_edge(
+            "predecessor", "current", policy=PropagationPolicy.FINAL_RESPONSE_ONLY
+        )
+        # Pre-publish data on predecessor so memory.pull has something to fetch
+        await graph.publish("predecessor", "some predecessor context", kind="final")
+
+        # Mocked provider
+        provider = MagicMock()
+        provider.provider_type = "mock"
+        provider.model_id = "mock-model"
+        provider.invoke = AsyncMock(
+            side_effect=[
+                AssistantMessage(
+                    content="done",
+                    tool_calls=[],
+                    usage=Usage(input_tokens=10, output_tokens=5, total_tokens=15),
+                )
+            ]
+        )
+
+        agent = BaseAgent(
+            system_message="test",
+            provider=provider,
+            tracer=tracer,
+            max_iterations=3,
+        )
+        # Wire memory binding (same pattern as AgentFactory.with_memory_graph)
+        agent.memory_graph = graph
+        agent.agent_id = "current"
+
+        await agent.execute_query_async("hi")
+
+        agent_spans = [
+            s for s in spy_tracer_exporter.spans if s.span_type.value == "agent"
+        ]
+        assert agent_spans, "agent span must exist"
+        hook_events = [e for e in agent_spans[0].events if e.name == "hook.fired"]
+        # At least one hook.fired from the memory hook path
+        # (BEFORE_LLM_CALL + BEFORE_FINAL_RESPONSE)
+        assert hook_events, (
+            "memory-configured agent must emit at least one hook.fired event; "
+            f"got events: {[e.name for e in agent_spans[0].events]}"
+        )

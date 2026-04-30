@@ -175,3 +175,66 @@ class TestParentAgentWiring:
         # The instance must be callable as a tool — scaffold test was enough.
         # We can't directly inspect the closure, but registering should not raise.
         assert skill_tool is not None
+
+
+# ---------------------------------------------------------------------------
+# Task 11: 3-way dispatch branch (skill / sub_agent / tool)
+# ---------------------------------------------------------------------------
+
+
+class TestSkillSpanDispatch:
+    """Verifies the tracer dispatches a SpanType.skill for SkillTool invocations."""
+
+    @pytest.mark.asyncio
+    async def test_skill_invocation_emits_skill_span(
+        self, make_agent_with_skill_and_tracer
+    ):
+        """Invoking the SkillTool yields a span with type=skill, name=<skill>."""
+        agent, spy = make_agent_with_skill_and_tracer(
+            skill_name="demo",
+            mode="inline",
+            source="filesystem",
+        )
+        await agent.execute_query_async('Use the "demo" skill.')
+
+        skill_spans = [s for s in spy.spans if s.span_type.value == "skill"]
+        assert len(skill_spans) == 1
+        sk = skill_spans[0]
+        assert sk.name == "demo"
+        assert sk.metadata.get("mode") == "inline"
+        assert sk.metadata.get("source") == "filesystem"
+
+        # And there must not be a regular tool span with the "Skill" name.
+        tool_spans_named_Skill = [
+            s for s in spy.spans if s.span_type.value == "tool" and s.name == "Skill"
+        ]
+        assert tool_spans_named_Skill == []
+
+    @pytest.mark.asyncio
+    async def test_regular_tool_still_emits_tool_span(
+        self, make_agent_with_regular_tool_and_tracer
+    ):
+        """Non-SkillTool, non-SubAgentWrapper tools still get SpanType.tool."""
+        agent, spy = make_agent_with_regular_tool_and_tracer(tool_name="calc")
+        await agent.execute_query_async("do something")
+        tool_spans = [s for s in spy.spans if s.span_type.value == "tool"]
+        assert any(s.name == "calc" for s in tool_spans)
+
+
+class TestSubAgentSpanDispatch:
+    """Verifies the tracer dispatches a SpanType.sub_agent for SubAgentWrapper calls."""
+
+    @pytest.mark.asyncio
+    async def test_sub_agent_invocation_emits_sub_agent_span(
+        self, make_agent_with_sub_agent_and_tracer
+    ):
+        """Invoking a registered sub-agent yields a span with type=sub_agent.
+
+        The span name matches the registered sub-agent name (the tool_call.name
+        used by the parent's LLM), not the child agent's class name.
+        """
+        agent, spy = make_agent_with_sub_agent_and_tracer(sub_agent_name="child")
+        await agent.execute_query_async("delegate to child")
+        sub_agent_spans = [s for s in spy.spans if s.span_type.value == "sub_agent"]
+        assert len(sub_agent_spans) >= 1
+        assert any(s.name == "child" for s in sub_agent_spans)

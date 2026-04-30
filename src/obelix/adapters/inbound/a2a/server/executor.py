@@ -49,6 +49,7 @@ from obelix.adapters.inbound.a2a.server.helpers import (
     agent_message,
 )
 from obelix.core.agent.exceptions import TaskRejectedError
+from obelix.core.model.assistant_message import AssistantResponse
 from obelix.core.model.human_message import HumanMessage
 from obelix.core.model.tool_message import ToolMessage, ToolResult, ToolStatus
 from obelix.core.tracer.context import (
@@ -57,12 +58,14 @@ from obelix.core.tracer.context import (
     set_current_span,
     set_current_trace,
 )
+from obelix.core.tracer.models import SpanStatus, SpanType
 from obelix.infrastructure.logging import get_logger
 
 if TYPE_CHECKING:
     from a2a.server.agent_execution.context import RequestContext
 
     from obelix.core.agent.base_agent import BaseAgent
+    from obelix.core.tracer.tracer import Tracer
 
 logger = get_logger(__name__)
 
@@ -88,10 +91,167 @@ class ObelixAgentExecutor(AgentExecutor):
         agent_factory: Callable[[], BaseAgent],
         *,
         max_contexts: int = DEFAULT_MAX_CONTEXTS,
+        tracer: Tracer | None = None,
     ) -> None:
         self._agent_factory = agent_factory
         self._store = ContextStore(max_contexts)
         self._store_lock = asyncio.Lock()
+        self._tracer = tracer
+
+    async def _emit_state(
+        self,
+        from_state: str | None,
+        to_state: str,
+        reason: str | None = None,
+    ) -> None:
+        """Emit an a2a.state_change tracer event on the a2a_task span.
+
+        Temporarily re-pins the current span to the a2a_task span so the event
+        attaches there (not to whatever nested span — agent/tool — is active).
+        Restores the prior current span afterwards. No-op if no tracer is
+        configured or no a2a_task span exists on the current trace.
+        """
+        if not self._tracer:
+            return
+        trace = get_current_trace()
+        if trace is None:
+            return
+        a2a_span = next(
+            (s for s in trace.spans if s.span_type == SpanType.a2a_task),
+            None,
+        )
+        if a2a_span is None:
+            return
+        prior = get_current_span()
+        set_current_span(a2a_span)
+        try:
+            await self._tracer.add_event(
+                "a2a.state_change",
+                {"from": from_state, "to": to_state, "reason": reason},
+            )
+        finally:
+            set_current_span(prior)
+
+    async def _emit_cancellation_event(
+        self,
+        source: str = "client",
+        iteration: int | None = None,
+        trace=None,
+    ) -> None:
+        """Emit a ``cancellation.requested`` event on the a2a_task span.
+
+        Same pattern as :meth:`_emit_state`: pin the current span to the
+        ``a2a_task`` root so the event attaches there (not to a nested
+        agent/tool/deferred_wait span), then restore the prior current span.
+        No-op if no tracer is configured, no trace available, or no a2a_task
+        span exists on the trace.
+
+        ``trace`` overrides the contextvar lookup. Used by ``cancel()`` to
+        emit the event via the entry's saved ``trace_session`` when running
+        in a different asyncio task (and therefore empty contextvars).
+        """
+        if not self._tracer:
+            return
+        resolved_trace = trace if trace is not None else get_current_trace()
+        if resolved_trace is None:
+            return
+        a2a_span = next(
+            (s for s in resolved_trace.spans if s.span_type == SpanType.a2a_task),
+            None,
+        )
+        if a2a_span is None:
+            return
+        prior_trace = get_current_trace()
+        prior_span = get_current_span()
+        # Pin both trace and span for add_event to resolve correctly.
+        set_current_trace(resolved_trace)
+        set_current_span(a2a_span)
+        try:
+            attributes: dict[str, object] = {"source": source}
+            if iteration is not None:
+                attributes["iteration"] = iteration
+            await self._tracer.add_event("cancellation.requested", attributes)
+        finally:
+            set_current_span(prior_span)
+            set_current_trace(prior_trace)
+
+    async def _open_deferred_wait_span(
+        self,
+        entry,
+        deferred_tool_calls,
+    ) -> None:
+        """Open a ``deferred_wait`` span covering the input_required pause.
+
+        Temporarily pins the current span to ``a2a_task`` so the new span
+        becomes a direct child of the task root (sibling of the agent span).
+        The span is left OPEN — it is closed on the resume path (or on
+        cancel). Records ``tool_name``, ``tool_call_ids`` and a fixed
+        ``suspend_reason="deferred_tool"`` in the span metadata.
+
+        No-op if no tracer is configured, no current trace, or no a2a_task
+        span is present on the current trace.
+        """
+        if not self._tracer:
+            return
+        trace = get_current_trace()
+        if trace is None:
+            return
+        a2a_span = next(
+            (s for s in trace.spans if s.span_type == SpanType.a2a_task),
+            None,
+        )
+        if a2a_span is None:
+            return
+        prior = get_current_span()
+        set_current_span(a2a_span)
+        try:
+            tool_name = deferred_tool_calls[0].name if deferred_tool_calls else None
+            tool_call_ids = [c.id for c in deferred_tool_calls]
+            span = await self._tracer.start_span(
+                SpanType.deferred_wait,
+                name="deferred_wait",
+                metadata={
+                    "tool_name": tool_name,
+                    "tool_call_ids": tool_call_ids,
+                    "suspend_reason": "deferred_tool",
+                },
+            )
+            entry.deferred_wait_span_id = span.span_id
+        finally:
+            # Restore the prior current span — the ``deferred_wait`` span
+            # stays open and the a2a_task / agent spans remain the logical
+            # frames for the rest of the suspension window.
+            set_current_span(prior)
+
+    async def _close_deferred_wait_span(self, entry) -> None:
+        """Close the open ``deferred_wait`` span (if any) saved on ``entry``.
+
+        Pins the current span to the open ``deferred_wait`` span, ends it,
+        then restores the prior current span. Clears
+        ``entry.deferred_wait_span_id`` afterwards so no stale id remains.
+        No-op if no tracer, no current trace, or no span id is recorded.
+        """
+        if not self._tracer or not entry.deferred_wait_span_id:
+            return
+        trace = get_current_trace()
+        if trace is None:
+            entry.deferred_wait_span_id = None
+            return
+        dw_span = next(
+            (s for s in trace.spans if s.span_id == entry.deferred_wait_span_id),
+            None,
+        )
+        if dw_span is None:
+            entry.deferred_wait_span_id = None
+            return
+        prior = get_current_span()
+        set_current_span(dw_span)
+        try:
+            await self._tracer.end_span()
+        finally:
+            # Restore whatever span was current before we touched context.
+            set_current_span(prior)
+            entry.deferred_wait_span_id = None
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         task_id = context.task_id
@@ -120,6 +280,14 @@ class ObelixAgentExecutor(AgentExecutor):
                     ),
                     final=True,
                 )
+            )
+            # No a2a_task span is opened in this early-exit path, so the
+            # emission is a no-op (add_event is guarded), but we still log
+            # the transition for symmetry.
+            await self._emit_state(
+                from_state=None,
+                to_state="failed",
+                reason="no_input",
             )
             return
 
@@ -161,7 +329,124 @@ class ObelixAgentExecutor(AgentExecutor):
         event_queue: EventQueue,
         is_resume: bool = False,
     ) -> None:
-        """Run the agent with isolated context and persist history."""
+        """Run the agent with isolated context and persist history.
+
+        When a tracer is configured, opens an ``a2a_task`` span as the trace
+        root before delegating to the agent. The agent's own span becomes a
+        child of it. On deferred-tool suspension the trace and ``a2a_task``
+        span are left open so ``resume_after_deferred`` can continue inside
+        them; they are closed on any terminal outcome (completed / failed /
+        rejected / canceled) or on the resume invocation that finishes them.
+        """
+
+        tracer = self._tracer
+        # Open a2a_task root span on first invocation; on resume we reuse the
+        # trace + a2a_task span that are already restored by ``_run_agent_impl``
+        # via ``set_current_trace`` / ``set_current_span``.
+        a2a_task_span = None
+        trace_opened_here = False
+        if tracer and not is_resume:
+            await tracer.start_trace(
+                name="a2a.task",
+                metadata={"task_id": task_id, "context_id": context_id},
+            )
+            a2a_task_span = await tracer.start_span(
+                SpanType.a2a_task,
+                name=f"task {task_id[:8] if task_id else 'unknown'}",
+                input={"context_id": context_id},
+                metadata={"task_id": task_id, "context_id": context_id},
+            )
+            trace_opened_here = True
+            # Store the live trace on the entry so ``cancel()`` (which runs in
+            # a different asyncio task and therefore has empty contextvars) can
+            # find it and emit ``cancellation.requested`` on the a2a_task span.
+            # The deferred-suspension path later overwrites this with the same
+            # trace when it saves context for resume.
+            entry.trace_session = get_current_trace()
+
+        # Tracks whether the executor suspended for a deferred tool. When
+        # True, the finally block leaves the trace + a2a_task span open so
+        # ``resume_after_deferred`` can continue inside them.
+        deferred_suspended = False
+
+        try:
+            deferred_suspended = await self._run_agent_impl(
+                task_id=task_id,
+                context_id=context_id,
+                user_text=user_text,
+                attachments=attachments,
+                entry=entry,
+                event_queue=event_queue,
+                is_resume=is_resume,
+            )
+        finally:
+            if tracer and not deferred_suspended and (trace_opened_here or is_resume):
+                # Re-pin the a2a_task span as current before closing. On the
+                # initial invocation this is defensive (agent's generator
+                # finally should have already restored it); on resume we
+                # need to walk the trace to find it.
+                task_span = a2a_task_span
+                if task_span is None:
+                    trace = get_current_trace()
+                    if trace is not None:
+                        task_span = next(
+                            (
+                                s
+                                for s in trace.spans
+                                if s.span_type == SpanType.a2a_task
+                                and s.end_time is None
+                            ),
+                            None,
+                        )
+                if task_span is not None:
+                    set_current_span(task_span)
+                # Propagate terminal status onto the a2a_task span AND the
+                # trace itself. Precedence: cancel > rejected > failed > ok.
+                # Cancel takes priority because ``_run_agent_impl`` may set
+                # ``was_canceled`` alongside normal terminal flags if a cancel
+                # races with a response. ``was_rejected`` / ``was_failed`` are
+                # set by the corresponding ``except`` handlers; when neither
+                # fires we fall through to ``ok``. ``error`` (not passed on
+                # the cancel path) forwards the reason/exception message so
+                # consumers can render it in span views.
+                if entry.was_canceled:
+                    status = SpanStatus.canceled
+                    error: str | None = None
+                elif entry.was_rejected:
+                    status = SpanStatus.rejected
+                    error = entry.rejection_reason
+                elif entry.was_failed:
+                    status = SpanStatus.error
+                    error = entry.failure_error
+                else:
+                    status = SpanStatus.ok
+                    error = None
+                await tracer.end_span(status=status, error=error)
+                await tracer.end_trace(status=status, error=error)
+                # Clear the saved trace ref — the trace is now ended and any
+                # subsequent turn on this context will open a new one. Reset
+                # the terminal-state flags so the next turn on this context
+                # starts clean (a retry after rejection/failure must not be
+                # marked terminal by stale flags).
+                entry.trace_session = None
+                entry.was_canceled = False
+                entry.was_rejected = False
+                entry.was_failed = False
+                entry.rejection_reason = None
+                entry.failure_error = None
+
+    async def _run_agent_impl(
+        self,
+        *,
+        task_id: str,
+        context_id: str,
+        user_text: str,
+        attachments: list,
+        entry,
+        event_queue: EventQueue,
+        is_resume: bool = False,
+    ) -> bool:
+        """Inner agent runner. Returns True if suspended for a deferred tool."""
 
         logger.info(
             f"[A2A] Executing agent | task_id={task_id} context_id={context_id} "
@@ -190,8 +475,23 @@ class ObelixAgentExecutor(AgentExecutor):
                 final=False,
             )
         )
+        # Initial entry: None -> working; resume: input_required -> working
+        await self._emit_state(
+            from_state="input_required" if is_resume else None,
+            to_state="working",
+            reason="resume" if is_resume else "execute_start",
+        )
 
         stream = None
+        # Captured on the success path to emit an ``assistant`` span as a
+        # sibling of ``agent`` under ``a2a_task``. Stays ``None`` on
+        # cancel / reject / failure / deferred suspension so those paths
+        # do NOT emit an assistant span. Initialized BEFORE the try block so
+        # that if any call below (e.g. tracer ``start_span`` on the human
+        # span) raises, the ``except`` / ``finally`` / post-block
+        # ``final_response is not None`` check does not hit
+        # ``UnboundLocalError``.
+        final_response: AssistantResponse | None = None
         try:
             # For resume: restore the trace context from the first invocation
             # so the resume appears under the same trace in the tracer UI.
@@ -201,6 +501,10 @@ class ObelixAgentExecutor(AgentExecutor):
                     set_current_span(entry.trace_span)
                     entry.trace_session = None
                     entry.trace_span = None
+                # Close the ``deferred_wait`` span that was opened at the
+                # suspension point. Duration now reflects the wall-clock
+                # time the task spent in ``input_required``.
+                await self._close_deferred_wait_span(entry)
                 stream = agent.resume_after_deferred()
             elif attachments:
                 # Pass as HumanMessage with attachments for multimodal
@@ -209,6 +513,18 @@ class ObelixAgentExecutor(AgentExecutor):
             else:
                 stream = agent.execute_query_stream(user_text)
 
+            # Emit human span as direct child of a2a_task on initial
+            # invocation only. On resume the input is a DataPart (deferred
+            # tool response) conceptually continuing the same turn, not a
+            # new user query, so we skip emitting a second human span.
+            if self._tracer and not is_resume:
+                await self._tracer.start_span(
+                    SpanType.human,
+                    "human.input",
+                    input=user_text,
+                )
+                await self._tracer.end_span(output=user_text)
+
             artifact_id = str(uuid.uuid4())
             first_chunk = True
 
@@ -216,6 +532,9 @@ class ObelixAgentExecutor(AgentExecutor):
                 # === Agent canceled by user ===
                 if event.canceled:
                     entry.history = agent.conversation_history[1:]
+                    # Propagate cancel intent to the outer finally so the
+                    # a2a_task span is closed with SpanStatus.canceled.
+                    entry.was_canceled = True
                     await event_queue.enqueue_event(
                         TaskStatusUpdateEvent(
                             task_id=task_id,
@@ -227,8 +546,13 @@ class ObelixAgentExecutor(AgentExecutor):
                             final=True,
                         )
                     )
+                    await self._emit_state(
+                        from_state="working",
+                        to_state="canceled",
+                        reason="client_cancel",
+                    )
                     logger.info(f"[A2A] Agent canceled by user | task_id={task_id}")
-                    return
+                    return False
 
                 # === Deferred tool detected: emit input-required ===
                 if event.deferred_tool_calls:
@@ -238,6 +562,14 @@ class ObelixAgentExecutor(AgentExecutor):
                     # Save trace context so the resume continues the same trace
                     entry.trace_session = get_current_trace()
                     entry.trace_span = get_current_span()
+
+                    # Open a ``deferred_wait`` span as a direct child of the
+                    # ``a2a_task`` root, covering the input_required pause.
+                    # The span stays OPEN across the suspension — it will be
+                    # closed on the resume path (or on cancel).
+                    await self._open_deferred_wait_span(
+                        entry, event.deferred_tool_calls
+                    )
 
                     # Build DataPart message from deferred tool calls
                     deferred_parts = deferred_calls_to_a2a_parts(
@@ -259,12 +591,17 @@ class ObelixAgentExecutor(AgentExecutor):
                             final=True,
                         )
                     )
+                    await self._emit_state(
+                        from_state="working",
+                        to_state="input_required",
+                        reason="deferred_tool",
+                    )
                     logger.info(
                         f"[A2A] Input required | task_id={task_id} "
                         f"context_id={context_id} "
                         f"deferred_count={len(event.deferred_tool_calls)}"
                     )
-                    return
+                    return True
 
                 # === Streaming token ===
                 if event.token:
@@ -285,6 +622,7 @@ class ObelixAgentExecutor(AgentExecutor):
                 # === Final response ===
                 if event.is_final and not event.deferred_tool_calls:
                     response = event.assistant_response
+                    final_response = response
                     entry.history = agent.conversation_history[1:]
 
                     if first_chunk:
@@ -369,11 +707,19 @@ class ObelixAgentExecutor(AgentExecutor):
                             final=True,
                         )
                     )
+                    await self._emit_state(
+                        from_state="working",
+                        to_state="completed",
+                        reason="final_response",
+                    )
                     logger.info(f"[A2A] Agent completed | task_id={task_id}")
                     break
 
         except asyncio.CancelledError:
             entry.history = agent.conversation_history[1:]
+            # Mark the context so the outer _run_agent finally closes the
+            # a2a_task span with SpanStatus.canceled.
+            entry.was_canceled = True
             logger.info(f"[A2A] Agent canceled | task_id={task_id}")
             await event_queue.enqueue_event(
                 TaskStatusUpdateEvent(
@@ -386,10 +732,20 @@ class ObelixAgentExecutor(AgentExecutor):
                     final=True,
                 )
             )
+            await self._emit_state(
+                from_state="working",
+                to_state="canceled",
+                reason="async_cancel",
+            )
             raise
 
         except TaskRejectedError as e:
             entry.history = agent.conversation_history[1:]
+            # Propagate rejection onto the outer finally so the a2a_task span
+            # closes with ``SpanStatus.rejected`` and ``span.error`` carries
+            # the reason (default fallback matches the log message below).
+            entry.was_rejected = True
+            entry.rejection_reason = e.reason or "Task rejected"
             logger.info(
                 f"[A2A] Agent rejected task | task_id={task_id} reason={e.reason}"
             )
@@ -404,9 +760,19 @@ class ObelixAgentExecutor(AgentExecutor):
                     final=True,
                 )
             )
+            await self._emit_state(
+                from_state="working",
+                to_state="rejected",
+                reason=e.reason,
+            )
 
         except Exception as e:
             entry.history = agent.conversation_history[1:]
+            # Propagate failure onto the outer finally so the a2a_task span
+            # closes with ``SpanStatus.error`` and ``span.error`` carries the
+            # exception message.
+            entry.was_failed = True
+            entry.failure_error = str(e) or type(e).__name__
             logger.error(f"[A2A] Agent failed | task_id={task_id} error={e}")
             await event_queue.enqueue_event(
                 TaskStatusUpdateEvent(
@@ -418,6 +784,11 @@ class ObelixAgentExecutor(AgentExecutor):
                     ),
                     final=True,
                 )
+            )
+            await self._emit_state(
+                from_state="working",
+                to_state="failed",
+                reason=str(e),
             )
 
         finally:
@@ -431,6 +802,26 @@ class ObelixAgentExecutor(AgentExecutor):
                         await aclose()
                     except TypeError:
                         pass  # not a real async generator (e.g. mock)
+
+        # Emit assistant span on the success path only. ``final_response`` is
+        # only set when the stream produced a terminal ``is_final`` event
+        # without deferred tool calls, so rejection / cancellation / failure /
+        # deferred suspension naturally skip this. We emit AFTER the stream's
+        # ``aclose()`` so the BaseAgent ``agent`` span has already ended —
+        # that way the ``assistant`` span becomes a direct child of
+        # ``a2a_task`` (sibling of ``agent``), per spec §6.
+        if self._tracer and final_response is not None:
+            content = getattr(final_response, "content", None)
+            await self._tracer.start_span(
+                SpanType.assistant,
+                "assistant.response",
+                input={"has_tool_calls": False},
+            )
+            await self._tracer.end_span(output={"content": content})
+
+        # Normal termination (completed / rejected / failed): not suspended
+        # for deferred input, so the caller should close the trace.
+        return False
 
     @staticmethod
     def _inject_client_info(agent: BaseAgent, client_info: dict) -> None:
@@ -462,10 +853,24 @@ class ObelixAgentExecutor(AgentExecutor):
         async with self._store_lock:
             entry = self._store.get_or_create(context_id)
 
+        # Emit cancellation.requested on the a2a_task span BEFORE branching
+        # into the in-flight / deferred paths. This way the event fires
+        # regardless of which branch handles the cancel. We pass the entry's
+        # saved trace explicitly because cancel() typically runs in a
+        # different asyncio task than execute(), so contextvars are empty.
+        # The helper is a no-op if no trace or no a2a_task span exists —
+        # safe even if no trace was ever opened.
+        await self._emit_cancellation_event(
+            source="client",
+            trace=entry.trace_session,
+        )
+
         if entry.active_agent:
             # Agent is running — signal cooperative cancellation.
             # The _execute_loop will detect the flag, yield a canceled
             # StreamEvent, and _run_agent will emit TaskState.canceled.
+            # _run_agent_impl will set entry.was_canceled so the outer
+            # finally closes the a2a_task span with SpanStatus.canceled.
             entry.active_agent.cancel()
             logger.info(
                 f"[A2A] Cancel signal sent to active agent | "
@@ -473,6 +878,10 @@ class ObelixAgentExecutor(AgentExecutor):
             )
         else:
             # No active agent — task was likely in input_required (deferred).
+            # Capture the "from" state before cleanup below clears the flag.
+            was_deferred = bool(entry.deferred_tool_calls)
+            saved_trace = entry.trace_session
+            saved_span = entry.trace_span
             # Clean up: replace the null ToolMessage with a cancel message
             # so the LLM knows the tool was not executed.
             if entry.deferred_tool_calls and entry.history:
@@ -506,3 +915,45 @@ class ObelixAgentExecutor(AgentExecutor):
                     final=True,
                 )
             )
+            # Restore the trace context saved at suspension so tracer
+            # operations (deferred_wait close, state_change event, a2a_task
+            # close, trace end) attach to the original task. The
+            # ``cancellation.requested`` event was already emitted at the top
+            # of cancel(). Restore whatever was current before afterwards
+            # (almost always None here).
+            if self._tracer and saved_trace is not None:
+                prior_trace = get_current_trace()
+                prior_span = get_current_span()
+                set_current_trace(saved_trace)
+                set_current_span(saved_span)
+                try:
+                    # Close the open deferred_wait span first so its end_time
+                    # is recorded BEFORE the a2a_task span closes — addresses
+                    # the Task 19 leak (span previously stayed open on cancel).
+                    await self._close_deferred_wait_span(entry)
+                    await self._emit_state(
+                        from_state="input_required" if was_deferred else "working",
+                        to_state="canceled",
+                        reason="cancel_request",
+                    )
+                    # Finally, close the a2a_task span with canceled status
+                    # and end the trace with canceled status so consumers
+                    # filtering by trace status see the cancellation. The
+                    # suspended deferred path owns the open trace, so cancel
+                    # is the only place it can be closed (no resume will come).
+                    entry.was_canceled = True
+                    a2a_span = next(
+                        (
+                            s
+                            for s in saved_trace.spans
+                            if s.span_type == SpanType.a2a_task and s.end_time is None
+                        ),
+                        None,
+                    )
+                    if a2a_span is not None:
+                        set_current_span(a2a_span)
+                        await self._tracer.end_span(status=SpanStatus.canceled)
+                        await self._tracer.end_trace(status=SpanStatus.canceled)
+                finally:
+                    set_current_trace(prior_trace)
+                    set_current_span(prior_span)

@@ -18,7 +18,6 @@ if TYPE_CHECKING:
     from obelix.core.model.tool_message import ToolCall, ToolResult
     from obelix.core.tool.tool_base import Tool
     from obelix.core.tracer.tracer import Tracer
-    from obelix.ports.outbound.llm_provider import AbstractLLMProvider
 
 
 async def start_agent_trace(
@@ -63,48 +62,58 @@ async def emit_human_span(
     await tracer.end_span(output=query_text)
 
 
-async def start_llm_span(
-    tracer: Tracer | None,
-    provider: AbstractLLMProvider,
-    conversation_history: list[StandardMessage],
-    registered_tools: list[Tool],
-) -> None:
-    """Start an LLM call span."""
-    if not tracer:
-        return
-    from obelix.core.tracer.models import SpanType
-
-    await tracer.start_span(
-        SpanType.llm,
-        f"llm.{provider.provider_type}",
-        input={
-            "message_count": len(conversation_history),
-            "tool_count": len(registered_tools),
-            "model_id": provider.model_id,
-        },
-    )
-
-
-async def end_llm_span(
+async def accumulate_llm_call(
     tracer: Tracer | None,
     assistant_msg: AssistantMessage,
+    provider_type: str,
+    model_id: str,
+    duration_ms: float,
 ) -> None:
-    """End an LLM call span with response metadata."""
+    """Fold a single LLM call into the current agent span's metadata.llm_usage.
+
+    No-op if ``tracer`` is None or there is no current span. The current span
+    is expected to be an ``agent`` span opened by :func:`start_agent_trace`.
+
+    Replaces the per-call ``llm`` span (dropped in Task 10) — rather than
+    emitting a span per LLM invocation, we roll every call's usage into an
+    aggregate stored on the enclosing agent span.
+    """
     if not tracer:
         return
 
-    span_output: dict[str, Any] = {
-        "content_preview": (
-            assistant_msg.content[:200] if assistant_msg.content else None
-        ),
-        "tool_calls": (
-            len(assistant_msg.tool_calls) if assistant_msg.tool_calls else 0
-        ),
-        "usage": (assistant_msg.usage.model_dump() if assistant_msg.usage else None),
-    }
-    if assistant_msg.metadata.get("reasoning"):
-        span_output["reasoning"] = assistant_msg.metadata["reasoning"]
-    await tracer.end_span(output=span_output)
+    from obelix.core.tracer.context import get_current_span
+
+    span = get_current_span()
+    if span is None:
+        return
+
+    usage_dict = span.metadata.setdefault(
+        "llm_usage",
+        {"calls": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+    )
+    usage_dict["calls"] += 1
+    if assistant_msg.usage:
+        tin = getattr(assistant_msg.usage, "input_tokens", 0) or 0
+        tout = getattr(assistant_msg.usage, "output_tokens", 0) or 0
+        usage_dict["input_tokens"] += tin
+        usage_dict["output_tokens"] += tout
+        usage_dict["total_tokens"] = (
+            usage_dict["input_tokens"] + usage_dict["output_tokens"]
+        )
+
+    span.metadata.setdefault("model_id", model_id)
+    span.metadata.setdefault("provider_type", provider_type)
+
+    # Accumulate reasoning (per-call list) when the provider surfaces it.
+    reasoning = (
+        assistant_msg.metadata.get("reasoning") if assistant_msg.metadata else None
+    )
+    if reasoning:
+        reasoning_list = span.metadata.setdefault("reasoning", [])
+        reasoning_list.append(reasoning)
+
+    # Track per-iteration duration so downstream consumers can inspect each call.
+    span.metadata.setdefault("llm_durations_ms", []).append(duration_ms)
 
 
 async def start_tool_span(
@@ -112,25 +121,86 @@ async def start_tool_span(
     call: ToolCall,
     registered_tools: list[Tool],
 ) -> None:
-    """Start a tool execution span, detecting sub-agent vs regular tool."""
+    """Start a span for a tool call, dispatching on skill / sub_agent / tool.
+
+    The SkillTool (``tool_name == SKILL_TOOL_NAME``) is a built-in tool that
+    drives the skills subsystem; its calls get a ``SpanType.skill`` named
+    after the invoked skill (not the SKILL_TOOL_NAME literal) plus
+    ``mode``/``source`` metadata. SubAgentWrapper calls get
+    ``SpanType.sub_agent``. Everything else gets ``SpanType.tool``.
+    """
     if not tracer:
         return
     from obelix.core.agent.subagent_wrapper import SubAgentWrapper
     from obelix.core.tracer.models import SpanType
 
-    is_subagent = any(
-        isinstance(t, SubAgentWrapper) and t.tool_name == call.name
-        for t in registered_tools
+    # Deferred import: skill_tool imports BaseAgent (which imports this module
+    # via base_agent), so importing at module scope would create a cycle.
+    from obelix.plugins.builtin.skill_tool import SKILL_TOOL_NAME
+
+    tool = next(
+        (t for t in registered_tools if getattr(t, "tool_name", None) == call.name),
+        None,
     )
-    span_type = SpanType.sub_agent if is_subagent else SpanType.tool
+
+    # Skill branch: SkillTool carries tool_name == SKILL_TOOL_NAME (the
+    # decorator sets this) and exposes its SkillManager via the private
+    # _manager attribute populated by make_skill_tool(). Arguments shape
+    # produced by the LLM: {"name": "<skill_name>", "args": "<shell-args>"}.
+    if tool is not None and getattr(tool, "tool_name", None) == SKILL_TOOL_NAME:
+        arguments = call.arguments if isinstance(call.arguments, dict) else {}
+        skill_name = arguments.get("name") or call.name
+        skill_args = arguments.get("args")
+        metadata: dict[str, Any] = {}
+        skill = _load_skill(tool, skill_name)
+        if skill is not None:
+            mode = getattr(skill, "context", None)
+            source = getattr(skill, "source", None)
+            if mode is not None:
+                metadata["mode"] = mode
+            if source is not None:
+                metadata["source"] = source
+        await tracer.start_span(
+            SpanType.skill,
+            skill_name,
+            input={"tool_call_id": call.id, "skill_args": skill_args},
+            metadata=metadata,
+        )
+        return
+
+    if isinstance(tool, SubAgentWrapper):
+        await tracer.start_span(
+            SpanType.sub_agent,
+            call.name,
+            input={"tool_call_id": call.id, "arguments": call.arguments},
+        )
+        return
+
     await tracer.start_span(
-        span_type,
+        SpanType.tool,
         call.name,
-        input={
-            "tool_call_id": call.id,
-            "arguments": call.arguments,
-        },
+        input={"tool_call_id": call.id, "arguments": call.arguments},
     )
+
+
+def _load_skill(skill_tool: Any, skill_name: str):
+    """Resolve the ``Skill`` object for ``skill_name`` from a SkillTool's manager.
+
+    Returns ``None`` when the tool is not a SkillTool (no ``_manager``), when
+    the manager does not expose ``load()``, or when the skill is not found.
+    Tracing must degrade gracefully: a miss here just omits the metadata
+    (``mode`` / ``source``) rather than crashing the tool dispatch.
+    """
+    manager = getattr(skill_tool, "_manager", None)
+    if manager is None:
+        return None
+    load = getattr(manager, "load", None)
+    if not callable(load):
+        return None
+    try:
+        return load(skill_name)
+    except Exception:
+        return None
 
 
 async def end_tool_span(

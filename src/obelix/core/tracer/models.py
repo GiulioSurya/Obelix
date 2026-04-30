@@ -9,12 +9,12 @@ from pydantic import BaseModel, Field
 
 
 class SpanType(StrEnum):
+    a2a_task = "a2a_task"
     agent = "agent"
-    llm = "llm"
-    tool = "tool"
     sub_agent = "sub_agent"
-    memory = "memory"
-    hook = "hook"
+    skill = "skill"
+    tool = "tool"
+    deferred_wait = "deferred_wait"
     human = "human"
     assistant = "assistant"
 
@@ -23,6 +23,14 @@ class SpanStatus(StrEnum):
     ok = "ok"
     error = "error"
     timeout = "timeout"
+    rejected = "rejected"
+    canceled = "canceled"
+
+
+class SpanEvent(BaseModel):
+    name: str
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    attributes: dict[str, Any] = Field(default_factory=dict)
 
 
 class Span(BaseModel):
@@ -39,6 +47,7 @@ class Span(BaseModel):
     status: SpanStatus = SpanStatus.ok
     error: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    events: list[SpanEvent] = Field(default_factory=list)
 
 
 class TraceSession(BaseModel):

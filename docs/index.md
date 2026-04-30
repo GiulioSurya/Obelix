@@ -15,6 +15,7 @@ This documentation covers how to build, compose, and deploy agents using Obelix.
 - **[A2A Server Guide](a2a_server.md)** - Exposing agents as HTTP services
 - **[Hooks API](hooks.md)** - Intercepting and modifying agent behavior
 - **[Skills Guide](skills.md)** - Authoring and wiring lazy-loaded skills
+- **[Tracer Guide](tracer.md)** - Instrumenting agents with spans, events, and exporters
 
 ---
 
@@ -31,6 +32,7 @@ This documentation covers how to build, compose, and deploy agents using Obelix.
 | [A2A Server Guide](a2a_server.md) | Exposing agents as A2A-compliant HTTP services with JSON-RPC 2.0 |
 | [Hooks API](hooks.md) | Understanding and implementing hooks for agent customization (validation, error recovery, context injection) |
 | [Skills Guide](skills.md) | Authoring `SKILL.md` files, frontmatter reference, placeholders, hook frontmatter, fork execution |
+| [Tracer Guide](tracer.md) | Span taxonomy, event model, aggregated LLM usage, and exporters (`NoOp`, `Console`, `HTTP`) |
 
 ### Key Features
 
@@ -43,6 +45,8 @@ This documentation covers how to build, compose, and deploy agents using Obelix.
 **Shared Memory**: Propagate context between dependent agents. See [Agent Factory Guide - Shared Memory Support](agent_factory.md#shared-memory-support).
 
 **A2A Server**: Expose agents as HTTP services discoverable and orchestrated by other systems. See [A2A Server Guide](a2a_server.md).
+
+**Tracer**: Instrument agents with an A2A-aware span taxonomy (`a2a_task`, `agent`, `sub_agent`, `skill`, `tool`, `deferred_wait`, `human`, `assistant`) plus structured events (`hook.fired`, `memory.*`, `a2a.state_change`, `cancellation.requested`). Ship to console or a remote backend via pluggable exporters. See [Tracer Guide](tracer.md).
 
 **Providers**: Use any of 6 LLM providers (OpenAI, Anthropic, OCI, IBM Watson, Ollama, vLLM). See [README - Using Providers](../README.md#using-providers).
 

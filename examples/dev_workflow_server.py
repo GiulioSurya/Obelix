@@ -41,7 +41,10 @@ from obelix.core.agent.shared_memory import PropagationPolicy
 from obelix.core.tool.tool_base import Tool
 from obelix.core.tool.tool_decorator import tool
 from obelix.core.tracer import Tracer
-from obelix.core.tracer.exporters import HTTPExporter
+from obelix.core.tracer.exporters import (
+    ConsoleExporter,  # noqa: F401
+    HTTPExporter,  # noqa: F401
+)
 from obelix.infrastructure.logging import setup_logging
 
 load_dotenv()
@@ -51,8 +54,12 @@ LITELLM_MODEL = "anthropic/claude-haiku-4-5-20251001"
 
 _SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
 
-# tracer = Tracer(exporter=ConsoleExporter(verbosity=3))
+# tracer = Tracer(
+#     exporter=ConsoleExporter(verbosity=2),
+#     service_name="DEV_WORKFLOW",
+# )
 
+# HTTP tracer — swap this in to ship traces to the Obelix tracer backend.
 tracer = Tracer(
     exporter=HTTPExporter(endpoint="http://localhost:8100/api/v1/ingest"),
     service_name="DEV_WORKFLOW",

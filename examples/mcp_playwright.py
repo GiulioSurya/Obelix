@@ -25,7 +25,7 @@ from obelix.adapters.outbound.llm.anthropic.provider import AnthropicProvider
 from obelix.adapters.outbound.mcp.config import MCPServerConfig
 from obelix.core.agent import BaseAgent
 from obelix.core.agent.agent_factory import AgentFactory
-from obelix.core.tracer import HTTPExporter, Tracer
+from obelix.core.tracer import ConsoleExporter, HTTPExporter, Tracer  # noqa: F401
 from obelix.infrastructure.logging import setup_logging
 
 load_dotenv()

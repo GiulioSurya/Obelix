@@ -581,7 +581,7 @@ class AgentFactory:
             httpx_client=httpx.AsyncClient(),
             config_store=push_config_store,
         )
-        executor = ObelixAgentExecutor(agent_factory)
+        executor = ObelixAgentExecutor(agent_factory, tracer=self._tracer)
         request_handler = DefaultRequestHandler(
             agent_executor=executor,
             task_store=task_store,

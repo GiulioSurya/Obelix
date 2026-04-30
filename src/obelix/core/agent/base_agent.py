@@ -18,13 +18,12 @@ if TYPE_CHECKING:
     from obelix.core.tracer.tracer import Tracer
 
 from obelix.core.agent.agent_tracing import (
+    accumulate_llm_call,
     emit_assistant_span,
     emit_human_span,
     end_agent_trace,
-    end_llm_span,
     end_tool_span,
     start_agent_trace,
-    start_llm_span,
     start_tool_span,
 )
 from obelix.core.agent.event_contracts import EventContract, get_event_contracts
@@ -301,6 +300,33 @@ class BaseAgent:
         for hook in self._hooks[event]:
             outcome = await hook.execute(agent_status, result_value)
 
+            # Emit hook.fired event when the hook actually changed behavior
+            # (decision != CONTINUE) or applied side effects. Plain CONTINUE
+            # with no effects is noise and therefore skipped.
+            if self._tracer is not None and (
+                outcome.decision != HookDecision.CONTINUE or outcome.effects_count
+            ):
+                reason: str | None = None
+                if outcome.decision == HookDecision.REJECT:
+                    reason = (
+                        outcome.value
+                        if isinstance(outcome.value, str)
+                        else "Task rejected by agent"
+                    )
+                elif outcome.decision == HookDecision.FAIL and isinstance(
+                    outcome.value, str
+                ):
+                    reason = outcome.value
+                await self._tracer.add_event(
+                    "hook.fired",
+                    {
+                        "event": event.value,
+                        "decision": outcome.decision.value,
+                        "reason": reason,
+                        "effects_count": outcome.effects_count,
+                    },
+                )
+
             if outcome.decision == HookDecision.RETRY:
                 if not contract.retryable:
                     retryable = ", ".join(e.value for e in self._retryable_events())
@@ -388,8 +414,15 @@ class BaseAgent:
                     response = event.assistant_response
         """
         self._validate_query_input(query)
-        async for event in self._execute_loop(query, stream=True):
-            yield event
+        # Wrap the inner generator in ``aclosing`` so that when the caller
+        # closes *this* generator (via GC or explicit ``aclose``), the inner
+        # ``_execute_loop`` generator is also closed — which runs its own
+        # ``finally`` block (closing the tracer agent span). Without this,
+        # the inner ``finally`` would only run at GC time, long after the
+        # caller finished.
+        async with aclosing(self._execute_loop(query, stream=True)) as loop:
+            async for event in loop:
+                yield event
 
     async def resume_after_deferred(self) -> AsyncIterator[StreamEvent]:
         """Resume the agent loop after a deferred tool response was injected.
@@ -399,8 +432,9 @@ class BaseAgent:
         without adding a new HumanMessage — the LLM sees the pending
         tool_call + tool_result and continues normally.
         """
-        async for event in self._execute_loop(None, stream=True, resume=True):
-            yield event
+        async with aclosing(self._execute_loop(None, stream=True, resume=True)) as loop:
+            async for event in loop:
+                yield event
 
     # ─── Unified Execution Loop ───────────────────────────────────────────────
 
@@ -422,8 +456,11 @@ class BaseAgent:
         if resume:
             # Resume after deferred: trace and agent span are still open
             # from the first invocation. Don't create new ones.
-            # We must close the root trace at the end.
-            is_root_trace = True
+            # Whether we own trace closure depends on whether an outer trace
+            # exists (restored by the A2A executor, for example).
+            from obelix.core.tracer.context import get_current_trace
+
+            is_root_trace = get_current_trace() is None
         else:
             is_root_trace = await start_agent_trace(
                 self._tracer,
@@ -470,7 +507,7 @@ class BaseAgent:
             )
 
         try:
-            if not resume:
+            if not resume and is_root_trace:
                 query_text = (
                     query
                     if isinstance(query, str)
@@ -504,7 +541,8 @@ class BaseAgent:
                 )
                 if outcome.decision == HookDecision.STOP:
                     assistant_msg = outcome.value
-                    await emit_assistant_span(self._tracer, assistant_msg)
+                    if is_root_trace:
+                        await emit_assistant_span(self._tracer, assistant_msg)
                     response = self._build_final_response(
                         assistant_msg, collected_tool_results, execution_error
                     )
@@ -523,12 +561,7 @@ class BaseAgent:
                     raise RuntimeError("Hook BEFORE_LLM_CALL requested FAIL")
 
                 # === LLM call ===
-                await start_llm_span(
-                    self._tracer,
-                    self.provider,
-                    self.conversation_history,
-                    self.registered_tools,
-                )
+                llm_started_at = time.monotonic()
 
                 assistant_msg: AssistantMessage | None = None
                 streamed_tokens = False
@@ -548,10 +581,6 @@ class BaseAgent:
                                     f"interrupted by user cancel"
                                 )
                                 await llm_stream.aclose()
-                                await end_llm_span(
-                                    self._tracer,
-                                    AssistantMessage(content="[canceled]"),
-                                )
                                 cancel_msg = AssistantMessage(
                                     content=(
                                         "[This task was interrupted and canceled "
@@ -596,7 +625,13 @@ class BaseAgent:
                         "invoke_stream() did not yield a final StreamEvent"
                     )
 
-                await end_llm_span(self._tracer, assistant_msg)
+                await accumulate_llm_call(
+                    self._tracer,
+                    assistant_msg=assistant_msg,
+                    provider_type=str(self.provider.provider_type),
+                    model_id=self.provider.model_id,
+                    duration_ms=(time.monotonic() - llm_started_at) * 1000,
+                )
 
                 # === AFTER_LLM_CALL hooks ===
                 outcome = await self._run_hooks(
@@ -617,7 +652,8 @@ class BaseAgent:
                     raise RuntimeError("Hook AFTER_LLM_CALL requested FAIL")
                 if outcome.decision == HookDecision.STOP:
                     assistant_msg = outcome.value
-                    await emit_assistant_span(self._tracer, assistant_msg)
+                    if is_root_trace:
+                        await emit_assistant_span(self._tracer, assistant_msg)
                     response = self._build_final_response(
                         assistant_msg, collected_tool_results, execution_error
                     )
@@ -656,7 +692,8 @@ class BaseAgent:
                             "Required tool call missing before final response"
                         )
                     assistant_msg = outcome.value
-                    await emit_assistant_span(self._tracer, assistant_msg)
+                    if is_root_trace:
+                        await emit_assistant_span(self._tracer, assistant_msg)
                     response = self._build_final_response(
                         assistant_msg, collected_tool_results, execution_error
                     )
@@ -734,7 +771,8 @@ class BaseAgent:
                                 "Required tool call missing before final response"
                             )
                         assistant_msg = outcome.value
-                        await emit_assistant_span(self._tracer, assistant_msg)
+                        if is_root_trace:
+                            await emit_assistant_span(self._tracer, assistant_msg)
                         response = self._build_final_response(
                             assistant_msg, collected_tool_results, execution_error
                         )
@@ -774,7 +812,8 @@ class BaseAgent:
                         "Required tool call missing before final response"
                     )
                 assistant_msg = outcome.value
-                await emit_assistant_span(self._tracer, assistant_msg)
+                if is_root_trace:
+                    await emit_assistant_span(self._tracer, assistant_msg)
                 response = self._build_final_response(
                     assistant_msg, collected_tool_results, execution_error
                 )

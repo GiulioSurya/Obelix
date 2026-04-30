@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import Final
 
 from pydantic import Field
 
@@ -42,6 +43,14 @@ from obelix.core.skill.substitution import (
 from obelix.core.tool.tool_decorator import tool
 
 logger = logging.getLogger(__name__)
+
+# Canonical tool name used by the SkillTool. Three production sites depend on
+# this literal (the @tool decorator on the class below, the fork inner-agent
+# tool filter in _make_fork_agent, and the tracer dispatch in
+# core/agent/agent_tracing.start_tool_span). Renaming any one of them in
+# isolation would silently break the other two — keep them in sync via this
+# constant.
+SKILL_TOOL_NAME: Final[str] = "Skill"
 
 # ~1% of a 200k-token context window, expressed in characters.
 DEFAULT_LISTING_BUDGET = 8_000
@@ -101,7 +110,7 @@ def _make_fork_agent(parent_agent, rendered_body: str) -> BaseAgent:
     for t in getattr(parent_agent, "registered_tools", []):
         # Exclude SkillTool from the fork's tool set: the inner agent must not
         # be able to invoke skills, otherwise it would fork recursively into itself.
-        if getattr(t, "tool_name", None) != "Skill":
+        if getattr(t, "tool_name", None) != SKILL_TOOL_NAME:
             inner.register_tool(t)
     return inner
 
@@ -209,13 +218,19 @@ def make_skill_tool(
     cleanup_installed = [False]  # list-wrapped for mutability in nested closure
 
     @tool(
-        name="Skill",
+        name=SKILL_TOOL_NAME,
         description=(
             "Execute a skill within the main conversation. "
             "Use when a skill from the listing matches the user's request."
         ),
     )
     class SkillTool:
+        # Expose the SkillManager on the instance so tracing (and other
+        # introspection) can resolve mode/source without hacking the closure.
+        # Leading underscore keeps the @tool decorator from treating this as
+        # a Pydantic input field.
+        _manager = manager
+
         name: str = Field(..., description="Name of the skill to invoke")
         args: str = Field(
             default="", description="Optional arguments passed as $ARGUMENTS"

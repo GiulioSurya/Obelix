@@ -799,7 +799,8 @@ class TestRegisterAgent:
 class TestSharedMemoryNoOp:
     """Tests for shared memory hooks when memory_graph is None."""
 
-    def test_inject_shared_memory_noop_without_graph(self, mock_provider):
+    @pytest.mark.asyncio
+    async def test_inject_shared_memory_noop_without_graph(self, mock_provider):
         """_inject_shared_memory does nothing when memory_graph is None."""
         from obelix.core.agent.memory_hooks import _inject_shared_memory
 
@@ -808,7 +809,7 @@ class TestSharedMemoryNoOp:
         history_len = len(agent.conversation_history)
         status = MagicMock()
         status.agent = agent
-        _inject_shared_memory(status)
+        await _inject_shared_memory(status)
         assert len(agent.conversation_history) == history_len
 
     @pytest.mark.asyncio
@@ -824,7 +825,8 @@ class TestSharedMemoryNoOp:
         # Should not raise
         await _publish_to_memory(status)
 
-    def test_inject_shared_memory_noop_without_agent_id(self, mock_provider):
+    @pytest.mark.asyncio
+    async def test_inject_shared_memory_noop_without_agent_id(self, mock_provider):
         """_inject_shared_memory does nothing when agent_id is None."""
         from obelix.core.agent.memory_hooks import _inject_shared_memory
 
@@ -834,7 +836,7 @@ class TestSharedMemoryNoOp:
         history_len = len(agent.conversation_history)
         status = MagicMock()
         status.agent = agent
-        _inject_shared_memory(status)
+        await _inject_shared_memory(status)
         assert len(agent.conversation_history) == history_len
 
 
@@ -969,3 +971,252 @@ class TestGetConversationHistory:
         history = agent.get_conversation_history
         assert history is not agent.conversation_history
         assert history == agent.conversation_history
+
+
+# ---------------------------------------------------------------------------
+# Task 10: per-call LLM spans dropped, aggregated on agent span
+# ---------------------------------------------------------------------------
+
+
+class TestAgentSpanAggregatedLlmUsage:
+    """Verifies the Task 10 refactor: no more 'llm' spans, llm_usage on agent."""
+
+    @pytest.mark.asyncio
+    async def test_no_llm_spans_emitted_any_more(self, make_agent_with_spy_tracer):
+        """After the refactor, BaseAgent never emits a span with type 'llm'."""
+        from tests.core.agent.conftest import _mock_assistant_text
+
+        agent, spy = make_agent_with_spy_tracer(
+            responses=[_mock_assistant_text("done", usage_in=50, usage_out=10)]
+        )
+        await agent.execute_query_async("hi")
+        assert not any(
+            str(s.span_type) == "SpanType.llm" or s.span_type.value == "llm"
+            for s in spy.spans
+        )
+
+    @pytest.mark.asyncio
+    async def test_agent_span_aggregates_llm_usage_across_iterations(
+        self, make_agent_with_spy_tracer
+    ):
+        """Two LLM iterations produce a single aggregated llm_usage on the agent span."""
+        from tests.core.agent.conftest import (
+            _mock_assistant_text,
+            _mock_assistant_with_tool_call,
+        )
+
+        agent, spy = make_agent_with_spy_tracer(
+            responses=[
+                _mock_assistant_with_tool_call(
+                    tool_name="dummy", usage_in=800, usage_out=120
+                ),
+                _mock_assistant_text("final", usage_in=600, usage_out=80),
+            ],
+            tool_results={"dummy": {"ok": True}},
+        )
+        await agent.execute_query_async("go")
+        agent_spans = [s for s in spy.spans if s.span_type.value == "agent"]
+        assert len(agent_spans) == 1
+        usage = agent_spans[0].metadata.get("llm_usage")
+        assert usage is not None
+        assert usage["calls"] == 2
+        assert usage["input_tokens"] == 1400
+        assert usage["output_tokens"] == 200
+        assert usage["total_tokens"] == 1600
+
+    @pytest.mark.asyncio
+    async def test_agent_span_records_model_and_provider(
+        self, make_agent_with_spy_tracer
+    ):
+        """The agent span carries model_id and provider_type after execution."""
+        from tests.core.agent.conftest import _mock_assistant_text
+
+        agent, spy = make_agent_with_spy_tracer(
+            responses=[_mock_assistant_text("done")]
+        )
+        await agent.execute_query_async("hi")
+        agent_spans = [s for s in spy.spans if s.span_type.value == "agent"]
+        assert len(agent_spans) == 1
+        assert agent_spans[0].metadata.get("model_id") is not None
+        assert agent_spans[0].metadata.get("provider_type") is not None
+
+
+# ---------------------------------------------------------------------------
+# Task 13: guard human/assistant emission to root-only
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_human_and_assistant_spans_emitted_when_root(make_agent_with_spy_tracer):
+    """Standalone (root) agent emits exactly one human + one assistant span."""
+    from tests.core.agent.conftest import _mock_assistant_text
+
+    agent, spy = make_agent_with_spy_tracer(
+        responses=[_mock_assistant_text("hello world")]
+    )
+    await agent.execute_query_async("the query")
+
+    human_spans = [s for s in spy.spans if s.span_type.value == "human"]
+    assistant_spans = [s for s in spy.spans if s.span_type.value == "assistant"]
+    assert len(human_spans) == 1, f"expected 1 human span, got {len(human_spans)}"
+    assert len(assistant_spans) == 1, (
+        f"expected 1 assistant span, got {len(assistant_spans)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_human_and_assistant_spans_not_emitted_when_nested(
+    make_agent_with_spy_tracer,
+):
+    """When a trace is already active (nested), BaseAgent does NOT emit human/assistant spans."""
+    from tests.core.agent.conftest import _mock_assistant_text
+
+    agent, spy = make_agent_with_spy_tracer(responses=[_mock_assistant_text("hello")])
+    # Open an outer trace + agent span to simulate nesting under an a2a_task
+    from obelix.core.tracer.models import SpanType
+
+    await agent._tracer.start_trace("outer")
+    await agent._tracer.start_span(SpanType.a2a_task, "outer-task")
+    try:
+        await agent.execute_query_async("hi")
+    finally:
+        await agent._tracer.end_span()
+        await agent._tracer.end_trace()
+
+    human_spans = [s for s in spy.spans if s.span_type.value == "human"]
+    assistant_spans = [s for s in spy.spans if s.span_type.value == "assistant"]
+    assert human_spans == [], (
+        f"nested agent must not emit human spans; got {human_spans}"
+    )
+    assert assistant_spans == [], (
+        f"nested agent must not emit assistant spans; got {assistant_spans}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_no_intermediate_assistant_spans_mid_loop(make_agent_with_spy_tracer):
+    """
+    A multi-iteration loop must emit exactly one assistant span (the final response),
+    not one per iteration's text output.
+    """
+    from obelix.core.model.assistant_message import AssistantMessage
+    from obelix.core.model.tool_message import ToolCall
+    from obelix.core.model.usage import Usage
+    from tests.core.agent.conftest import _mock_assistant_text
+
+    # Iteration 1: text + tool call → this is mid-loop text.
+    # Iteration 2: text only → this is the final response.
+    intermediate = AssistantMessage(
+        content="let me use the tool first",
+        tool_calls=[ToolCall(id="t1", name="dummy", arguments={})],
+        usage=Usage(input_tokens=50, output_tokens=10, total_tokens=60),
+    )
+    final = _mock_assistant_text("final answer")
+    agent, spy = make_agent_with_spy_tracer(
+        responses=[intermediate, final],
+        tool_results={"dummy": {"ok": True}},
+    )
+    await agent.execute_query_async("do a thing")
+
+    assistant_spans = [s for s in spy.spans if s.span_type.value == "assistant"]
+    # Exactly ONE assistant span — the final response, not the intermediate text.
+    assert len(assistant_spans) == 1, (
+        f"expected 1 assistant span, got {len(assistant_spans)}: "
+        f"{[getattr(s.output, 'get', lambda _: None)('content') if isinstance(s.output, dict) else s.output for s in assistant_spans]}"
+    )
+    # And its content must be the final answer
+    final_out = assistant_spans[0].output
+    content = final_out.get("content") if isinstance(final_out, dict) else final_out
+    assert content == "final answer"
+
+
+@pytest.mark.asyncio
+async def test_resume_nested_does_not_emit_or_end_outer_trace(
+    make_agent_with_spy_tracer,
+):
+    """
+    When resuming after a deferred call while an outer trace is active (A2A case),
+    BaseAgent must NOT emit human/assistant spans AND must NOT close the outer trace.
+    """
+    from obelix.core.model.usage import Usage
+    from obelix.core.tracer.context import get_current_trace
+    from obelix.core.tracer.models import SpanType
+
+    # On resume, the provider is invoked once and returns a plain-text final
+    # response (no further tool calls) so the loop closes on iteration 1.
+    final = AssistantMessage(
+        content="resumed final",
+        tool_calls=[],
+        usage=Usage(input_tokens=5, output_tokens=2, total_tokens=7),
+    )
+    agent, spy = make_agent_with_spy_tracer(responses=[final])
+
+    # Seed the agent conversation_history to mirror what the first invocation
+    # would have left behind before the deferred pause: a prior user turn, an
+    # assistant tool_call, and the resolved ToolMessage ready for the LLM.
+    deferred_call = ToolCall(id="t-deferred", name="dummy", arguments={})
+    agent.conversation_history.extend(
+        [
+            HumanMessage(content="original query"),
+            AssistantMessage(
+                content="",
+                tool_calls=[deferred_call],
+                usage=Usage(input_tokens=10, output_tokens=3, total_tokens=13),
+            ),
+            ToolMessage(
+                tool_results=[
+                    ToolResult(
+                        tool_call_id="t-deferred",
+                        tool_name="dummy",
+                        result={"ok": True},
+                        status=ToolStatus.SUCCESS,
+                    )
+                ]
+            ),
+        ]
+    )
+
+    # Simulate the A2A executor state on resume: outer trace + a2a_task span
+    # + the agent span that was left open when the first invocation paused for
+    # the deferred tool (resume_after_deferred expects this span to exist).
+    await agent._tracer.start_trace("outer")
+    await agent._tracer.start_span(SpanType.a2a_task, "outer-task")
+    await agent._tracer.start_span(SpanType.agent, "BaseAgent")
+    outer_trace = get_current_trace()
+    try:
+        async for _ in agent.resume_after_deferred():
+            # Drain the stream; we only care about spans, not tokens.
+            pass
+    finally:
+        # resume_after_deferred closes the inner agent span on exit (its own
+        # responsibility). If the outer trace survived, tear it down here so
+        # we don't leak state into other tests.
+        if get_current_trace() is outer_trace:
+            await agent._tracer.end_span()  # close a2a_task
+            await agent._tracer.end_trace()
+
+    # Resume path must not double-emit human/assistant spans.
+    human_spans = [s for s in spy.spans if s.span_type.value == "human"]
+    assistant_spans = [s for s in spy.spans if s.span_type.value == "assistant"]
+    assert human_spans == [], (
+        f"nested resume must not emit human spans; got {human_spans}"
+    )
+    assert assistant_spans == [], (
+        f"nested resume must not emit assistant spans; got {assistant_spans}"
+    )
+
+    # And must NOT have closed the outer trace: end_time stays unset until the
+    # test's finally block tears it down explicitly.
+    assert outer_trace is not None
+    # After our teardown the trace is ended; the critical invariant is that
+    # resume_after_deferred itself did not mark it terminated while the outer
+    # a2a_task span was still conceptually open. We assert that by checking
+    # the number of `end_trace` calls reaching the exporter: exactly one,
+    # triggered by the test's own end_trace() above.
+    closed_traces = [
+        s for s in spy.spans if s.span_type is SpanType.a2a_task and s.end_time
+    ]
+    assert len(closed_traces) == 1, (
+        "outer a2a_task span must be closed exactly once (by the test), not by "
+        "resume_after_deferred"
+    )
