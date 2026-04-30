@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -37,8 +36,6 @@ class RemoteAgentRegistry:
         self._cards: dict[str, AgentCard] = {}
         self._clients: dict[str, A2AClient] = {}
         self._token_map: dict[str, TokenRoute] = {}
-        # Used by T5 resolve_all() to serialize concurrent agent-card fetches.
-        self._lock = asyncio.Lock()
 
     # ── Token map ─────────────────────────────────────────────────────────
 
@@ -115,6 +112,11 @@ class RemoteAgentRegistry:
             try:
                 resolver = A2ACardResolver(httpx_client=self._httpx, base_url=url)
                 card = await resolver.get_agent_card()
+            # Broad exception catch is intentional: any fetch-time failure
+            # (network, timeout, JSON validation, transport negotiation)
+            # should soft-fail this remote without aborting the rest of the
+            # registry. The catch only wraps the resolver call (factory.create
+            # below is intentionally unprotected — bugs there should propagate).
             except Exception as e:
                 logger.warning(f"[A2A] AgentCard fetch failed | url={url} error={e}")
                 continue
@@ -139,10 +141,20 @@ class RemoteAgentRegistry:
         return list(self._cards.keys())
 
     def card_for(self, name: str) -> AgentCard:
-        return self._cards[name]
+        try:
+            return self._cards[name]
+        except KeyError:
+            raise KeyError(
+                f"unknown remote agent {name!r}; known: {list(self._cards.keys())}"
+            ) from None
 
     def client_for(self, name: str) -> A2AClient:
-        return self._clients[name]
+        try:
+            return self._clients[name]
+        except KeyError:
+            raise KeyError(
+                f"unknown remote agent {name!r}; known: {list(self._clients.keys())}"
+            ) from None
 
     def descriptions(self) -> dict[str, dict]:
         """Returns {name: {description, skills}} for system_prompt_fragment."""

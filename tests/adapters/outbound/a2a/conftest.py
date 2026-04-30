@@ -40,12 +40,13 @@ def make_fake_card(
 
 
 @pytest.fixture
-def httpx_client() -> httpx.AsyncClient:
-    return httpx.AsyncClient()
+async def httpx_client():
+    async with httpx.AsyncClient() as client:
+        yield client
 
 
 @pytest.fixture
-def registry(httpx_client: httpx.AsyncClient) -> RemoteAgentRegistry:
+async def registry(httpx_client: httpx.AsyncClient) -> RemoteAgentRegistry:
     return RemoteAgentRegistry(urls=[], httpx_client=httpx_client)
 
 

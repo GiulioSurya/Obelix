@@ -1,8 +1,28 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from loguru import logger as loguru_logger
 
 from obelix.adapters.outbound.a2a.registry import RemoteAgentRegistry
+from tests.adapters.outbound.a2a.conftest import make_fake_card
+
+
+@pytest.fixture
+def caplog(caplog):
+    """Bridge loguru -> stdlib logging so pytest's ``caplog`` can capture
+    warnings emitted via ``obelix.infrastructure.logging.get_logger``.
+
+    ``registry.py`` routes through loguru, which does not propagate to the
+    standard logging tree by default.
+    """
+    handler_id = loguru_logger.add(
+        caplog.handler,
+        format="{message}",
+        level=0,
+        filter=lambda record: record["level"].no >= caplog.handler.level,
+    )
+    yield caplog
+    loguru_logger.remove(handler_id)
 
 
 def test_register_token_creates_route(registry: RemoteAgentRegistry) -> None:
@@ -71,8 +91,6 @@ def test_token_map_is_dict(registry: RemoteAgentRegistry) -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_all_happy_path(httpx_client, patched_resolver):
-    from tests.adapters.outbound.a2a.conftest import make_fake_card
-
     patched_resolver.add("http://b:8001", make_fake_card("B", skills=["lookup"]))
     patched_resolver.add("http://c:8002", make_fake_card("C", skills=["bill"]))
     reg = RemoteAgentRegistry(
@@ -88,8 +106,6 @@ async def test_resolve_all_happy_path(httpx_client, patched_resolver):
 async def test_resolve_all_one_failure_skipped(httpx_client, patched_resolver, caplog):
     import logging
 
-    from tests.adapters.outbound.a2a.conftest import make_fake_card
-
     caplog.set_level(logging.WARNING)
     patched_resolver.add("http://b:8001", make_fake_card("B"))
     # http://c:8002 NOT added → fetch raises
@@ -99,6 +115,7 @@ async def test_resolve_all_one_failure_skipped(httpx_client, patched_resolver, c
     )
     await reg.resolve_all()
     assert set(reg.names()) == {"B"}
+    assert any("c:8002" in r.message for r in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -106,8 +123,6 @@ async def test_resolve_all_duplicate_names_get_discriminator(
     httpx_client, patched_resolver, caplog
 ):
     import logging
-
-    from tests.adapters.outbound.a2a.conftest import make_fake_card
 
     caplog.set_level(logging.WARNING)
     patched_resolver.add("http://b1:8001", make_fake_card("B"))
@@ -119,6 +134,7 @@ async def test_resolve_all_duplicate_names_get_discriminator(
     await reg.resolve_all()
     names = sorted(reg.names())
     assert names == ["B", "B (1)"]
+    assert any("duplicate" in r.message.lower() for r in caplog.records)
 
 
 def test_card_for_unknown_raises(registry: RemoteAgentRegistry) -> None:
@@ -131,8 +147,6 @@ async def test_descriptions_returns_name_to_metadata(
     httpx_client, patched_resolver
 ) -> None:
     """After resolve, descriptions() returns a dict for system_prompt_fragment."""
-    from tests.adapters.outbound.a2a.conftest import make_fake_card
-
     patched_resolver.add(
         "http://b:8001",
         make_fake_card("B", description="inventory", skills=["lookup", "stock"]),
