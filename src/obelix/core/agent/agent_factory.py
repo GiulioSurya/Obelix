@@ -630,9 +630,16 @@ class AgentFactory:
             registry = RemoteAgentRegistry(
                 urls=list(remote_agents), httpx_client=httpx_client
             )
+
             # Resolve cards synchronously before uvicorn.run so the registry
-            # is ready when the first request arrives.
-            asyncio.run(registry.resolve_all())
+            # is ready when the first request arrives. Bound the resolution
+            # window with a 10s timeout so a single slow remote can't hang
+            # startup indefinitely. Future enhancement: expose ``resolve_timeout``
+            # as an ``a2a_serve`` kwarg.
+            async def _resolve_with_timeout() -> None:
+                await asyncio.wait_for(registry.resolve_all(), timeout=10.0)
+
+            asyncio.run(_resolve_with_timeout())
 
             # Webhook URL: prefer explicit endpoint override, else bind addr.
             base_url = endpoint.rstrip("/") if endpoint else f"http://{host}:{port}"
@@ -672,12 +679,11 @@ class AgentFactory:
             config_store=push_config_store,
         )
         executor = ObelixAgentExecutor(
-            agent_factory, tracer=self._tracer, registry=registry
+            agent_factory,
+            tracer=self._tracer,
+            registry=registry,
+            context_store=context_store,
         )
-        # Replace the executor's internal store with the shared one so the
-        # webhook handler and the executor read/write the same ContextEntry
-        # instances. Acceptable hack for now — see plan T14 notes.
-        executor._store = context_store
 
         request_handler = DefaultRequestHandler(
             agent_executor=executor,
@@ -696,11 +702,16 @@ class AgentFactory:
         fastapi_app.add_middleware(ClientIPMiddleware)
 
         if remote_agents:
-            assert webhook_handler is not None
-            assert polling_worker is not None
             fastapi_app.add_api_route("/webhook", webhook_handler, methods=["POST"])
+
+            async def _shutdown() -> None:
+                # Stop polling FIRST so no in-flight get_task uses the client
+                # we're about to close.
+                await polling_worker.stop()
+                await httpx_client.aclose()
+
             fastapi_app.add_event_handler("startup", polling_worker.start)
-            fastapi_app.add_event_handler("shutdown", polling_worker.stop)
+            fastapi_app.add_event_handler("shutdown", _shutdown)
 
         return fastapi_app
 

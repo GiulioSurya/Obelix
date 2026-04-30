@@ -98,9 +98,12 @@ class ObelixAgentExecutor(AgentExecutor):
         max_contexts: int = DEFAULT_MAX_CONTEXTS,
         tracer: Tracer | None = None,
         registry: RemoteAgentRegistry | None = None,
+        context_store: ContextStore | None = None,
     ) -> None:
         self._agent_factory = agent_factory
-        self._store = ContextStore(max_contexts)
+        self._store = (
+            context_store if context_store is not None else ContextStore(max_contexts)
+        )
         self._store_lock = asyncio.Lock()
         self._tracer = tracer
         self._registry = registry

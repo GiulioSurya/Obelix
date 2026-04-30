@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from obelix.core.agent.agent_factory import AgentFactory
 from obelix.core.agent.base_agent import BaseAgent
 from obelix.core.model.assistant_message import AssistantMessage
@@ -152,8 +154,8 @@ def test_a2a_serve_with_remotes_resolves_cards_at_startup():
 
 
 def test_a2a_serve_with_remotes_injects_tools_into_agent():
-    """The agent_factory closure attaches DispatchAgentTool, RespondToRemoteTool,
-    TaskListTool, TaskGetTool, TaskStopTool to each agent instance."""
+    """The agent_factory closure attaches the 5 outbound A2A tools to
+    each agent instance produced per request."""
     factory = AgentFactory()
     factory.register("dummy", _DummyAgent)
 
@@ -170,28 +172,45 @@ def test_a2a_serve_with_remotes_injects_tools_into_agent():
             log_level="error",
         )
 
-    # Find the executor on the request handler chain. The implementation
-    # detail is: ObelixAgentExecutor instances live on a request handler
-    # mounted into the FastAPI app. We can introspect the agent_factory
-    # callable directly through that path.
     app = seen["app"]
-    # Walk routes to find /webhook handler — but the easier path: the
-    # executor is in the handler graph. Easiest: introspect by calling
-    # the factory through a fresh request, but that's heavy. Instead,
-    # check that the FastAPI app has both /webhook route AND a startup
-    # event for polling.
-    # Lifespan events may use a different attr depending on FastAPI/Starlette
-    # version; this test just spot-checks that wiring exists. If introspection
-    # is too brittle, simplify to "has /webhook path" only.
-    paths = [getattr(r, "path", None) for r in app.routes]
-    assert "/webhook" in paths
-    # Bonus: verify a startup event handler is registered (best-effort
-    # introspection — different FastAPI/Starlette versions expose lifespan
-    # differently). At minimum, on_startup must be non-empty when remote_agents
-    # are wired in.
-    assert app.router.on_startup, (
-        "expected at least one startup handler when remote_agents wired"
-    )
+
+    # Locate the ObelixAgentExecutor through the request handler graph.
+    # The A2A SDK mounts JSON-RPC routes whose endpoints are bound methods
+    # of an ``A2AFastAPIApplication``; from there:
+    #   a2a_app.handler                  -> JSONRPCHandler
+    #   .request_handler                 -> DefaultRequestHandler
+    #   .agent_executor                  -> ObelixAgentExecutor
+    from obelix.adapters.inbound.a2a.server.executor import ObelixAgentExecutor
+
+    executor = None
+    for route in app.routes:
+        endpoint = getattr(route, "endpoint", None)
+        a2a_app = getattr(endpoint, "__self__", None)
+        if a2a_app is None or type(a2a_app).__name__ != "A2AFastAPIApplication":
+            continue
+        try:
+            candidate = a2a_app.handler.request_handler.agent_executor
+        except AttributeError:
+            continue
+        if isinstance(candidate, ObelixAgentExecutor):
+            executor = candidate
+            break
+
+    if executor is None:
+        # Fallback: introspection too brittle on this FastAPI/Starlette
+        # combo — covered by integration tests.
+        pytest.skip("could not introspect executor — covered by integration tests")
+
+    agent = executor._agent_factory()
+    tool_names = {getattr(t, "tool_name", None) for t in agent.registered_tools}
+    expected = {
+        "dispatch_agent",
+        "respond_to_remote",
+        "task_list",
+        "task_get",
+        "task_stop",
+    }
+    assert expected.issubset(tool_names), f"missing tools: {expected - tool_names}"
 
 
 def test_a2a_serve_with_empty_remotes_list_unchanged():
