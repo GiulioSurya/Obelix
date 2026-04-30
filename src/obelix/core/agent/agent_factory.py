@@ -447,6 +447,7 @@ class AgentFactory:
         log_level: str = "info",
         subagents: list[str] | None = None,
         subagent_config: dict[str, dict[str, Any]] | None = None,
+        remote_agents: list[str] | None = None,
         **create_overrides: Any,
     ) -> None:
         """Start an A2A-compliant server for the specified agent.
@@ -470,6 +471,13 @@ class AgentFactory:
             log_level: Uvicorn log level.
             subagents: Optional list of sub-agent names to attach.
             subagent_config: Per-subagent constructor overrides.
+            remote_agents: Optional list of remote A2A agent base URLs (e.g.
+                ``["http://b:8001", "http://c:8002"]``). When non-empty, the
+                served agent is wired with outbound A2A tools (dispatch,
+                respond, task_list/get/stop) and a webhook + polling worker
+                surface remote-task notifications back into the conversation.
+                When ``None`` or empty, the server behaves as a pure inbound
+                A2A endpoint with zero remote-agent wiring (legacy behavior).
             **create_overrides: Extra kwargs forwarded to create().
         """
         try:
@@ -515,6 +523,7 @@ class AgentFactory:
             description=description,
             provider_name=provider_name,
             provider_url=provider_url,
+            remote_agents=remote_agents or [],
         )
 
         logger.info(
@@ -534,6 +543,7 @@ class AgentFactory:
         description: str | None,
         provider_name: str,
         provider_url: str | None,
+        remote_agents: list[str],
     ) -> Any:
         """Build a FastAPI application using the a2a-sdk infrastructure.
 
@@ -544,7 +554,12 @@ class AgentFactory:
             agent_factory: Callable that creates a fresh BaseAgent for each
                 A2A request. Ensures context isolation between concurrent
                 requests.
+            remote_agents: Base URLs of remote A2A agents the served agent
+                can dispatch to. When empty, no outbound wiring is added
+                (legacy behavior preserved).
         """
+        import asyncio
+
         import httpx
         from a2a.server.apps.jsonrpc.fastapi_app import A2AFastAPIApplication
         from a2a.server.request_handlers.default_request_handler import (
@@ -552,7 +567,11 @@ class AgentFactory:
         )
         from a2a.server.tasks.inmemory_task_store import InMemoryTaskStore
 
-        from obelix.adapters.inbound.a2a.server.executor import ObelixAgentExecutor
+        from obelix.adapters.inbound.a2a.server.context import ContextStore
+        from obelix.adapters.inbound.a2a.server.executor import (
+            DEFAULT_MAX_CONTEXTS,
+            ObelixAgentExecutor,
+        )
         from obelix.adapters.inbound.a2a.server.middleware import (
             ClientIPMiddleware,
         )
@@ -575,13 +594,91 @@ class AgentFactory:
             provider_url=provider_url,
         )
 
+        # Single shared httpx.AsyncClient used by both the push sender and
+        # (when remote_agents is non-empty) the RemoteAgentRegistry. Single
+        # connection pool, no leaked file descriptors.
+        httpx_client = httpx.AsyncClient()
+
+        # Single shared ContextStore so the executor and the inbound webhook
+        # observe the same per-context state (remote_tasks, pending
+        # notifications, trace_session).
+        context_store = ContextStore(max_contexts=DEFAULT_MAX_CONTEXTS)
+
+        # Build the registry (resolved synchronously below) only when at
+        # least one remote agent is configured. Stays None on the legacy path.
+        registry = None
+        webhook_handler = None
+        polling_worker = None
+        webhook_url: str | None = None
+
+        if remote_agents:
+            from obelix.adapters.outbound.a2a.polling import PollingWorker
+            from obelix.adapters.outbound.a2a.registry import RemoteAgentRegistry
+            from obelix.adapters.outbound.a2a.tools.dispatch import (
+                DispatchAgentTool,
+            )
+            from obelix.adapters.outbound.a2a.tools.respond import (
+                RespondToRemoteTool,
+            )
+            from obelix.adapters.outbound.a2a.tools.task_ops import (
+                TaskGetTool,
+                TaskListTool,
+                TaskStopTool,
+            )
+            from obelix.adapters.outbound.a2a.webhook import make_webhook_handler
+
+            registry = RemoteAgentRegistry(
+                urls=list(remote_agents), httpx_client=httpx_client
+            )
+            # Resolve cards synchronously before uvicorn.run so the registry
+            # is ready when the first request arrives.
+            asyncio.run(registry.resolve_all())
+
+            # Webhook URL: prefer explicit endpoint override, else bind addr.
+            base_url = endpoint.rstrip("/") if endpoint else f"http://{host}:{port}"
+            webhook_url = f"{base_url}/webhook"
+
+            webhook_handler = make_webhook_handler(
+                registry, context_store, tracer=self._tracer
+            )
+            polling_worker = PollingWorker(
+                registry=registry, context_store=context_store
+            )
+
+            # Wrap the existing factory so each fresh agent gets the 5
+            # outbound A2A tools registered before it starts a request.
+            original_factory = agent_factory
+
+            def agent_factory_with_remotes() -> "BaseAgent":
+                inst = original_factory()
+                dispatch = DispatchAgentTool(registry=registry)
+                respond = RespondToRemoteTool(registry=registry)
+                if webhook_url:
+                    dispatch.set_webhook_url(webhook_url)
+                    respond.set_webhook_url(webhook_url)
+                inst.register_tool(dispatch)
+                inst.register_tool(respond)
+                inst.register_tool(TaskListTool())
+                inst.register_tool(TaskGetTool())
+                inst.register_tool(TaskStopTool(registry=registry))
+                return inst
+
+            agent_factory = agent_factory_with_remotes
+
         task_store = InMemoryTaskStore()
         push_config_store = SmartPushNotificationConfigStore()
         push_sender = SmartPushNotificationSender(
-            httpx_client=httpx.AsyncClient(),
+            httpx_client=httpx_client,
             config_store=push_config_store,
         )
-        executor = ObelixAgentExecutor(agent_factory, tracer=self._tracer)
+        executor = ObelixAgentExecutor(
+            agent_factory, tracer=self._tracer, registry=registry
+        )
+        # Replace the executor's internal store with the shared one so the
+        # webhook handler and the executor read/write the same ContextEntry
+        # instances. Acceptable hack for now — see plan T14 notes.
+        executor._store = context_store
+
         request_handler = DefaultRequestHandler(
             agent_executor=executor,
             task_store=task_store,
@@ -597,6 +694,13 @@ class AgentFactory:
         fastapi_app = a2a_app.build(title=f"Obelix A2A — {agent_name}")
         # ClientIPMiddleware captures client IP for webhook URL rewriting.
         fastapi_app.add_middleware(ClientIPMiddleware)
+
+        if remote_agents:
+            assert webhook_handler is not None
+            assert polling_worker is not None
+            fastapi_app.add_api_route("/webhook", webhook_handler, methods=["POST"])
+            fastapi_app.add_event_handler("startup", polling_worker.start)
+            fastapi_app.add_event_handler("shutdown", polling_worker.stop)
 
         return fastapi_app
 
