@@ -157,3 +157,87 @@ def test_killed_state_locally_drops_late_update(entry, registry):
     handle_remote_update(entry=entry, task_id="t-1", fresh=fresh, registry=registry)
     assert entry.remote_tasks["t-1"].status == "killed"  # unchanged
     assert entry.pending_notifications == []
+
+
+def test_canceled_emits_notification_and_revokes_token(entry, registry):
+    from a2a.types import Message, Role
+
+    fresh = Task(
+        id="t-1",
+        context_id="ctx-AAA",
+        status=TaskStatus(
+            state=TaskState.canceled,
+            message=Message(
+                role=Role.agent,
+                parts=[Part(root=TextPart(text="user pressed ESC"))],
+                message_id="m-c",
+            ),
+        ),
+    )
+    handle_remote_update(entry=entry, task_id="t-1", fresh=fresh, registry=registry)
+
+    assert entry.remote_tasks["t-1"].status == "canceled"
+    assert "<status>canceled</status>" in entry.pending_notifications[0].content
+    assert "user pressed ESC" in entry.pending_notifications[0].content
+    registry.revoke.assert_called_once_with("tok")
+
+
+def test_rejected_emits_notification_and_revokes_token(entry, registry):
+    from a2a.types import Message, Role
+
+    fresh = Task(
+        id="t-1",
+        context_id="ctx-AAA",
+        status=TaskStatus(
+            state=TaskState.rejected,
+            message=Message(
+                role=Role.agent,
+                parts=[Part(root=TextPart(text="hook rejected"))],
+                message_id="m-r",
+            ),
+        ),
+    )
+    handle_remote_update(entry=entry, task_id="t-1", fresh=fresh, registry=registry)
+
+    assert entry.remote_tasks["t-1"].status == "rejected"
+    assert "<status>rejected</status>" in entry.pending_notifications[0].content
+    assert "hook rejected" in entry.pending_notifications[0].content
+    registry.revoke.assert_called_once_with("tok")
+
+
+def test_completed_with_no_text_does_not_emit_empty_result(entry, registry):
+    """Regression: empty artifact list should NOT emit <result></result>."""
+    fresh = Task(
+        id="t-1",
+        context_id="ctx-AAA",
+        status=TaskStatus(state=TaskState.completed),
+    )
+    handle_remote_update(entry=entry, task_id="t-1", fresh=fresh, registry=registry)
+
+    assert entry.remote_tasks["t-1"].status == "completed"
+    assert len(entry.pending_notifications) == 1
+    msg = entry.pending_notifications[0]
+    assert "<status>completed</status>" in msg.content
+    assert "<result>" not in msg.content
+    assert "</result>" not in msg.content
+    registry.revoke.assert_called_once_with("tok")
+
+
+def test_unknown_sdk_state_logs_warning(entry, registry, caplog):
+    """auth_required (or any non-recognized state) should log a WARNING and
+    update state silently — no notification, no revoke."""
+    import logging
+
+    caplog.set_level(logging.WARNING)
+
+    # Use auth_required to simulate an SDK state we don't explicitly handle.
+    fresh = Task(
+        id="t-1",
+        context_id="ctx-AAA",
+        status=TaskStatus(state=TaskState.auth_required),
+    )
+    handle_remote_update(entry=entry, task_id="t-1", fresh=fresh, registry=registry)
+
+    assert entry.remote_tasks["t-1"].status == "auth_required"
+    assert entry.pending_notifications == []
+    registry.revoke.assert_not_called()

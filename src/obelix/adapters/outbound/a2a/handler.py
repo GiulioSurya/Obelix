@@ -30,18 +30,23 @@ logger = get_logger(__name__)
 
 
 _TERMINAL = ("completed", "failed", "canceled", "rejected")
+_KNOWN_INTERMEDIATE = ("working", "submitted")
 
 
 def _state_str(s: TaskState) -> str:
-    """Map SDK TaskState enum to our string representation.
+    """Map SDK TaskState enum to Obelix's string representation.
 
-    The SDK uses hyphenated values (e.g. ``input-required``) but the rest
-    of Obelix (RemoteTaskState.status, notification builder, registry)
-    uses the underscore form. Normalize here so callers never have to
-    care which side of the boundary they're on.
+    The A2A SDK uses hyphenated enum values (e.g. "input-required",
+    "auth-required") while Obelix uses the underscore form everywhere
+    else (RemoteTaskState.status, _VALID_STATUSES, etc.). Normalizing
+    here keeps the boundary contained.
+
+    Note: SDK states `auth_required` and `unknown` normalize but fall
+    through as intermediate states — no notification is emitted for
+    them. If a future task needs explicit handling, extend the dispatch
+    branches in handle_remote_update.
     """
-    raw = s.value if hasattr(s, "value") else str(s)
-    return raw.replace("-", "_")
+    return s.value.replace("-", "_")
 
 
 def _extract_artifact_text(task: Task) -> str:
@@ -92,9 +97,33 @@ def handle_remote_update(
     """Apply ``fresh`` (a Task observed via webhook or polling) to the
     local ``RemoteTaskState`` and side-effect notifications/token-revoke.
 
-    No-op cases (idempotent): unknown task_id, status unchanged, locally
-    killed (status was set by task_stop or context cancel — late updates
-    must not resurrect).
+    **No-op cases** (idempotent): unknown task_id, status unchanged,
+    locally killed (status was set by task_stop or context cancel — late
+    updates must not resurrect).
+
+    **Active cases**:
+    - Terminal states (completed/failed/canceled/rejected): build a
+      <remote_task_update> notification (with <result> for completed,
+      <error> otherwise), append to entry.pending_notifications, revoke
+      the token on the registry.
+    - input_required: extract deferred_tool_calls from status.message,
+      set state.deferred_calls, append a notification, do NOT revoke
+      the token (the task may receive a follow-up via respond_to_remote).
+    - Intermediate states (working/submitted/auth_required/unknown):
+      state is updated silently, no notification, no revoke.
+
+    **poll_failures contract**: This function resets ``state.poll_failures
+    = 0`` on every state change. Same-state polls (e.g., a polling worker
+    observing repeated "working") are early-returned BEFORE this reset, so
+    ``poll_failures`` is NOT touched. Callers that count consecutive HTTP
+    errors (the polling worker, T8) must reset ``poll_failures`` themselves
+    on every successful HTTP response, regardless of whether the state
+    changed. This function only sees the parsed Task; it cannot tell whether
+    the HTTP call that produced it succeeded.
+
+    **Thread safety**: Not thread-safe. Callers must serialize access to
+    ``entry.remote_tasks`` and ``entry.pending_notifications`` (typically
+    the executor's per-context idle gate already enforces this).
     """
     state = entry.remote_tasks.get(task_id)
     if state is None:
@@ -118,18 +147,31 @@ def handle_remote_update(
     state.last_update_monotonic = time.monotonic()
     state.poll_failures = 0  # any successful update resets the streak
 
+    if (
+        new_status not in _TERMINAL
+        and new_status != "input_required"
+        and new_status not in _KNOWN_INTERMEDIATE
+    ):
+        logger.warning(
+            f"[A2A] unknown remote state | task_id={task_id} "
+            f"agent={state.agent_name} status={new_status} — "
+            f"state updated but no notification emitted; if this state "
+            f"requires LLM action, extend handle_remote_update."
+        )
+        # Fall through to the end (no notification, no revoke).
+
     if new_status in _TERMINAL:
         # Build notification with result OR error.
         if new_status == "completed":
             text = _extract_artifact_text(fresh)
-            state.last_artifact = (
-                {"text": text} if text else None
-            )  # store something readable for task_get
+            state.last_artifact = {"text": text} if text else None
+            # text or None: avoid emitting an empty <result></result>
+            # tag when the remote completes without text artifacts.
             note = build_remote_task_update_message(
                 task_id=task_id,
                 agent_name=state.agent_name,
                 status="completed",
-                result_text=text,
+                result_text=text or None,
             )
         else:
             err = _extract_status_message_text(fresh) or new_status
