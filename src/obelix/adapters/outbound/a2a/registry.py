@@ -91,3 +91,68 @@ class RemoteAgentRegistry:
         if expired:
             logger.info(f"[A2A] GC removed {len(expired)} expired tokens")
         return len(expired)
+
+    # ── Card resolution ───────────────────────────────────────────────────
+
+    async def resolve_all(self) -> None:
+        """Fetch /.well-known/agent-card.json for each URL and build clients.
+
+        - Per-URL fetch failure: log warning, skip that agent.
+        - Duplicate names: log warning, append `(N)` discriminator so
+          replicated topologies (multi-AZ behind separate URLs) work
+          (e.g. two cards named "B" become "B" and "B (1)").
+        """
+        from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
+
+        client_config = ClientConfig(
+            httpx_client=self._httpx,
+            streaming=False,
+            polling=False,
+        )
+        factory = ClientFactory(client_config)
+
+        for url in self._urls:
+            try:
+                resolver = A2ACardResolver(httpx_client=self._httpx, base_url=url)
+                card = await resolver.get_agent_card()
+            except Exception as e:
+                logger.warning(f"[A2A] AgentCard fetch failed | url={url} error={e}")
+                continue
+
+            base_name = getattr(card, "name", None) or url
+            unique_name = base_name
+            if base_name in self._cards:
+                idx = 1
+                while f"{base_name} ({idx})" in self._cards:
+                    idx += 1
+                unique_name = f"{base_name} ({idx})"
+                logger.warning(
+                    f"[A2A] duplicate AgentCard name | base_name={base_name!r} "
+                    f"url={url} registered_as={unique_name!r}"
+                )
+
+            self._cards[unique_name] = card
+            self._clients[unique_name] = factory.create(card)
+            logger.info(f"[A2A] registered remote agent | name={unique_name} url={url}")
+
+    def names(self) -> list[str]:
+        return list(self._cards.keys())
+
+    def card_for(self, name: str) -> AgentCard:
+        return self._cards[name]
+
+    def client_for(self, name: str) -> A2AClient:
+        return self._clients[name]
+
+    def descriptions(self) -> dict[str, dict]:
+        """Returns {name: {description, skills}} for system_prompt_fragment."""
+        out: dict[str, dict] = {}
+        for name, card in self._cards.items():
+            skills_list = [
+                getattr(s, "name", str(s)) for s in (getattr(card, "skills", []) or [])
+            ]
+            out[name] = {
+                "description": getattr(card, "description", "") or "",
+                "skills": skills_list,
+            }
+        return out

@@ -1,16 +1,8 @@
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock
 
 import pytest
 
 from obelix.adapters.outbound.a2a.registry import RemoteAgentRegistry
-
-
-@pytest.fixture
-def registry() -> RemoteAgentRegistry:
-    # MagicMock instead of real httpx.AsyncClient because token-map ops
-    # don't touch the network. Avoids ResourceWarning on test teardown.
-    return RemoteAgentRegistry(urls=[], httpx_client=MagicMock())
 
 
 def test_register_token_creates_route(registry: RemoteAgentRegistry) -> None:
@@ -72,3 +64,82 @@ def test_token_map_is_dict(registry: RemoteAgentRegistry) -> None:
     collisions are astronomically improbable.
     """
     assert isinstance(registry._token_map, dict)
+
+
+# ── resolve_all and card discovery ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_resolve_all_happy_path(httpx_client, patched_resolver):
+    from tests.adapters.outbound.a2a.conftest import make_fake_card
+
+    patched_resolver.add("http://b:8001", make_fake_card("B", skills=["lookup"]))
+    patched_resolver.add("http://c:8002", make_fake_card("C", skills=["bill"]))
+    reg = RemoteAgentRegistry(
+        urls=["http://b:8001", "http://c:8002"],
+        httpx_client=httpx_client,
+    )
+    await reg.resolve_all()
+    assert set(reg.names()) == {"B", "C"}
+    assert reg.card_for("B").name == "B"
+
+
+@pytest.mark.asyncio
+async def test_resolve_all_one_failure_skipped(httpx_client, patched_resolver, caplog):
+    import logging
+
+    from tests.adapters.outbound.a2a.conftest import make_fake_card
+
+    caplog.set_level(logging.WARNING)
+    patched_resolver.add("http://b:8001", make_fake_card("B"))
+    # http://c:8002 NOT added → fetch raises
+    reg = RemoteAgentRegistry(
+        urls=["http://b:8001", "http://c:8002"],
+        httpx_client=httpx_client,
+    )
+    await reg.resolve_all()
+    assert set(reg.names()) == {"B"}
+
+
+@pytest.mark.asyncio
+async def test_resolve_all_duplicate_names_get_discriminator(
+    httpx_client, patched_resolver, caplog
+):
+    import logging
+
+    from tests.adapters.outbound.a2a.conftest import make_fake_card
+
+    caplog.set_level(logging.WARNING)
+    patched_resolver.add("http://b1:8001", make_fake_card("B"))
+    patched_resolver.add("http://b2:8001", make_fake_card("B"))
+    reg = RemoteAgentRegistry(
+        urls=["http://b1:8001", "http://b2:8001"],
+        httpx_client=httpx_client,
+    )
+    await reg.resolve_all()
+    names = sorted(reg.names())
+    assert names == ["B", "B (1)"]
+
+
+def test_card_for_unknown_raises(registry: RemoteAgentRegistry) -> None:
+    with pytest.raises(KeyError):
+        registry.card_for("nope")
+
+
+@pytest.mark.asyncio
+async def test_descriptions_returns_name_to_metadata(
+    httpx_client, patched_resolver
+) -> None:
+    """After resolve, descriptions() returns a dict for system_prompt_fragment."""
+    from tests.adapters.outbound.a2a.conftest import make_fake_card
+
+    patched_resolver.add(
+        "http://b:8001",
+        make_fake_card("B", description="inventory", skills=["lookup", "stock"]),
+    )
+    reg = RemoteAgentRegistry(urls=["http://b:8001"], httpx_client=httpx_client)
+    await reg.resolve_all()
+    desc = reg.descriptions()
+    assert "B" in desc
+    assert desc["B"]["description"] == "inventory"
+    assert "lookup" in desc["B"]["skills"]
