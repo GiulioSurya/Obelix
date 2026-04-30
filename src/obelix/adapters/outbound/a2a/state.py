@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 
-@dataclass
+@dataclass(eq=False, slots=True)
 class RemoteTaskState:
     """State of one outbound dispatch tracked by an agent context.
 
@@ -30,7 +30,7 @@ class RemoteTaskState:
         return self.status in ("completed", "failed", "canceled", "rejected", "killed")
 
 
-@dataclass
+@dataclass(slots=True)
 class TokenRoute:
     """Routing entry: webhook arrives with token → resolve to context+task.
 
