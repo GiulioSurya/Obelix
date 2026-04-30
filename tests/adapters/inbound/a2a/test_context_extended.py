@@ -29,9 +29,9 @@ def caplog(caplog):
     loguru_logger.remove(handler_id)
 
 
-def _running_task() -> RemoteTaskState:
+def _running_task(task_id: str = "t-1") -> RemoteTaskState:
     return RemoteTaskState(
-        task_id="t-1",
+        task_id=task_id,
         agent_name="B",
         status="working",
         token="tok",
@@ -43,8 +43,8 @@ def _running_task() -> RemoteTaskState:
     )
 
 
-def _completed_task() -> RemoteTaskState:
-    s = _running_task()
+def _completed_task(task_id: str = "t-1") -> RemoteTaskState:
+    s = _running_task(task_id=task_id)
     s.status = "completed"
     return s
 
@@ -99,7 +99,7 @@ def test_store_force_evicts_at_2x_when_all_non_evictable(caplog) -> None:
     # Fill up to 2x with non-evictable
     for i in range(4):
         e = store.get_or_create(f"ctx-{i}")
-        e.remote_tasks[f"t-{i}"] = _running_task()
+        e.remote_tasks[f"t-{i}"] = _running_task(task_id=f"t-{i}")
     assert len(store._contexts) == 4
     # One more must force-evict the oldest with a warning
     store.get_or_create("ctx-extra")

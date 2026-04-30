@@ -14,8 +14,9 @@ from typing import TYPE_CHECKING
 from obelix.infrastructure.logging import get_logger
 
 if TYPE_CHECKING:
+    from obelix.adapters.outbound.a2a.state import RemoteTaskState
     from obelix.core.agent.base_agent import BaseAgent
-    from obelix.core.model import StandardMessage
+    from obelix.core.model import HumanMessage, StandardMessage
     from obelix.core.model.tool_message import ToolCall
 
 logger = get_logger(__name__)
@@ -79,19 +80,18 @@ class ContextEntry:
         self.failure_error: str | None = None
         # Outbound A2A: tasks dispatched from this conversation, keyed by
         # remote task_id. Webhook handler and polling worker mutate this.
-        # Local import to avoid circular import at module load time.
-        from obelix.adapters.outbound.a2a.state import RemoteTaskState  # noqa: F401
-
         self.remote_tasks: dict[str, RemoteTaskState] = {}
         # User-role messages built by webhook handler / polling worker for
         # terminal/input_required state changes. Drained at the start of
         # the next request on this context (executor._run_agent_impl).
-        self.pending_notifications: list = []  # list[HumanMessage]
+        self.pending_notifications: list[HumanMessage] = []
 
     def is_evictable(self) -> bool:
         """LRU eviction guard. False if any non-terminal remote task
         is in flight — losing this context would silence its webhook
         returns (token revoked) and the user-visible result vanishes."""
+        # If a future task adds another blocking condition (e.g. waiting on
+        # a long-poll), extend by AND-ing additional checks here.
         return all(t.is_terminal for t in self.remote_tasks.values())
 
 
@@ -140,9 +140,8 @@ class ContextStore:
         if len(self._contexts) >= self._max_contexts * 2:
             oldest_id, _ = self._contexts.popitem(last=False)
             logger.warning(
-                f"[A2A] Forced eviction of context {oldest_id} with in-flight "
-                f"remote tasks: hard cap (2x max_contexts) reached. Their "
-                f"webhooks will return 401."
+                f"[A2A] Forced eviction | context_id={oldest_id} reason=hard_cap "
+                f"cap={self._max_contexts * 2} consequence=webhooks_return_401"
             )
             return True
         return False
