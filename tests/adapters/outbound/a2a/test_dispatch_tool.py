@@ -191,3 +191,69 @@ async def test_dispatch_passes_token_in_push_config(registry_with_b, entry):
     # token map (so the inbound webhook with that token routes correctly).
     assert registry_with_b.lookup(sent_token) is not None
     assert entry.remote_tasks["t-001"].token == sent_token
+
+
+@pytest.mark.asyncio
+async def test_dispatch_direct_message_reply(registry_with_b, entry):
+    """Some simple agents return a Message directly instead of a Task tuple.
+    Treat this as immediate completion: revoke token, extract text content,
+    no state inserted."""
+    from a2a.types import Message as A2AMessage
+    from a2a.types import Role
+
+    async def _direct_reply(message, **kwargs):
+        from a2a.types import Part, TextPart
+
+        yield A2AMessage(
+            message_id="m-1",
+            role=Role.agent,
+            parts=[Part(root=TextPart(text="immediate answer"))],
+        )
+
+    fake_client = MagicMock()
+    fake_client.send_message = _direct_reply
+    registry_with_b._clients["B"] = fake_client
+
+    tool = DispatchAgentTool(registry=registry_with_b)
+    tool.set_context_entry(entry, context_id="ctx-MARIO")
+    tool.set_webhook_url("http://a:8000/webhook")
+    result = await tool.execute(_make_call({"agent_name": "B", "query": "x"}))
+
+    assert result.status == ToolStatus.SUCCESS
+    assert result.result["status"] == "completed"
+    assert result.result["agent"] == "B"
+    assert result.result["result"] == "immediate answer"
+    # Token revoked, no state in remote_tasks
+    assert len(registry_with_b._token_map) == 0
+    assert entry.remote_tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_cancelled_error_revokes_token(registry_with_b, entry):
+    """If the asyncio task is cancelled mid-dispatch, the token must still
+    be revoked. We verify this via direct internal-state inspection after
+    the cancellation propagates through (or is converted by the wrapper)."""
+    import asyncio
+
+    async def _hang(message, **kwargs):
+        raise asyncio.CancelledError()
+        yield  # pragma: no cover
+
+    fake_client = MagicMock()
+    fake_client.send_message = _hang
+    registry_with_b._clients["B"] = fake_client
+
+    tool = DispatchAgentTool(registry=registry_with_b)
+    tool.set_context_entry(entry, context_id="ctx-MARIO")
+    tool.set_webhook_url("http://a:8000/webhook")
+
+    # The decorator's wrapped_execute uses except Exception, so CancelledError
+    # propagates up. Catch it here ourselves to verify token cleanup.
+    try:
+        await tool.execute(_make_call({"agent_name": "B", "query": "x"}))
+    except asyncio.CancelledError:
+        pass
+
+    # The critical assertion: token revoked despite BaseException-class cancel.
+    assert len(registry_with_b._token_map) == 0
+    assert entry.remote_tasks == {}

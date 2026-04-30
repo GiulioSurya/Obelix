@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import secrets
 import time
+import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -81,8 +82,11 @@ class DispatchAgentTool:
         """Inject the per-request ContextEntry and the surrounding context_id.
 
         Called by the executor's _inject_context_entry helper before the
-        agent runs. The context_id is needed at token-register time so the
-        webhook handler can route the inbound notification back.
+        agent runs. Takes both arguments because ContextEntry is stored by
+        reference in ContextStore's dict — the dict key (context_id) is
+        external state and is intentionally not redundantly stored on the
+        entry. We need it at token-register time so the inbound webhook
+        handler can route the resulting notification back to this context.
         """
         self._ctx_entry = entry
         self._context_id = context_id
@@ -95,14 +99,19 @@ class DispatchAgentTool:
         self._webhook_url = url
 
     def system_prompt_fragment(self) -> str | None:
-        """Build the LLM-visible block listing available remote agents."""
+        """Build the LLM-visible block listing available remote agents.
+
+        Called once at agent startup. Returns None when no remote agents
+        are registered — the caller must then omit the fragment entirely
+        rather than inject an empty block.
+        """
         descriptions = self._registry.descriptions()
         if not descriptions:
             return None
         lines: list[str] = []
         for name, meta in descriptions.items():
             skills = ", ".join(meta["skills"]) if meta["skills"] else "—"
-            lines.append(f"- **{name}**: {meta['description']}  (skills: {skills})")
+            lines.append(f"- **{name}**: {meta['description']} (skills: {skills})")
         agents = "\n".join(lines) + "\n"
         return _FRAGMENT_TEMPLATE.format(agents=agents)
 
@@ -142,7 +151,7 @@ class DispatchAgentTool:
                 ),
             )
             msg = Message(
-                message_id=secrets.token_hex(8),
+                message_id=str(uuid.uuid4()),
                 role=Role.user,
                 parts=[Part(root=TextPart(text=self.query))],
             )
@@ -155,20 +164,26 @@ class DispatchAgentTool:
                     task = event[0]
                     break
                 else:
-                    # Direct Message reply (simple-interaction agent that
-                    # bypasses the Task lifecycle). Treat as immediate
-                    # completion; no token tracking needed.
+                    # Direct Message reply (simple agent that bypasses the
+                    # Task lifecycle). Treat as immediate completion.
                     self._registry.revoke(token)
-                    content = getattr(event, "content", None) or str(event)
+                    # Extract text from message parts; fall back to a stub
+                    # if no text parts found (very unusual for a reply).
+                    texts = [
+                        p.root.text
+                        for p in event.parts
+                        if hasattr(p.root, "text") and p.root.text
+                    ]
+                    content = " ".join(texts) if texts else "(no text content)"
                     return {
                         "status": "completed",
                         "agent": self.agent_name,
                         "result": content,
                     }
-        except Exception:
-            # Token was reserved but send_message failed (or any other error
-            # before task is recorded). Clean it up so it doesn't sit in the
-            # token map until TTL GC.
+        except BaseException:
+            # CancelledError inherits BaseException (not Exception) in Python 3.13.
+            # Use BaseException so the token is also revoked when the asyncio task
+            # is cancelled mid-dispatch (server timeout, parent cancel, etc.).
             self._registry.revoke(token)
             raise
 
