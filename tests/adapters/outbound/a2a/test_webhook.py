@@ -95,6 +95,8 @@ async def test_valid_token_routes_and_updates(store_with_ctx, registry):
     assert resp.status_code == 200
     assert entry.remote_tasks["t-1"].status == "completed"
     assert len(entry.pending_notifications) == 1
+    # Token revoked on terminal state (security invariant).
+    assert registry.lookup("tok-A") is None
 
 
 @pytest.mark.asyncio
@@ -200,5 +202,22 @@ async def test_malformed_json_returns_400(store_with_ctx, registry):
         ],
     }
     req = Request(scope, receive)
+    resp = await handler(req)
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_invalid_task_body_returns_400(store_with_ctx, registry):
+    """Valid JSON that doesn't parse as a Task → 400 (not 401, since token is valid)."""
+    entry = store_with_ctx.get_or_create("ctx-AAA")
+    _seed_state(entry, task_id="t-1", token="tok-V")
+    registry.register_token("tok-V", context_id="ctx-AAA", agent_name="B")
+
+    handler = make_webhook_handler(registry, store_with_ctx, tracer=None)
+    # Valid JSON, but missing required Task fields (e.g. no id, no status).
+    req = _make_request(
+        headers={"X-A2A-Notification-Token": "tok-V"},
+        body={"this": "is", "not": "a task"},
+    )
     resp = await handler(req)
     assert resp.status_code == 400

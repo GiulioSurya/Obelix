@@ -15,7 +15,7 @@ even though we run in a different asyncio task with empty contextvars
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from a2a.types import Task
@@ -47,7 +47,7 @@ def make_webhook_handler(
     context_store: ContextStore,
     *,
     tracer: Tracer | None = None,
-) -> Callable:
+) -> Callable[[Request], Awaitable[JSONResponse]]:
     """Build the /webhook handler closure.
 
     The closure validates the token, locates the ContextEntry, and
@@ -88,7 +88,7 @@ def make_webhook_handler(
 
         # Locate context. If evicted (or never created), log + 200-OK,
         # no further side effects.
-        entry = context_store._contexts.get(route.context_id)
+        entry = context_store.peek(route.context_id)
         if entry is None:
             logger.warning(
                 f"[A2A webhook] context not in store (evicted or never "

@@ -124,6 +124,13 @@ class ContextStore:
         self._contexts[context_id] = entry
         return entry
 
+    def peek(self, context_id: str) -> ContextEntry | None:
+        """Return an existing entry without creating one or promoting it
+        in the LRU. Used by the webhook handler to locate a context for
+        an inbound push notification without the side effect of phantom
+        creation on stale tokens."""
+        return self._contexts.get(context_id)
+
     def _evict_one(self) -> bool:
         """Evict one context. First pass: oldest evictable entry. Hard cap
         fallback: when at 2x max_contexts and everyone is non-evictable,
