@@ -30,6 +30,9 @@ logger = get_logger(__name__)
 
 
 _TERMINAL = ("completed", "failed", "canceled", "rejected")
+# SDK intermediate states that we deliberately don't notify on.
+# "killed" is a local sentinel set by task_stop / context cancel and
+# never arrives from the SDK, so it's intentionally absent here.
 _KNOWN_INTERMEDIATE = ("working", "submitted")
 
 

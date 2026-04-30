@@ -11,10 +11,29 @@ from a2a.types import (
     TaskStatus,
     TextPart,
 )
+from loguru import logger as loguru_logger
 
 from obelix.adapters.inbound.a2a.server.context import ContextEntry
 from obelix.adapters.outbound.a2a.handler import handle_remote_update
 from obelix.adapters.outbound.a2a.state import RemoteTaskState
+
+
+@pytest.fixture
+def caplog(caplog):
+    """Bridge loguru -> stdlib logging so pytest's ``caplog`` can capture
+    warnings emitted via ``obelix.infrastructure.logging.get_logger``.
+
+    ``handler.py`` routes through loguru, which does not propagate to the
+    standard logging tree by default.
+    """
+    handler_id = loguru_logger.add(
+        caplog.handler,
+        format="{message}",
+        level=0,
+        filter=lambda record: record["level"].no >= caplog.handler.level,
+    )
+    yield caplog
+    loguru_logger.remove(handler_id)
 
 
 def _state(status: str = "submitted") -> RemoteTaskState:
@@ -241,3 +260,6 @@ def test_unknown_sdk_state_logs_warning(entry, registry, caplog):
     assert entry.remote_tasks["t-1"].status == "auth_required"
     assert entry.pending_notifications == []
     registry.revoke.assert_not_called()
+    assert any("unknown remote state" in r.message for r in caplog.records), (
+        "expected a WARNING about unknown remote state"
+    )
