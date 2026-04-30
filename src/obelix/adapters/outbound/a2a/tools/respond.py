@@ -16,11 +16,11 @@ from a2a.types import (
 )
 from pydantic import Field
 
+from obelix.adapters.outbound.a2a.tools._base import _ContextAware
 from obelix.core.tool.tool_decorator import tool
 from obelix.infrastructure.logging import get_logger
 
 if TYPE_CHECKING:
-    from obelix.adapters.inbound.a2a.server.context import ContextEntry
     from obelix.adapters.outbound.a2a.registry import RemoteAgentRegistry
 
 logger = get_logger(__name__)
@@ -36,7 +36,7 @@ logger = get_logger(__name__)
     ),
     is_deferred=False,
 )
-class RespondToRemoteTool:
+class RespondToRemoteTool(_ContextAware):
     """Answer an input_required from a remote. Reuses the original
     dispatch token so the remote's resume notifications still route to
     the same context."""
@@ -52,14 +52,7 @@ class RespondToRemoteTool:
 
     def __init__(self, registry: RemoteAgentRegistry) -> None:
         self._registry = registry
-        self._ctx_entry: ContextEntry | None = None
         self._webhook_url: str | None = None
-
-    def set_context_entry(self, entry: ContextEntry) -> None:
-        """Inject the per-request ContextEntry. Unlike DispatchAgentTool,
-        we don't need the context_id here because we reuse the existing
-        token (its TokenRoute already carries the context_id)."""
-        self._ctx_entry = entry
 
     def set_webhook_url(self, url: str) -> None:
         """Set the webhook URL passed to the remote in the continuation's
@@ -68,12 +61,11 @@ class RespondToRemoteTool:
         self._webhook_url = url
 
     async def execute(self) -> dict:
-        if self._ctx_entry is None:
-            raise RuntimeError("RespondToRemoteTool: context entry not injected")
+        ctx_entry = self._require_context("RespondToRemoteTool")
         if self._webhook_url is None:
             raise RuntimeError("RespondToRemoteTool: webhook URL not set")
 
-        state = self._ctx_entry.remote_tasks.get(self.task_id)
+        state = ctx_entry.remote_tasks.get(self.task_id)
         if state is None:
             raise ValueError(f"task {self.task_id!r} not found in this context")
 

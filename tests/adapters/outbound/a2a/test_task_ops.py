@@ -124,6 +124,10 @@ async def test_task_stop_flips_state_revokes_token_no_wire_call(entry, registry)
     fake_client = MagicMock()
     registry._clients["B"] = fake_client  # to verify cancel_task NOT called
 
+    from datetime import UTC, datetime
+
+    before_kill_dt = datetime.now(UTC)
+
     tool = TaskStopTool(registry=registry)
     tool.set_context_entry(entry)
     result = await tool.execute(_call("task_stop", {"task_id": "t-2"}))
@@ -132,6 +136,8 @@ async def test_task_stop_flips_state_revokes_token_no_wire_call(entry, registry)
     assert entry.remote_tasks["t-2"].status == "killed"
     assert registry.lookup("tok-t-2") is None
     fake_client.cancel_task.assert_not_called()
+    # last_update must be refreshed on kill — paired with last_update_monotonic
+    assert entry.remote_tasks["t-2"].last_update >= before_kill_dt
 
 
 @pytest.mark.asyncio

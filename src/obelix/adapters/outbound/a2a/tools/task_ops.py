@@ -4,15 +4,16 @@ the parent agent's view of remote tasks."""
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from pydantic import Field
 
+from obelix.adapters.outbound.a2a.tools._base import _ContextAware
 from obelix.core.tool.tool_decorator import tool
 from obelix.infrastructure.logging import get_logger
 
 if TYPE_CHECKING:
-    from obelix.adapters.inbound.a2a.server.context import ContextEntry
     from obelix.adapters.outbound.a2a.registry import RemoteAgentRegistry
 
 logger = get_logger(__name__)
@@ -29,22 +30,15 @@ logger = get_logger(__name__)
     is_deferred=False,
     read_only=True,
 )
-class TaskListTool:
+class TaskListTool(_ContextAware):
     limit: int = Field(default=50, ge=1, le=500)
 
-    def __init__(self) -> None:
-        self._ctx_entry: ContextEntry | None = None
-
-    def set_context_entry(self, entry: ContextEntry) -> None:
-        self._ctx_entry = entry
-
     async def execute(self) -> dict:
-        if self._ctx_entry is None:
-            raise RuntimeError("TaskListTool: context entry not injected")
+        ctx_entry = self._require_context("TaskListTool")
 
         all_states = sorted(
-            self._ctx_entry.remote_tasks.values(),
-            key=lambda s: s.last_update,
+            ctx_entry.remote_tasks.values(),
+            key=lambda s: s.last_update_monotonic,
             reverse=True,
         )
         shown = all_states[: self.limit]
@@ -70,19 +64,12 @@ class TaskListTool:
     is_deferred=False,
     read_only=True,
 )
-class TaskGetTool:
+class TaskGetTool(_ContextAware):
     task_id: str = Field(...)
 
-    def __init__(self) -> None:
-        self._ctx_entry: ContextEntry | None = None
-
-    def set_context_entry(self, entry: ContextEntry) -> None:
-        self._ctx_entry = entry
-
     async def execute(self) -> dict:
-        if self._ctx_entry is None:
-            raise RuntimeError("TaskGetTool: context entry not injected")
-        s = self._ctx_entry.remote_tasks.get(self.task_id)
+        ctx_entry = self._require_context("TaskGetTool")
+        s = ctx_entry.remote_tasks.get(self.task_id)
         if s is None:
             raise ValueError(f"task {self.task_id!r} not found")
         return {
@@ -102,24 +89,19 @@ class TaskGetTool:
         "Stop tracking a remote task locally. Flips its local status to "
         "'killed' and silences future webhook updates for that task. Does "
         "NOT send a cancel to the remote agent — they keep working. "
-        "Idempotent on already-terminal tasks."
+        "Idempotent on already-terminal tasks (returns {noop: true})."
     ),
     is_deferred=False,
 )
-class TaskStopTool:
+class TaskStopTool(_ContextAware):
     task_id: str = Field(...)
 
     def __init__(self, registry: RemoteAgentRegistry) -> None:
         self._registry = registry
-        self._ctx_entry: ContextEntry | None = None
-
-    def set_context_entry(self, entry: ContextEntry) -> None:
-        self._ctx_entry = entry
 
     async def execute(self) -> dict:
-        if self._ctx_entry is None:
-            raise RuntimeError("TaskStopTool: context entry not injected")
-        s = self._ctx_entry.remote_tasks.get(self.task_id)
+        ctx_entry = self._require_context("TaskStopTool")
+        s = ctx_entry.remote_tasks.get(self.task_id)
         if s is None:
             raise ValueError(f"task {self.task_id!r} not found")
         if s.is_terminal:
@@ -127,6 +109,10 @@ class TaskStopTool:
 
         self._registry.revoke(s.token)
         s.status = "killed"
+        # Update both timestamps together — same contract as handler.py
+        # and dispatch.py: last_update and last_update_monotonic must be
+        # written as a pair on every state change.
+        s.last_update = datetime.now(UTC)
         s.last_update_monotonic = time.monotonic()
         logger.info(
             f"[A2A task_stop] killed locally | task_id={s.task_id} agent={s.agent_name}"
