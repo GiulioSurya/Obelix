@@ -124,3 +124,87 @@ def test_executor_init_accepts_registry_kwarg():
     fake_registry = MagicMock()
     executor2 = ObelixAgentExecutor(_factory, registry=fake_registry)
     assert executor2._registry is fake_registry
+
+
+def test_revoke_updates_last_update_wall_clock():
+    """Pair contract: last_update must be refreshed alongside
+    last_update_monotonic on kill, otherwise task_list/task_get show
+    stale wall-clock timestamps to the LLM."""
+    entry = ContextEntry()
+    _seed(entry, task_id="t-1", status="working")
+    before_kill_dt = entry.remote_tasks["t-1"].last_update
+
+    registry = MagicMock()
+    ObelixAgentExecutor._revoke_in_flight_remote_tokens(entry, registry)
+
+    new_dt = entry.remote_tasks["t-1"].last_update
+    assert new_dt >= before_kill_dt
+
+
+def test_revoke_logs_summary_when_tasks_killed(caplog):
+    """A summary INFO line is emitted naming the killed task_ids."""
+    import logging
+
+    # caplog bridge for loguru
+    from loguru import logger as loguru_logger
+
+    handler_id = loguru_logger.add(
+        caplog.handler,
+        format="{message}",
+        level=0,
+        filter=lambda r: r["level"].no >= caplog.handler.level,
+    )
+    caplog.set_level(logging.INFO)
+    try:
+        entry = ContextEntry()
+        _seed(entry, task_id="t-1", status="working")
+        _seed(entry, task_id="t-2", status="completed")  # terminal — not in summary
+        _seed(entry, task_id="t-3", status="input_required")
+
+        registry = MagicMock()
+        ObelixAgentExecutor._revoke_in_flight_remote_tokens(entry, registry)
+
+        # Summary names the 2 killed task_ids (not t-2)
+        summary_logs = [
+            r
+            for r in caplog.records
+            if "revoked in-flight remote tasks on cancel" in r.message
+        ]
+        assert len(summary_logs) == 1
+        msg = summary_logs[0].message
+        assert "count=2" in msg
+        assert "t-1" in msg
+        assert "t-3" in msg
+        assert "t-2" not in msg  # terminal task NOT in killed list
+    finally:
+        loguru_logger.remove(handler_id)
+
+
+def test_revoke_no_log_when_nothing_killed(caplog):
+    """When all tasks are terminal (or there are none), no summary log."""
+    import logging
+
+    from loguru import logger as loguru_logger
+
+    handler_id = loguru_logger.add(
+        caplog.handler,
+        format="{message}",
+        level=0,
+        filter=lambda r: r["level"].no >= caplog.handler.level,
+    )
+    caplog.set_level(logging.INFO)
+    try:
+        entry = ContextEntry()
+        _seed(entry, task_id="t-1", status="completed")
+
+        registry = MagicMock()
+        ObelixAgentExecutor._revoke_in_flight_remote_tokens(entry, registry)
+
+        summary_logs = [
+            r
+            for r in caplog.records
+            if "revoked in-flight remote tasks on cancel" in r.message
+        ]
+        assert len(summary_logs) == 0
+    finally:
+        loguru_logger.remove(handler_id)

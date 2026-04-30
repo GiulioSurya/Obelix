@@ -22,6 +22,7 @@ import inspect
 import time
 import uuid
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from a2a.server.agent_execution.agent_executor import AgentExecutor
@@ -928,12 +929,24 @@ class ObelixAgentExecutor(AgentExecutor):
         """
         if registry is None:
             return
+        killed_ids: list[str] = []
         for state in list(entry.remote_tasks.values()):
             if state.is_terminal:
                 continue
             registry.revoke(state.token)
             state.status = "killed"
+            # Pair last_update with last_update_monotonic — same contract
+            # as handler.py, dispatch.py, and task_ops.py: both must be
+            # written together on every state change so task_list/task_get
+            # don't surface a stale wall-clock timestamp to the LLM.
+            state.last_update = datetime.now(UTC)
             state.last_update_monotonic = time.monotonic()
+            killed_ids.append(state.task_id)
+        if killed_ids:
+            logger.info(
+                f"[A2A] revoked in-flight remote tasks on cancel | "
+                f"count={len(killed_ids)} task_ids={killed_ids}"
+            )
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         task_id = context.task_id
