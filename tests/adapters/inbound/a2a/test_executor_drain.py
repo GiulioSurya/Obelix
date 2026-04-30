@@ -1,7 +1,9 @@
 """Tests for _inject_context_entry + pending_notifications drain in
 ObelixAgentExecutor (T12)."""
 
+import inspect
 import time
+import unittest.mock
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
@@ -46,8 +48,6 @@ def test_inject_context_entry_calls_set_on_supporting_tools():
 
 def test_inject_context_entry_passes_context_id_when_signature_accepts():
     """Tools whose set_context_entry has a context_id parameter get it."""
-    import inspect
-
     agent = MagicMock()
 
     # Real-shape function with context_id
@@ -100,18 +100,18 @@ def test_inject_context_entry_falls_back_when_signature_fails():
     """Setter that raises TypeError/ValueError from inspect.signature
     (e.g., MagicMock with C-extension semantics) defaults to single-arg
     invocation."""
-    import inspect
-    import unittest.mock
-
     received = []
 
-    class _NotIntrospectable:
-        """Class whose set_context_entry has no inspectable signature."""
+    class _IntrospectableTool:
+        """Plain class with a real (introspectable) setter. The
+        test forcibly breaks inspect.signature via patch to exercise
+        the fallback path, NOT because the class itself resists
+        introspection."""
 
         def set_context_entry(self, entry):
             received.append(entry)
 
-    tool = _NotIntrospectable()
+    tool = _IntrospectableTool()
 
     agent = MagicMock()
     agent.registered_tools = [tool]
@@ -167,10 +167,12 @@ def test_drain_appends_to_history_and_clears():
         HumanMessage(content="<remote_task_update>2</remote_task_update>"),
     ]
 
-    # Inline the drain logic the executor performs.
+    # Inline the drain logic the executor performs (swap pattern,
+    # see executor.py — keeps tests in sync with production).
     if entry.pending_notifications:
-        entry.history.extend(entry.pending_notifications)
-        entry.pending_notifications.clear()
+        drained = entry.pending_notifications
+        entry.pending_notifications = []
+        entry.history.extend(drained)
 
     assert len(entry.history) == 3
     assert "1" in entry.history[1].content
@@ -183,8 +185,11 @@ def test_drain_empty_queue_is_noop():
     entry = ContextEntry()
     entry.history = [HumanMessage(content="hi")]
 
+    # Inline the drain logic the executor performs (swap pattern,
+    # see executor.py — keeps tests in sync with production).
     if entry.pending_notifications:
-        entry.history.extend(entry.pending_notifications)
-        entry.pending_notifications.clear()
+        drained = entry.pending_notifications
+        entry.pending_notifications = []
+        entry.history.extend(drained)
 
     assert len(entry.history) == 1
