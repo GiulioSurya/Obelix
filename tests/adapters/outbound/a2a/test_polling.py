@@ -102,6 +102,7 @@ async def test_giveup_after_5_failures(store):
         await worker._tick_once()
 
     state = entry.remote_tasks["t-1"]
+    assert state.poll_failures == 5
     assert state.status == "failed"
     assert any("polling_giveup" in m.content for m in entry.pending_notifications)
     registry.revoke.assert_called_once()
@@ -146,3 +147,62 @@ async def test_start_stop_lifecycle(store):
     await asyncio.sleep(0.03)
     await worker.stop()
     # No assertion; verify clean lifecycle (no hang, no exception).
+
+
+@pytest.mark.asyncio
+async def test_polls_across_multiple_contexts(store):
+    """_tick_once iterates ALL contexts in the store, not just the first."""
+    e1 = store.get_or_create("ctx-AAA")
+    e2 = store.get_or_create("ctx-BBB")
+    _seed(e1, task_id="t-A1", status="working")
+    _seed(e2, task_id="t-B1", status="working")
+
+    fresh_a = Task(
+        id="t-A1",
+        context_id="ctx-AAA",
+        status=TaskStatus(state=TaskState.completed),
+    )
+    fresh_b = Task(
+        id="t-B1",
+        context_id="ctx-BBB",
+        status=TaskStatus(state=TaskState.completed),
+    )
+
+    registry = MagicMock()
+    client = AsyncMock()
+
+    # Return the right Task based on task_id arg
+    def _resolve(params):
+        return fresh_a if params.id == "t-A1" else fresh_b
+
+    client.get_task.side_effect = _resolve
+    registry.client_for.return_value = client
+
+    worker = PollingWorker(registry=registry, context_store=store, tick_seconds=0.01)
+    await worker._tick_once()
+
+    assert client.get_task.call_count == 2
+    assert e1.remote_tasks["t-A1"].status == "completed"
+    assert e2.remote_tasks["t-B1"].status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_fresh_none_is_noop(store):
+    """SDK returning None (task not found) should be a no-op:
+    state untouched, poll_failures NOT incremented, no notification."""
+    entry = store.get_or_create("ctx-AAA")
+    _seed(entry, task_id="t-1", status="working")
+
+    registry = MagicMock()
+    client = AsyncMock()
+    client.get_task.return_value = None
+    registry.client_for.return_value = client
+
+    worker = PollingWorker(registry=registry, context_store=store, tick_seconds=0.01)
+    await worker._tick_once()
+
+    state = entry.remote_tasks["t-1"]
+    assert state.status == "working"  # unchanged
+    assert state.poll_failures == 0  # NOT incremented
+    assert entry.pending_notifications == []
+    registry.revoke.assert_not_called()

@@ -66,6 +66,9 @@ class PollingWorker:
         logger.info("[A2A] polling worker stopped")
 
     async def _loop(self) -> None:
+        # belt-and-suspenders: cancel() is the primary stop signal (loop
+        # exits on CancelledError at the sleep). _stop guards against the
+        # rare path where stop() is called before _task is set.
         while not self._stop.is_set():
             try:
                 await asyncio.sleep(self._tick)
@@ -73,14 +76,14 @@ class PollingWorker:
             except asyncio.CancelledError:
                 return
             except Exception as e:
-                logger.error(f"[A2A polling] tick failed | error={e}")
+                logger.exception(f"[A2A polling] tick failed | error={e}")
 
     async def _tick_once(self) -> None:
         """One pass: scan every ContextEntry's remote_tasks for stale
         non-terminal tasks and poll them. Public for tests."""
         now = time.monotonic()
         # Snapshot iteration to avoid mutating the dict while looping.
-        for ctx_entry in list(self._store._contexts.values()):
+        for ctx_entry in self._store.iter_entries():
             for state in list(ctx_entry.remote_tasks.values()):
                 if state.is_terminal:
                     continue
@@ -121,6 +124,9 @@ class PollingWorker:
                 )
             return
 
+        # SDK returns None when the task_id is not found on the remote
+        # (HTTP 404-equivalent). Treat as "no update" and try again next
+        # tick; do NOT increment poll_failures.
         if fresh is None:
             return
 

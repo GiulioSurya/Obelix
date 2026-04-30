@@ -131,6 +131,15 @@ class ContextStore:
         creation on stale tokens."""
         return self._contexts.get(context_id)
 
+    def iter_entries(self) -> list[ContextEntry]:
+        """Return a snapshot of all current ContextEntry instances.
+
+        The caller owns the snapshot; concurrent mutations to the store
+        do not affect the returned list. Used by background workers
+        (e.g. polling) that need to iterate all contexts without
+        creating phantom entries."""
+        return list(self._contexts.values())
+
     def _evict_one(self) -> bool:
         """Evict one context. First pass: oldest evictable entry. Hard cap
         fallback: when at 2x max_contexts and everyone is non-evictable,
