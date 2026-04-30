@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import time
 import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -66,6 +67,7 @@ if TYPE_CHECKING:
     from a2a.server.agent_execution.context import RequestContext
 
     from obelix.adapters.inbound.a2a.server.context import ContextEntry
+    from obelix.adapters.outbound.a2a.registry import RemoteAgentRegistry
     from obelix.core.agent.base_agent import BaseAgent
     from obelix.core.tracer.tracer import Tracer
 
@@ -94,11 +96,13 @@ class ObelixAgentExecutor(AgentExecutor):
         *,
         max_contexts: int = DEFAULT_MAX_CONTEXTS,
         tracer: Tracer | None = None,
+        registry: RemoteAgentRegistry | None = None,
     ) -> None:
         self._agent_factory = agent_factory
         self._store = ContextStore(max_contexts)
         self._store_lock = asyncio.Lock()
         self._tracer = tracer
+        self._registry = registry
 
     async def _emit_state(
         self,
@@ -741,6 +745,10 @@ class ObelixAgentExecutor(AgentExecutor):
             # Mark the context so the outer _run_agent finally closes the
             # a2a_task span with SpanStatus.canceled.
             entry.was_canceled = True
+            # Sweep any in-flight remote tasks dispatched from this context
+            # — silence late webhooks (token revoke) and flip status to
+            # "killed". No wire call to the remote — Decision 7.
+            self._revoke_in_flight_remote_tokens(entry, self._registry)
             logger.info(f"[A2A] Agent canceled | task_id={task_id}")
             await event_queue.enqueue_event(
                 TaskStatusUpdateEvent(
@@ -905,6 +913,28 @@ class ObelixAgentExecutor(AgentExecutor):
             else:
                 setter(entry)
 
+    @staticmethod
+    def _revoke_in_flight_remote_tokens(
+        entry: ContextEntry,
+        registry: RemoteAgentRegistry | None,
+    ) -> None:
+        """On context cancel, silence late webhooks for non-terminal remote
+        tasks by revoking their tokens locally and flipping status to
+        ``"killed"``. NO wire call to the remote — per Decision 7, the
+        remote owns its own lifecycle.
+
+        Safe to call when ``registry`` is None (no remote_agents
+        configured) — in that case it's a no-op.
+        """
+        if registry is None:
+            return
+        for state in list(entry.remote_tasks.values()):
+            if state.is_terminal:
+                continue
+            registry.revoke(state.token)
+            state.status = "killed"
+            state.last_update_monotonic = time.monotonic()
+
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         task_id = context.task_id
         context_id = context.context_id or "default"
@@ -965,6 +995,10 @@ class ObelixAgentExecutor(AgentExecutor):
                 entry.deferred_tools = None
                 entry.trace_session = None
                 entry.trace_span = None
+
+            # Sweep any other in-flight remote tasks (besides the deferred
+            # one) — see Decision 7. NO wire call.
+            self._revoke_in_flight_remote_tokens(entry, self._registry)
 
             await event_queue.enqueue_event(
                 TaskStatusUpdateEvent(
