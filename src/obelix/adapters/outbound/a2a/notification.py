@@ -8,6 +8,10 @@ from html import escape
 
 from obelix.core.model.human_message import HumanMessage
 
+# Only terminal states and input_required generate notifications.
+# Intermediate states (working, submitted) are intentionally excluded — see
+# the design spec §5.2 (intermediate states update remote_tasks but do not
+# emit a notification).
 _VALID_STATUSES = {
     "completed",
     "failed",
@@ -44,13 +48,28 @@ def build_remote_task_update_message(
     break the XML).
     """
     if status not in _VALID_STATUSES:
-        raise ValueError(f"unknown status: {status}")
+        raise ValueError(
+            f"unknown status {status!r}; valid values: {sorted(_VALID_STATUSES)}"
+        )
+
+    if status != "completed" and result_text is not None:
+        raise ValueError(
+            f"result_text is only valid for status='completed', got {status!r}"
+        )
+    if status not in ("failed", "rejected", "canceled") and error_text is not None:
+        raise ValueError(
+            f"error_text is only valid for status in (failed, rejected, canceled), got {status!r}"
+        )
+    if status != "input_required" and deferred_calls is not None:
+        raise ValueError(
+            f"deferred_calls is only valid for status='input_required', got {status!r}"
+        )
 
     parts: list[str] = [
         "<remote_task_update>",
         f"  <task_id>{escape(task_id)}</task_id>",
         f"  <agent>{escape(agent_name)}</agent>",
-        f"  <status>{escape(status)}</status>",
+        f"  <status>{status}</status>",
     ]
     if status == "completed" and result_text is not None:
         parts.append(f"  <result>{escape(result_text)}</result>")

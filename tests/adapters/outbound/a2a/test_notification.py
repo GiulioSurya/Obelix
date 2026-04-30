@@ -54,9 +54,64 @@ def test_xml_special_chars_escaped() -> None:
         status="completed",
         result_text="value < 5 & status = 'ok'",
     )
-    # The raw chars must not appear unescaped inside <result>
-    assert "&lt;" in msg.content or "<result>value &lt; 5" in msg.content
-    assert "&amp;" in msg.content
+    # Exact structural assertion: escaping inside <result>, no raw < or &
+    assert "<result>value &lt; 5 &amp; status = &#x27;ok&#x27;</result>" in msg.content
+
+
+def test_xml_escape_in_agent_name() -> None:
+    msg = build_remote_task_update_message(
+        task_id="t-008",
+        agent_name="<Bad>",
+        status="completed",
+        result_text="ok",
+    )
+    assert "<agent>&lt;Bad&gt;</agent>" in msg.content
+
+
+def test_xml_escape_in_deferred_calls() -> None:
+    deferred = [{"command": 'echo "<hello>"', "id": "c-1"}]
+    msg = build_remote_task_update_message(
+        task_id="t-009",
+        agent_name="B",
+        status="input_required",
+        deferred_calls=deferred,
+    )
+    # The JSON inside <deferred_tool_calls> must be HTML-escaped, so the raw
+    # angle brackets in the original command string must not survive verbatim.
+    assert "<hello>" not in msg.content.replace("<deferred_tool_calls>", "").replace(
+        "</deferred_tool_calls>", ""
+    )
+    assert "&lt;hello&gt;" in msg.content
+
+
+def test_payload_status_mismatch_result_text_with_failed() -> None:
+    with pytest.raises(ValueError, match="result_text is only valid"):
+        build_remote_task_update_message(
+            task_id="t-010",
+            agent_name="B",
+            status="failed",
+            result_text="oops",
+        )
+
+
+def test_payload_status_mismatch_error_text_with_completed() -> None:
+    with pytest.raises(ValueError, match="error_text is only valid"):
+        build_remote_task_update_message(
+            task_id="t-011",
+            agent_name="B",
+            status="completed",
+            error_text="boom",
+        )
+
+
+def test_payload_status_mismatch_deferred_calls_with_completed() -> None:
+    with pytest.raises(ValueError, match="deferred_calls is only valid"):
+        build_remote_task_update_message(
+            task_id="t-012",
+            agent_name="B",
+            status="completed",
+            deferred_calls=[{"x": 1}],
+        )
 
 
 def test_canceled_status_is_supported() -> None:
