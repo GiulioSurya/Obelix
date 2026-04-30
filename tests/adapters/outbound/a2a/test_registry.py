@@ -1,6 +1,6 @@
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
+from unittest.mock import MagicMock
 
-import httpx
 import pytest
 
 from obelix.adapters.outbound.a2a.registry import RemoteAgentRegistry
@@ -8,7 +8,9 @@ from obelix.adapters.outbound.a2a.registry import RemoteAgentRegistry
 
 @pytest.fixture
 def registry() -> RemoteAgentRegistry:
-    return RemoteAgentRegistry(urls=[], httpx_client=httpx.AsyncClient())
+    # MagicMock instead of real httpx.AsyncClient because token-map ops
+    # don't touch the network. Avoids ResourceWarning on test teardown.
+    return RemoteAgentRegistry(urls=[], httpx_client=MagicMock())
 
 
 def test_register_token_creates_route(registry: RemoteAgentRegistry) -> None:
@@ -51,7 +53,7 @@ async def test_gc_expired_removes_old_tokens(registry: RemoteAgentRegistry) -> N
     registry.register_token("tok-A", context_id="ctx-1", agent_name="B")
     # Force registered_at to be old
     route = registry.lookup("tok-A")
-    route.registered_at = datetime.now() - timedelta(seconds=100)
+    route.registered_at = datetime.now(UTC) - timedelta(seconds=100)
 
     registry.register_token("tok-B", context_id="ctx-1", agent_name="B")  # fresh
 
@@ -61,7 +63,12 @@ async def test_gc_expired_removes_old_tokens(registry: RemoteAgentRegistry) -> N
     assert registry.lookup("tok-B") is not None
 
 
-def test_lookup_uses_dict_for_constant_time(registry: RemoteAgentRegistry) -> None:
-    """Verify the underlying token_map is a dict (constant-time hash lookup)
-    so we don't leak timing info during token enumeration attacks."""
+def test_token_map_is_dict(registry: RemoteAgentRegistry) -> None:
+    """Verify the underlying token_map is a dict.
+
+    Average-case O(1) hash lookup. Note: Python `dict` does not provide
+    constant-time string equality on hash collisions, so this is not a
+    formal timing-attack defense — but for 256-bit random tokens, hash
+    collisions are astronomically improbable.
+    """
     assert isinstance(registry._token_map, dict)
