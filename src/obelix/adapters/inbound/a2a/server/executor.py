@@ -313,8 +313,13 @@ class ObelixAgentExecutor(AgentExecutor):
             # notifications append after as fresh user-role messages. Runs
             # for both first-turn and resume paths — no-op when empty.
             if entry.pending_notifications:
-                entry.history.extend(entry.pending_notifications)
-                entry.pending_notifications.clear()
+                # Atomic-ish swap: any notification arriving from the webhook
+                # between this read and the extend() goes onto the *new* empty
+                # list and will be drained at the next request. Without the swap,
+                # an extend()+clear() race could silently drop a notification.
+                drained = entry.pending_notifications
+                entry.pending_notifications = []
+                entry.history.extend(drained)
 
             await self._run_agent(
                 task_id=task_id,
@@ -878,7 +883,11 @@ class ObelixAgentExecutor(AgentExecutor):
           ``set_context_entry(entry)``
 
         We use ``inspect.signature`` to detect which form to invoke,
-        so adding new tools with either signature is safe.
+        so adding new tools with either signature is safe. When the setter
+        accepts ``context_id``, it is passed as a keyword argument. If
+        introspection fails (``TypeError`` or ``ValueError``, e.g., on
+        MagicMock or C-extension callables), we fall back to the single-arg
+        form ``setter(entry)``.
         """
         for tool in agent.registered_tools:
             setter = getattr(tool, "set_context_entry", None)

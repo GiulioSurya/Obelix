@@ -5,6 +5,8 @@ import time
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
+import pytest
+
 from obelix.adapters.inbound.a2a.server.context import ContextEntry
 from obelix.adapters.inbound.a2a.server.executor import ObelixAgentExecutor
 from obelix.adapters.outbound.a2a.state import RemoteTaskState
@@ -92,6 +94,64 @@ def test_inject_context_entry_handles_no_tools():
     entry = ContextEntry()
     # Must not raise.
     ObelixAgentExecutor._inject_context_entry(agent, entry, "ctx-MARIO")
+
+
+def test_inject_context_entry_falls_back_when_signature_fails():
+    """Setter that raises TypeError/ValueError from inspect.signature
+    (e.g., MagicMock with C-extension semantics) defaults to single-arg
+    invocation."""
+    import inspect
+    import unittest.mock
+
+    received = []
+
+    class _NotIntrospectable:
+        """Class whose set_context_entry has no inspectable signature."""
+
+        def set_context_entry(self, entry):
+            received.append(entry)
+
+    tool = _NotIntrospectable()
+
+    agent = MagicMock()
+    agent.registered_tools = [tool]
+
+    entry = ContextEntry()
+
+    # Patch inspect.signature to raise for this specific setter
+    real_signature = inspect.signature
+
+    def _raising_signature(obj, *args, **kwargs):
+        if obj is tool.set_context_entry:
+            raise ValueError("synthetic introspection failure")
+        return real_signature(obj, *args, **kwargs)
+
+    with unittest.mock.patch(
+        "obelix.adapters.inbound.a2a.server.executor.inspect.signature",
+        side_effect=_raising_signature,
+    ):
+        ObelixAgentExecutor._inject_context_entry(agent, entry, "ctx-MARIO")
+
+    # Despite signature inspection failing, the setter was still called
+    # with just the entry (single-arg fallback).
+    assert received == [entry]
+
+
+def test_inject_context_entry_propagates_setter_exceptions():
+    """If the setter itself raises (e.g., wrong arity, programming error),
+    the exception propagates — not silently swallowed."""
+
+    class _BrokenSetter:
+        def set_context_entry(self, entry, *, context_id):
+            raise RuntimeError("broken setter")
+
+    tool = _BrokenSetter()
+    agent = MagicMock()
+    agent.registered_tools = [tool]
+
+    entry = ContextEntry()
+    with pytest.raises(RuntimeError, match="broken setter"):
+        ObelixAgentExecutor._inject_context_entry(agent, entry, "ctx-MARIO")
 
 
 # ── pending_notifications drain logic ─────────────────────────────────────

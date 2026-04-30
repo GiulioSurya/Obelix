@@ -124,9 +124,14 @@ def handle_remote_update(
     changed. This function only sees the parsed Task; it cannot tell whether
     the HTTP call that produced it succeeded.
 
-    **Thread safety**: Not thread-safe. Callers must serialize access to
-    ``entry.remote_tasks`` and ``entry.pending_notifications`` (typically
-    the executor's per-context idle gate already enforces this).
+    **Thread safety**: Not thread-safe by itself. Callers must serialize
+    mutations of ``entry.remote_tasks`` and ``entry.pending_notifications``.
+    The executor's per-context idle gate serializes concurrent *requests*
+    on the same context, but the webhook route deliberately bypasses it
+    (blocking the webhook on the gate would deadlock when the agent is
+    waiting for a remote response). The executor's drain step uses a
+    swap-pattern (see executor.py) to close the resulting narrow race;
+    single-pointer rebind + extend() limits notification loss to zero.
     """
     state = entry.remote_tasks.get(task_id)
     if state is None:
