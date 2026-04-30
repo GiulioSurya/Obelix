@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from contextlib import aclosing
 from typing import TYPE_CHECKING
 
 from a2a.types import (
@@ -107,13 +108,21 @@ class RespondToRemoteTool:
 
         # Continuation: send_message in this case typically returns no
         # task tuple (the existing task continues). Drain the iterator
-        # without expecting a payload.
-        async for _event in client.send_message(msg, configuration=cfg):
-            break
+        # under aclosing() so the underlying async generator is properly
+        # closed even if we break out early. Future-proofs against a
+        # streaming=True client config.
+        async with aclosing(client.send_message(msg, configuration=cfg)) as gen:
+            async for _event in gen:
+                break
 
         # Local state transition: input_required → submitted.
         state.status = "submitted"
         state.deferred_calls = None
+
+        # Refresh the token's TTL: the input_required cycle may have lasted
+        # hours waiting for human input, and the resume notifications need
+        # the route to remain valid for at least another TTL window.
+        self._registry.touch(state.token)
 
         logger.info(
             f"[A2A respond] reply sent | agent={state.agent_name} "

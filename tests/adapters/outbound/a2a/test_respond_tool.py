@@ -178,3 +178,27 @@ async def test_response_uses_existing_token(registry, entry):
     assert len(parts) == 1
     data_part = parts[0].root
     assert data_part.data == {"answer": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_respond_refreshes_token_ttl(registry, entry):
+    """respond_to_remote must call registry.touch(token) so the route
+    survives long input_required cycles."""
+    from datetime import UTC, datetime, timedelta
+
+    # Pre-populate token map (the test fixture didn't create the route
+    # because dispatch wasn't called).
+    registry.register_token("tok", context_id="ctx-MARIO", agent_name="B")
+    route = registry.lookup("tok")
+    # Make registered_at old enough that touch produces a measurable change.
+    route.registered_at = datetime.now(UTC) - timedelta(hours=12)
+    old_registered_at = route.registered_at
+
+    tool = RespondToRemoteTool(registry=registry)
+    tool.set_context_entry(entry)
+    tool.set_webhook_url("http://a:8000/webhook")
+    await tool.execute(_call({"task_id": "t-1", "data": {"answer": "ok"}}))
+
+    refreshed_route = registry.lookup("tok")
+    assert refreshed_route is not None
+    assert refreshed_route.registered_at > old_registered_at

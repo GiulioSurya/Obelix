@@ -70,6 +70,15 @@ class RemoteAgentRegistry:
     def revoke(self, token: str) -> None:
         self._token_map.pop(token, None)
 
+    def touch(self, token: str) -> None:
+        """Refresh registered_at on the token's route. Call when activity
+        on the route signals it's still in use (e.g., respond_to_remote,
+        webhook update on non-terminal state). Prevents premature TTL GC
+        on long-running input_required cycles."""
+        route = self._token_map.get(token)
+        if route is not None:
+            route.registered_at = datetime.now(UTC)
+
     async def gc_expired(self, ttl_seconds: int = 86400) -> int:
         """Remove tokens older than TTL. Returns count removed.
 

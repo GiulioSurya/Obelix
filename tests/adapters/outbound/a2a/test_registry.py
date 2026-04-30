@@ -61,6 +61,30 @@ def test_revoke_unknown_is_idempotent(registry: RemoteAgentRegistry) -> None:
 
 
 @pytest.mark.asyncio
+async def test_touch_refreshes_registered_at(httpx_client):
+    """touch() refreshes registered_at to current time so a token doesn't
+    expire mid input_required cycle."""
+    from datetime import UTC, datetime, timedelta
+
+    reg = RemoteAgentRegistry(urls=[], httpx_client=httpx_client)
+    reg.register_token("tok-T", context_id="ctx-1", agent_name="B")
+
+    # Force registered_at to be old.
+    route = reg.lookup("tok-T")
+    route.registered_at = datetime.now(UTC) - timedelta(hours=23)
+
+    reg.touch("tok-T")
+
+    refreshed = reg.lookup("tok-T")
+    assert refreshed.registered_at > datetime.now(UTC) - timedelta(seconds=5)
+
+
+def test_touch_unknown_token_is_noop(registry):
+    """touch on a non-existent token is a no-op."""
+    registry.touch("never-existed")  # no exception
+
+
+@pytest.mark.asyncio
 async def test_gc_expired_removes_old_tokens(registry: RemoteAgentRegistry) -> None:
     registry.register_token("tok-A", context_id="ctx-1", agent_name="B")
     # Force registered_at to be old
