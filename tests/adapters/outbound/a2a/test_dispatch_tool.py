@@ -247,8 +247,11 @@ async def test_dispatch_cancelled_error_revokes_token(registry_with_b, entry):
     tool.set_context_entry(entry, context_id="ctx-MARIO")
     tool.set_webhook_url("http://a:8000/webhook")
 
-    # The decorator's wrapped_execute uses except Exception, so CancelledError
-    # propagates up. Catch it here ourselves to verify token cleanup.
+    # CancelledError is caught by dispatch.py's own `except BaseException`
+    # block first — that's where the token gets revoked, before re-raising.
+    # The decorator's wrapped_execute uses `except Exception` and so does NOT
+    # catch CancelledError (BaseException-class), letting it propagate up to
+    # us. Catch it here to verify the token cleanup happened upstream.
     try:
         await tool.execute(_make_call({"agent_name": "B", "query": "x"}))
     except asyncio.CancelledError:
