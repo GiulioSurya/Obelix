@@ -109,6 +109,35 @@ async def test_giveup_after_5_failures(store):
 
 
 @pytest.mark.asyncio
+async def test_giveup_pairs_last_update_with_monotonic(store):
+    """Pair contract: on polling giveup, last_update (wall clock) must be
+    refreshed alongside last_update_monotonic so task_list/task_get don't
+    surface a stale wall-clock timestamp to the LLM."""
+    from datetime import UTC, datetime, timedelta
+
+    entry = store.get_or_create("ctx-AAA")
+    _seed(entry, task_id="t-1", status="working")
+    # Force last_update to be old so we can verify it's refreshed.
+    old_dt = datetime.now(UTC) - timedelta(hours=1)
+    entry.remote_tasks["t-1"].last_update = old_dt
+
+    registry = MagicMock()
+    client = AsyncMock()
+    client.get_task.side_effect = RuntimeError("boom")
+    registry.client_for.return_value = client
+
+    worker = PollingWorker(registry=registry, context_store=store, tick_seconds=0.01)
+    for _ in range(5):
+        entry.remote_tasks["t-1"].last_update_monotonic = time.monotonic() - 60
+        await worker._tick_once()
+
+    state = entry.remote_tasks["t-1"]
+    assert state.status == "failed"
+    # last_update must have been refreshed (not the 1-hour-old datetime).
+    assert state.last_update > old_dt
+
+
+@pytest.mark.asyncio
 async def test_failure_streak_resets_on_success(store):
     entry = store.get_or_create("ctx-AAA")
     _seed(entry, task_id="t-1", status="working")

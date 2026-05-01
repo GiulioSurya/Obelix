@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from a2a.types import TaskQueryParams
@@ -108,6 +109,11 @@ class PollingWorker:
             )
             if state.poll_failures >= _MAX_FAILURES:
                 state.status = "failed"
+                # Pair last_update with last_update_monotonic — same contract
+                # as handler.py, dispatch.py, task_ops.py, and executor.py:
+                # both must be written together so task_list/task_get don't
+                # surface a stale wall-clock timestamp to the LLM.
+                state.last_update = datetime.now(UTC)
                 state.last_update_monotonic = time.monotonic()
                 ctx_entry.pending_notifications.append(
                     build_remote_task_update_message(
