@@ -12,6 +12,7 @@ import base64
 import mimetypes
 import platform
 import re
+import secrets
 import shutil
 import subprocess
 import time
@@ -397,6 +398,10 @@ class CLIClient(App):
         self._agent_select_mode: bool = False
         self._agent_select_idx: int = 0
         self._shell_info: dict = _probe_shell_info()
+        # TEMP-PATCH-SPEC-1: random per-session token, sent to the server
+        # via Message.metadata so the server can authenticate drain-spawn
+        # POSTs back to our webhook. Removed when spec 2 (CLI streaming) lands.
+        self._webhook_token: str = secrets.token_urlsafe(32)
 
     @classmethod
     def from_cli(cls, argv: list[str] | None = None) -> CLIClient:
@@ -981,10 +986,20 @@ class CLIClient(App):
         agent = self.agents[self.current]
         chat = self.query_one("#chat", RichLog)
 
-        # First message to this agent: attach client shell info as metadata
+        # First message to this agent: attach client shell info + webhook patch.
+        # TEMP-PATCH-SPEC-1: client_webhook_url/token sent on first message
+        # so the server can POST drain-spawn task state changes back to us.
+        # Removed in spec 2 (CLI streaming SSE).
         metadata = None
-        if agent.context_id is None and self._shell_info:
-            metadata = {"client_info": self._shell_info}
+        if agent.context_id is None:
+            metadata = {}
+            if self._shell_info:
+                metadata["client_info"] = self._shell_info
+            if self._webhook_url:
+                metadata["client_webhook_url"] = self._webhook_url
+                metadata["client_webhook_token"] = self._webhook_token
+            if not metadata:
+                metadata = None
 
         clean_text, file_parts = _parse_attachments(text)
         if file_parts:
