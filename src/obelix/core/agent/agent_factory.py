@@ -683,6 +683,7 @@ class AgentFactory:
             tracer=self._tracer,
             registry=registry,
             context_store=context_store,
+            httpx_client=httpx_client,
         )
 
         request_handler = DefaultRequestHandler(

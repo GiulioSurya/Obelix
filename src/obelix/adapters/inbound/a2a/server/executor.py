@@ -65,6 +65,7 @@ from obelix.core.tracer.models import SpanStatus, SpanType
 from obelix.infrastructure.logging import get_logger
 
 if TYPE_CHECKING:
+    import httpx
     from a2a.server.agent_execution.context import RequestContext
 
     from obelix.adapters.inbound.a2a.server.context import ContextEntry
@@ -100,6 +101,7 @@ class ObelixAgentExecutor(AgentExecutor):
         tracer: Tracer | None = None,
         registry: RemoteAgentRegistry | None = None,
         context_store: ContextStore | None = None,
+        httpx_client: httpx.AsyncClient | None = None,
     ) -> None:
         self._agent_factory = agent_factory
         self._store = (
@@ -108,6 +110,11 @@ class ObelixAgentExecutor(AgentExecutor):
         self._store_lock = asyncio.Lock()
         self._tracer = tracer
         self._registry = registry
+        # TEMP-PATCH-SPEC-1: shared httpx client used by _DrainSpawnEventQueue
+        # to POST drain-spawn task state to the CLI webhook. May be None when
+        # a2a_serve was invoked without ``remote_agents`` — in that case no
+        # drain-spawn ever fires, so the absence is harmless.
+        self._httpx_client = httpx_client
 
     async def _emit_state(
         self,
@@ -1213,9 +1220,22 @@ class ObelixAgentExecutor(AgentExecutor):
         Calls ``_run_agent`` with ``is_drain_spawn=True``. Errors are logged but
         not re-raised — the spawn is fire-and-forget.
 
-        For task 5 the event_queue is a no-op (_NullEventQueue). Task 7 will
-        replace it with _DrainSpawnEventQueue that POSTs to the CLI webhook.
+        TEMP-PATCH-SPEC-1: when ``entry.client_webhook_url`` is set AND a
+        shared ``httpx_client`` was passed to the executor, the event queue is
+        a ``_DrainSpawnEventQueue`` that POSTs each task state change to the
+        CLI webhook. Otherwise the event queue is a no-op (_NullEventQueue).
         """
+        event_queue: _DrainSpawnEventQueue | _NullEventQueue
+        if entry.client_webhook_url and self._httpx_client is not None:
+            event_queue = _DrainSpawnEventQueue(
+                httpx_client=self._httpx_client,
+                webhook_url=entry.client_webhook_url,
+                webhook_token=entry.client_webhook_token or "",
+                task_id=task_id,
+                context_id=context_id,
+            )
+        else:
+            event_queue = _NullEventQueue()
         try:
             await self._run_agent(
                 task_id=task_id,
@@ -1223,7 +1243,7 @@ class ObelixAgentExecutor(AgentExecutor):
                 user_text="",
                 attachments=[],
                 entry=entry,
-                event_queue=_NullEventQueue(),
+                event_queue=event_queue,
                 is_resume=False,
                 is_drain_spawn=True,
             )
@@ -1244,3 +1264,83 @@ class _NullEventQueue:
 
     async def close(self) -> None:
         return None
+
+
+class _DrainSpawnEventQueue:
+    """TEMP-PATCH-SPEC-1: For drain-spawn tasks, sniffs A2A events and POSTs
+    the assembled Task to entry.client_webhook_url. Best-effort; no retry.
+
+    Removed when spec 2 (CLI streaming SSE) lands.
+
+    Behavior:
+    - On a ``Task`` event, POSTs the task as-is.
+    - On a ``TaskStatusUpdateEvent``, reconstructs a minimal ``Task`` from
+      ``task_id``/``context_id``/``status`` and POSTs it.
+    - On a ``TaskArtifactUpdateEvent``, no POST: artifact deltas are
+      delivered via the eventual completed status update.
+    - Dedupes consecutive POSTs that share the same ``status.state`` (avoids
+      storms when the executor emits multiple working/working updates).
+    - Swallows POST failures (5xx / network errors / timeout) — best-effort.
+    """
+
+    def __init__(
+        self,
+        *,
+        httpx_client,
+        webhook_url: str,
+        webhook_token: str,
+        task_id: str,
+        context_id: str,
+    ) -> None:
+        self._httpx_client = httpx_client
+        self._webhook_url = webhook_url
+        self._webhook_token = webhook_token
+        self._task_id = task_id
+        self._context_id = context_id
+        # Last assembled Task state we POSTed (avoid POST storms on identical state)
+        self._last_state: str | None = None
+
+    async def enqueue_event(self, event) -> None:
+        from a2a.types import (
+            Task,
+            TaskArtifactUpdateEvent,
+            TaskStatusUpdateEvent,
+        )
+
+        if isinstance(event, Task):
+            await self._post(event)
+        elif isinstance(event, TaskStatusUpdateEvent):
+            # Reconstruct a minimal Task from the event for the webhook
+            task = Task(
+                id=self._task_id,
+                context_id=self._context_id,
+                status=event.status,
+            )
+            await self._post(task)
+        elif isinstance(event, TaskArtifactUpdateEvent):
+            # Artifact-only delta: skip POST here, rely on the eventual completed
+            # status update (which carries the final task with artifacts).
+            pass
+
+    async def close(self) -> None:
+        return None
+
+    async def _post(self, task) -> None:
+        try:
+            state = task.status.state.value
+            if state == self._last_state:
+                return
+            self._last_state = state
+            payload = task.model_dump(mode="json", exclude_none=True)
+            response = await self._httpx_client.post(
+                self._webhook_url,
+                json=payload,
+                headers={"X-A2A-Notification-Token": self._webhook_token},
+                timeout=5.0,
+            )
+            response.raise_for_status()
+        except Exception:
+            logger.warning(
+                "[A2A drain] webhook POST failed (best-effort)",
+                exc_info=True,
+            )
