@@ -1,70 +1,70 @@
-"""Verify the executor saves client_webhook_url/token from Message metadata
-on the FIRST request of a context, and does not overwrite on subsequent ones.
+"""Test ObelixAgentExecutor._apply_webhook_metadata_patch — the REAL helper
+extracted from executor.py:309-314 (TEMP-PATCH-SPEC-1).
 
-TEMP-PATCH-SPEC-1.
-
-Iron rule respected: no mocks, pure helper function tested standalone.
+NO MOCKS per iron rule. Uses _MinimalExec (Fake-via-subclass with empty __init__)
+to instantiate the executor without requiring agent/factory wiring.
+This is the same pattern used by tests/adapters/inbound/a2a/server/test_tracer_trace_reuse.py
 """
 
 from __future__ import annotations
 
 from obelix.adapters.inbound.a2a.server.context import ContextEntry
+from obelix.adapters.inbound.a2a.server.executor import ObelixAgentExecutor
 
 
-def _apply_metadata_patch(entry: ContextEntry, metadata: dict | None) -> None:
-    """Mirror of the production logic: read webhook fields from metadata IFF
-    not already set on the entry. Extracted here for unit-testability without
-    instantiating the full executor.
+class _MinimalExec(ObelixAgentExecutor):
+    """Bypasses agent/factory wiring; only the helper-under-test is needed."""
 
-    NOTE: this is a test-only mirror; the source-of-truth is in executor.py.
-    Whenever you change executor.py's logic, update this mirror too.
-    """
-    if not metadata:
-        return
-    # TEMP-PATCH-SPEC-1
-    if entry.client_webhook_url is None:
-        entry.client_webhook_url = metadata.get("client_webhook_url")
-        entry.client_webhook_token = metadata.get("client_webhook_token")
+    def __init__(self):
+        pass
 
 
 def test_first_request_sets_webhook_fields():
+    executor = _MinimalExec()
     entry = ContextEntry()
     metadata = {
         "client_info": {"shell": "bash"},
         "client_webhook_url": "http://127.0.0.1:54321/webhook",
         "client_webhook_token": "token-abc",
     }
-    _apply_metadata_patch(entry, metadata)
+    executor._apply_webhook_metadata_patch(entry=entry, metadata=metadata)
     assert entry.client_webhook_url == "http://127.0.0.1:54321/webhook"
     assert entry.client_webhook_token == "token-abc"
 
 
 def test_subsequent_request_does_not_overwrite():
+    executor = _MinimalExec()
     entry = ContextEntry()
     entry.client_webhook_url = "http://first/webhook"
     entry.client_webhook_token = "first-token"
-
-    metadata = {
-        "client_webhook_url": "http://second/webhook",
-        "client_webhook_token": "second-token",
-    }
-    _apply_metadata_patch(entry, metadata)
+    executor._apply_webhook_metadata_patch(
+        entry=entry,
+        metadata={
+            "client_webhook_url": "http://second/webhook",
+            "client_webhook_token": "second-token",
+        },
+    )
     # First-write wins
     assert entry.client_webhook_url == "http://first/webhook"
     assert entry.client_webhook_token == "first-token"
 
 
 def test_missing_metadata_no_change():
+    executor = _MinimalExec()
     entry = ContextEntry()
-    _apply_metadata_patch(entry, None)
-    _apply_metadata_patch(entry, {})
+    executor._apply_webhook_metadata_patch(entry=entry, metadata=None)
+    executor._apply_webhook_metadata_patch(entry=entry, metadata={})
     assert entry.client_webhook_url is None
     assert entry.client_webhook_token is None
 
 
 def test_partial_metadata_only_sets_what_is_present():
     """If only one of url/token is in metadata, only that one is set."""
+    executor = _MinimalExec()
     entry = ContextEntry()
-    _apply_metadata_patch(entry, {"client_webhook_url": "http://x/wb"})
+    executor._apply_webhook_metadata_patch(
+        entry=entry,
+        metadata={"client_webhook_url": "http://x/wb"},
+    )
     assert entry.client_webhook_url == "http://x/wb"
     assert entry.client_webhook_token is None
