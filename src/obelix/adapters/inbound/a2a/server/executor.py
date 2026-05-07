@@ -1156,3 +1156,84 @@ class ObelixAgentExecutor(AgentExecutor):
                 finally:
                     set_current_trace(prior_trace)
                     set_current_span(prior_span)
+
+    async def spawn_drain_task(
+        self,
+        *,
+        entry: ContextEntry,
+        context_id: str,
+    ) -> None:
+        """Spawn a new A2A task internally to drain pending notifications.
+
+        Fire-and-forget: schedules a background asyncio task and returns
+        immediately. The drain logic relies on ``entry.idle.is_set()`` for
+        deduplication — the spawned coroutine clears idle as its first action
+        (inherited from the standard executor pipeline via _run_agent).
+
+        Called by ``maybe_spawn_drain_task`` from webhook.py and polling.py
+        when notifications arrive on a context whose A2A task has terminated.
+        """
+        task_id = str(uuid.uuid4())
+        synthetic_message = Message(
+            message_id=str(uuid.uuid4()),
+            role=Role.user,
+            parts=[],
+            context_id=context_id,
+        )
+        logger.info(
+            f"[A2A drain] spawned task | task_id={task_id} context_id={context_id}"
+        )
+        asyncio.create_task(
+            self._run_drain_task(
+                task_id=task_id,
+                context_id=context_id,
+                entry=entry,
+                message=synthetic_message,
+            ),
+            name=f"drain-spawn-{task_id[:8]}",
+        )
+
+    async def _run_drain_task(
+        self,
+        *,
+        task_id: str,
+        context_id: str,
+        entry: ContextEntry,
+        message: Message,
+    ) -> None:
+        """Internal driver for a drain-spawned A2A task.
+
+        Calls ``_run_agent`` with ``is_drain_spawn=True``. Errors are logged but
+        not re-raised — the spawn is fire-and-forget.
+
+        For task 5 the event_queue is a no-op (_NullEventQueue). Task 7 will
+        replace it with _DrainSpawnEventQueue that POSTs to the CLI webhook.
+        """
+        try:
+            await self._run_agent(
+                task_id=task_id,
+                context_id=context_id,
+                user_text="",
+                attachments=[],
+                entry=entry,
+                event_queue=_NullEventQueue(),
+                is_resume=False,
+                is_drain_spawn=True,
+            )
+        except Exception as e:
+            logger.exception(
+                f"[A2A drain] spawned task failed | task_id={task_id} error={e}"
+            )
+
+
+class _NullEventQueue:
+    """Drop-in replacement for an absent A2A event_queue used by drain-spawn
+    tasks where the result is delivered via the temp webhook patch instead.
+    TEMP-PATCH-SPEC-1.
+    """
+
+    async def enqueue_event(self, event) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
