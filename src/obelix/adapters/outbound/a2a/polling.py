@@ -23,6 +23,7 @@ from obelix.infrastructure.logging import get_logger
 
 if TYPE_CHECKING:
     from obelix.adapters.inbound.a2a.server.context import ContextEntry, ContextStore
+    from obelix.adapters.inbound.a2a.server.drainer import _DrainExecutorProtocol
     from obelix.adapters.outbound.a2a.registry import RemoteAgentRegistry
     from obelix.adapters.outbound.a2a.state import RemoteTaskState
 
@@ -41,10 +42,18 @@ class PollingWorker:
         *,
         registry: RemoteAgentRegistry,
         context_store: ContextStore,
+        executor: _DrainExecutorProtocol | None = None,
         tick_seconds: float = 5.0,
     ) -> None:
         self._registry = registry
         self._store = context_store
+        # When set, ``_poll_one`` awaits ``maybe_spawn_drain_task`` after
+        # ``handle_remote_update`` so that pending notifications produced by
+        # terminal/input_required state changes trigger a fresh A2A turn on
+        # the same context (spec 1, drainer component). The drainer is
+        # idempotent and short-circuits when the queue is empty or a turn is
+        # already running, so passing the executor unconditionally is safe.
+        self._executor = executor
         self._tick = tick_seconds
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
@@ -148,3 +157,21 @@ class PollingWorker:
             fresh=fresh,
             registry=self._registry,
         )
+
+        # Drainer: kick a fresh A2A turn if the update produced a pending
+        # notification AND the context is idle. ``maybe_spawn_drain_task``
+        # itself enforces both checks, so calling it unconditionally here
+        # (when an executor is wired) is safe and idempotent. The
+        # context_id is recovered from ``ctx_entry.context_id`` (populated
+        # by ``ContextStore.get_or_create``) — the iter_entries snapshot
+        # itself doesn't carry it.
+        if self._executor is not None and ctx_entry.context_id is not None:
+            from obelix.adapters.inbound.a2a.server.drainer import (
+                maybe_spawn_drain_task,
+            )
+
+            await maybe_spawn_drain_task(
+                entry=ctx_entry,
+                context_id=ctx_entry.context_id,
+                executor=self._executor,
+            )

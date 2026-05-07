@@ -645,9 +645,11 @@ class AgentFactory:
             base_url = endpoint.rstrip("/") if endpoint else f"http://{host}:{port}"
             webhook_url = f"{base_url}/webhook"
 
-            polling_worker = PollingWorker(
-                registry=registry, context_store=context_store
-            )
+            # PollingWorker construction is deferred until after the
+            # ObelixAgentExecutor exists below, since the worker needs
+            # the executor to spawn drain tasks on stale-fallback updates
+            # (spec 1, drainer). Webhook URL is computed here so the
+            # tool factory can wire it.
 
             # Wrap the existing factory so each fresh agent gets the 5
             # outbound A2A tools registered before it starts a request.
@@ -692,6 +694,15 @@ class AgentFactory:
                 context_store,
                 executor=executor,
                 tracer=self._tracer,
+            )
+            # Same reason for the polling worker fallback path: when a
+            # webhook is missed, the worker's stale-detection HTTP
+            # fallback still needs the executor to spawn a drain turn
+            # after handle_remote_update queues a notification.
+            polling_worker = PollingWorker(
+                registry=registry,
+                context_store=context_store,
+                executor=executor,
             )
 
         request_handler = DefaultRequestHandler(

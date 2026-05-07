@@ -26,6 +26,7 @@ class ContextEntry:
     """Holds the state for a single conversation context."""
 
     __slots__ = (
+        "context_id",
         "history",
         "idle",
         "deferred_tool_calls",
@@ -47,6 +48,10 @@ class ContextEntry:
     )
 
     def __init__(self) -> None:
+        # Populated by ``ContextStore.get_or_create``. Lets background
+        # workers (polling, drainer) recover the context_id from an
+        # entry alone, without scanning the store's keys.
+        self.context_id: str | None = None
         self.history: list[StandardMessage] = []
         self.idle = asyncio.Event()
         self.idle.set()  # starts as idle (ready for new executions)
@@ -128,6 +133,7 @@ class ContextStore:
                 break
 
         entry = ContextEntry()
+        entry.context_id = context_id
         self._contexts[context_id] = entry
         return entry
 
