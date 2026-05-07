@@ -34,6 +34,7 @@ from obelix.infrastructure.logging import get_logger
 
 if TYPE_CHECKING:
     from obelix.adapters.inbound.a2a.server.context import ContextStore
+    from obelix.adapters.inbound.a2a.server.drainer import _DrainExecutorProtocol
     from obelix.adapters.outbound.a2a.registry import RemoteAgentRegistry
     from obelix.core.tracer.tracer import Tracer
 
@@ -46,6 +47,7 @@ def make_webhook_handler(
     registry: RemoteAgentRegistry,
     context_store: ContextStore,
     *,
+    executor: _DrainExecutorProtocol | None = None,
     tracer: Tracer | None = None,
 ) -> Callable[[Request], Awaitable[JSONResponse]]:
     """Build the /webhook handler closure.
@@ -54,6 +56,14 @@ def make_webhook_handler(
     delegates to handle_remote_update. Tracer event emission is wrapped
     around the delegate call when a tracer + saved trace_session are
     available.
+
+    When ``executor`` is provided, after ``handle_remote_update`` returns
+    the handler awaits ``maybe_spawn_drain_task`` so that pending
+    notifications appended on terminal/input_required states trigger a
+    fresh A2A turn on the same context (spec 1, drainer component). The
+    drainer is idempotent and short-circuits when the queue is empty or a
+    turn is already running, so passing the executor unconditionally is
+    safe.
     """
 
     async def webhook_handler(request: Request) -> JSONResponse:
@@ -141,6 +151,22 @@ def make_webhook_handler(
         handle_remote_update(
             entry=entry, task_id=task_id, fresh=fresh, registry=registry
         )
+
+        # Drainer: kick a fresh A2A turn if the update produced a pending
+        # notification AND the context is idle. ``maybe_spawn_drain_task``
+        # itself enforces both checks, so calling it unconditionally here
+        # (when an executor is wired) is safe and idempotent.
+        if executor is not None:
+            from obelix.adapters.inbound.a2a.server.drainer import (
+                maybe_spawn_drain_task,
+            )
+
+            await maybe_spawn_drain_task(
+                entry=entry,
+                context_id=route.context_id,
+                executor=executor,
+            )
+
         return JSONResponse({"ok": True})
 
     return webhook_handler

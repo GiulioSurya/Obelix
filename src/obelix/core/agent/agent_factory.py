@@ -645,9 +645,6 @@ class AgentFactory:
             base_url = endpoint.rstrip("/") if endpoint else f"http://{host}:{port}"
             webhook_url = f"{base_url}/webhook"
 
-            webhook_handler = make_webhook_handler(
-                registry, context_store, tracer=self._tracer
-            )
             polling_worker = PollingWorker(
                 registry=registry, context_store=context_store
             )
@@ -685,6 +682,17 @@ class AgentFactory:
             context_store=context_store,
             httpx_client=httpx_client,
         )
+
+        if remote_agents:
+            # Build the webhook handler now that the executor exists — the
+            # drainer needs it to spawn fresh A2A turns on incoming push
+            # notifications (spec 1).
+            webhook_handler = make_webhook_handler(
+                registry,
+                context_store,
+                executor=executor,
+                tracer=self._tracer,
+            )
 
         request_handler = DefaultRequestHandler(
             agent_executor=executor,
