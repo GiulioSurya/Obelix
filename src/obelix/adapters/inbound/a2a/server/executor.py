@@ -352,6 +352,7 @@ class ObelixAgentExecutor(AgentExecutor):
         entry,
         event_queue: EventQueue,
         is_resume: bool = False,
+        is_drain_spawn: bool = False,
     ) -> None:
         """Run the agent with isolated context and persist history.
 
@@ -402,6 +403,7 @@ class ObelixAgentExecutor(AgentExecutor):
                 entry=entry,
                 event_queue=event_queue,
                 is_resume=is_resume,
+                is_drain_spawn=is_drain_spawn,
             )
         finally:
             if tracer and not deferred_suspended and (trace_opened_here or is_resume):
@@ -469,6 +471,7 @@ class ObelixAgentExecutor(AgentExecutor):
         entry,
         event_queue: EventQueue,
         is_resume: bool = False,
+        is_drain_spawn: bool = False,
     ) -> bool:
         """Inner agent runner. Returns True if suspended for a deferred tool."""
 
