@@ -367,27 +367,53 @@ class ObelixAgentExecutor(AgentExecutor):
         tracer = self._tracer
         # Open a2a_task root span on first invocation; on resume we reuse the
         # trace + a2a_task span that are already restored by ``_run_agent_impl``
-        # via ``set_current_trace`` / ``set_current_span``.
+        # via ``set_current_trace`` / ``set_current_span``. On drain-spawn we
+        # reuse the existing trace_session of the context but open a new
+        # a2a_task root span (sibling of the previous one under the same
+        # trace_id).
         a2a_task_span = None
         trace_opened_here = False
-        if tracer and not is_resume:
-            await tracer.start_trace(
-                name="a2a.task",
-                metadata={"task_id": task_id, "context_id": context_id},
-            )
-            a2a_task_span = await tracer.start_span(
-                SpanType.a2a_task,
-                name=f"task {task_id[:8] if task_id else 'unknown'}",
-                input={"context_id": context_id},
-                metadata={"task_id": task_id, "context_id": context_id},
-            )
-            trace_opened_here = True
-            # Store the live trace on the entry so ``cancel()`` (which runs in
-            # a different asyncio task and therefore has empty contextvars) can
-            # find it and emit ``cancellation.requested`` on the a2a_task span.
-            # The deferred-suspension path later overwrites this with the same
-            # trace when it saves context for resume.
-            entry.trace_session = get_current_trace()
+        if tracer:
+            if is_resume:
+                # Existing path: deferred tool resume, trace already active.
+                pass
+            elif is_drain_spawn and entry.trace_session is not None:
+                # Drain-spawned task: reuse the context's existing trace so the
+                # new a2a_task span shares trace_id with the previous task(s)
+                # under the same context.
+                set_current_trace(entry.trace_session)
+                a2a_task_span = await tracer.start_span(
+                    SpanType.a2a_task,
+                    name=f"task {task_id[:8] if task_id else 'unknown'} (drain-spawn)",
+                    input={"context_id": context_id, "drain_spawn": True},
+                    metadata={
+                        "task_id": task_id,
+                        "context_id": context_id,
+                        "drain_spawn": True,
+                    },
+                )
+                trace_opened_here = False  # entry already owns the trace
+                # entry.trace_session unchanged
+            else:
+                # Existing path: new user-triggered task.
+                await tracer.start_trace(
+                    name="a2a.task",
+                    metadata={"task_id": task_id, "context_id": context_id},
+                )
+                a2a_task_span = await tracer.start_span(
+                    SpanType.a2a_task,
+                    name=f"task {task_id[:8] if task_id else 'unknown'}",
+                    input={"context_id": context_id},
+                    metadata={"task_id": task_id, "context_id": context_id},
+                )
+                trace_opened_here = True
+                # Store the live trace on the entry so ``cancel()`` (which runs
+                # in a different asyncio task and therefore has empty
+                # contextvars) can find it and emit ``cancellation.requested``
+                # on the a2a_task span. The deferred-suspension path later
+                # overwrites this with the same trace when it saves context for
+                # resume.
+                entry.trace_session = get_current_trace()
 
         # Tracks whether the executor suspended for a deferred tool. When
         # True, the finally block leaves the trace + a2a_task span open so
