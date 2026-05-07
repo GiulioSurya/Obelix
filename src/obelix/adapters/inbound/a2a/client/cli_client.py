@@ -480,7 +480,9 @@ class CLIClient(App):
 
         # Webhook server
         self._webhook_server = WebhookServer(
-            self.tracker, webhook_host=self._webhook_host
+            self.tracker,
+            webhook_host=self._webhook_host,
+            expected_token=self._webhook_token,
         )
         await self._webhook_server.start()
         self._webhook_url = self._webhook_server.get_url()

@@ -162,6 +162,7 @@ class WebhookServer:
         tracker: TaskTracker,
         webhook_host: str | None = None,
         webhook_port: int | None = None,
+        expected_token: str | None = None,
     ) -> None:
         self._tracker = tracker
         self._webhook_host = (
@@ -173,8 +174,14 @@ class WebhookServer:
         )
         self._port: int = 0
         self._task: asyncio.Task | None = None
+        self._expected_token: str | None = expected_token
 
         async def webhook_handler(request: Request) -> JSONResponse:
+            # TEMP-PATCH-SPEC-1: validate auth token if configured
+            if self._expected_token:
+                got = request.headers.get("X-A2A-Notification-Token", "")
+                if got != self._expected_token:
+                    return JSONResponse({"error": "unauthorized"}, status_code=401)
             try:
                 body = await request.json()
                 await self._tracker.update(body)
