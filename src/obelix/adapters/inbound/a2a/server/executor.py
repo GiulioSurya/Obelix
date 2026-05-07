@@ -306,6 +306,13 @@ class ObelixAgentExecutor(AgentExecutor):
         async with self._store_lock:
             entry = self._store.get_or_create(context_id)
 
+        # TEMP-PATCH-SPEC-1: webhook URL + token for drain-spawn POST.
+        # First-write wins so a reconnect on the same context_id
+        # cannot hijack the registration.
+        if message.metadata and entry.client_webhook_url is None:
+            entry.client_webhook_url = message.metadata.get("client_webhook_url")
+            entry.client_webhook_token = message.metadata.get("client_webhook_token")
+
         # Serialize requests on the same context
         await entry.idle.wait()
         entry.idle.clear()
