@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     from obelix.adapters.inbound.a2a.server.context import ContextEntry
     from obelix.adapters.outbound.a2a.registry import RemoteAgentRegistry
     from obelix.core.agent.base_agent import BaseAgent
+    from obelix.core.tracer.models import Span
     from obelix.core.tracer.tracer import Tracer
 
 logger = get_logger(__name__)
@@ -342,6 +343,81 @@ class ObelixAgentExecutor(AgentExecutor):
             entry.active_agent = None
             entry.idle.set()
 
+    async def _open_a2a_task_span(
+        self,
+        *,
+        task_id: str,
+        context_id: str,
+        entry,
+        is_resume: bool,
+        is_drain_spawn: bool,
+    ) -> tuple[Span | None, bool]:
+        """Open the a2a_task root span for ``_run_agent`` and report ownership.
+
+        Three branches, mutually exclusive:
+
+        - ``is_resume=True``: the trace + a2a_task span are restored by
+          ``_run_agent_impl`` from ``entry.trace_session`` / ``entry.trace_span``.
+          Returns ``(None, False)``: caller did not open a span here, and the
+          trace is owned by the original turn (will be closed by this same
+          finally because ``is_resume`` flips the close-trace condition).
+        - ``is_drain_spawn=True`` AND ``entry.trace_session`` non-None:
+          reuse the existing trace, open a NEW ``a2a_task`` sibling span.
+          Returns ``(span, False)``: the span belongs to this invocation
+          and must be closed in finally, but the trace is owned by the
+          context's first task and must NOT be closed here.
+        - Else (user-triggered first turn, or drain-spawn fallback when no
+          saved trace): open a fresh trace AND a fresh ``a2a_task`` span.
+          Returns ``(span, True)``: this invocation owns both — close span
+          and end trace in finally.
+
+        No-op on tracer not configured: returns ``(None, False)``.
+        """
+        tracer = self._tracer
+        if not tracer:
+            return None, False
+
+        if is_resume:
+            # Existing path: deferred tool resume, trace already active.
+            return None, False
+
+        if is_drain_spawn and entry.trace_session is not None:
+            # Drain-spawned task: reuse the context's existing trace so the
+            # new a2a_task span shares trace_id with the previous task(s)
+            # under the same context.
+            set_current_trace(entry.trace_session)
+            span = await tracer.start_span(
+                SpanType.a2a_task,
+                name=f"task {task_id[:8] if task_id else 'unknown'} (drain-spawn)",
+                input={"context_id": context_id, "drain_spawn": True},
+                metadata={
+                    "task_id": task_id,
+                    "context_id": context_id,
+                    "drain_spawn": True,
+                },
+            )
+            # entry.trace_session unchanged: entry already owns the trace.
+            return span, False
+
+        # Existing path: new user-triggered task (or drain-spawn fallback).
+        await tracer.start_trace(
+            name="a2a.task",
+            metadata={"task_id": task_id, "context_id": context_id},
+        )
+        span = await tracer.start_span(
+            SpanType.a2a_task,
+            name=f"task {task_id[:8] if task_id else 'unknown'}",
+            input={"context_id": context_id},
+            metadata={"task_id": task_id, "context_id": context_id},
+        )
+        # Store the live trace on the entry so ``cancel()`` (which runs in a
+        # different asyncio task and therefore has empty contextvars) can
+        # find it and emit ``cancellation.requested`` on the a2a_task span.
+        # The deferred-suspension path later overwrites this with the same
+        # trace when it saves context for resume.
+        entry.trace_session = get_current_trace()
+        return span, True
+
     async def _run_agent(
         self,
         *,
@@ -362,58 +438,25 @@ class ObelixAgentExecutor(AgentExecutor):
         span are left open so ``resume_after_deferred`` can continue inside
         them; they are closed on any terminal outcome (completed / failed /
         rejected / canceled) or on the resume invocation that finishes them.
+
+        Span/trace lifecycle (set by ``_open_a2a_task_span``):
+
+        - User-triggered first turn: opens trace + span; finally closes both.
+        - Resume: span/trace inherited; finally closes both (trace owned by
+          the original turn, terminating now).
+        - Drain-spawn (with saved trace_session): opens span, NOT trace;
+          finally closes the span only, leaving the trace open for the
+          context's other tasks.
         """
 
         tracer = self._tracer
-        # Open a2a_task root span on first invocation; on resume we reuse the
-        # trace + a2a_task span that are already restored by ``_run_agent_impl``
-        # via ``set_current_trace`` / ``set_current_span``. On drain-spawn we
-        # reuse the existing trace_session of the context but open a new
-        # a2a_task root span (sibling of the previous one under the same
-        # trace_id).
-        a2a_task_span = None
-        trace_opened_here = False
-        if tracer:
-            if is_resume:
-                # Existing path: deferred tool resume, trace already active.
-                pass
-            elif is_drain_spawn and entry.trace_session is not None:
-                # Drain-spawned task: reuse the context's existing trace so the
-                # new a2a_task span shares trace_id with the previous task(s)
-                # under the same context.
-                set_current_trace(entry.trace_session)
-                a2a_task_span = await tracer.start_span(
-                    SpanType.a2a_task,
-                    name=f"task {task_id[:8] if task_id else 'unknown'} (drain-spawn)",
-                    input={"context_id": context_id, "drain_spawn": True},
-                    metadata={
-                        "task_id": task_id,
-                        "context_id": context_id,
-                        "drain_spawn": True,
-                    },
-                )
-                trace_opened_here = False  # entry already owns the trace
-                # entry.trace_session unchanged
-            else:
-                # Existing path: new user-triggered task.
-                await tracer.start_trace(
-                    name="a2a.task",
-                    metadata={"task_id": task_id, "context_id": context_id},
-                )
-                a2a_task_span = await tracer.start_span(
-                    SpanType.a2a_task,
-                    name=f"task {task_id[:8] if task_id else 'unknown'}",
-                    input={"context_id": context_id},
-                    metadata={"task_id": task_id, "context_id": context_id},
-                )
-                trace_opened_here = True
-                # Store the live trace on the entry so ``cancel()`` (which runs
-                # in a different asyncio task and therefore has empty
-                # contextvars) can find it and emit ``cancellation.requested``
-                # on the a2a_task span. The deferred-suspension path later
-                # overwrites this with the same trace when it saves context for
-                # resume.
-                entry.trace_session = get_current_trace()
+        a2a_task_span, trace_opened_here = await self._open_a2a_task_span(
+            task_id=task_id,
+            context_id=context_id,
+            entry=entry,
+            is_resume=is_resume,
+            is_drain_spawn=is_drain_spawn,
+        )
 
         # Tracks whether the executor suspended for a deferred tool. When
         # True, the finally block leaves the trace + a2a_task span open so
@@ -432,60 +475,75 @@ class ObelixAgentExecutor(AgentExecutor):
                 is_drain_spawn=is_drain_spawn,
             )
         finally:
-            if tracer and not deferred_suspended and (trace_opened_here or is_resume):
-                # Re-pin the a2a_task span as current before closing. On the
-                # initial invocation this is defensive (agent's generator
-                # finally should have already restored it); on resume we
-                # need to walk the trace to find it.
-                task_span = a2a_task_span
-                if task_span is None:
-                    trace = get_current_trace()
-                    if trace is not None:
-                        task_span = next(
-                            (
-                                s
-                                for s in trace.spans
-                                if s.span_type == SpanType.a2a_task
-                                and s.end_time is None
-                            ),
-                            None,
-                        )
-                if task_span is not None:
-                    set_current_span(task_span)
-                # Propagate terminal status onto the a2a_task span AND the
-                # trace itself. Precedence: cancel > rejected > failed > ok.
-                # Cancel takes priority because ``_run_agent_impl`` may set
-                # ``was_canceled`` alongside normal terminal flags if a cancel
-                # races with a response. ``was_rejected`` / ``was_failed`` are
-                # set by the corresponding ``except`` handlers; when neither
-                # fires we fall through to ``ok``. ``error`` (not passed on
-                # the cancel path) forwards the reason/exception message so
-                # consumers can render it in span views.
-                if entry.was_canceled:
-                    status = SpanStatus.canceled
-                    error: str | None = None
-                elif entry.was_rejected:
-                    status = SpanStatus.rejected
-                    error = entry.rejection_reason
-                elif entry.was_failed:
-                    status = SpanStatus.error
-                    error = entry.failure_error
-                else:
-                    status = SpanStatus.ok
-                    error = None
-                await tracer.end_span(status=status, error=error)
-                await tracer.end_trace(status=status, error=error)
-                # Clear the saved trace ref — the trace is now ended and any
-                # subsequent turn on this context will open a new one. Reset
-                # the terminal-state flags so the next turn on this context
-                # starts clean (a retry after rejection/failure must not be
-                # marked terminal by stale flags).
-                entry.trace_session = None
-                entry.was_canceled = False
-                entry.was_rejected = False
-                entry.was_failed = False
-                entry.rejection_reason = None
-                entry.failure_error = None
+            if tracer and not deferred_suspended:
+                # Determine whether this invocation has a span to close.
+                # Three sources:
+                #  - First-turn / drain-spawn: ``a2a_task_span`` returned by
+                #    ``_open_a2a_task_span``.
+                #  - Resume: span/trace restored by ``_run_agent_impl``; we
+                #    walk the trace to find the open ``a2a_task`` span.
+                # Drain-spawn closes the span only; first-turn and resume
+                # close the span AND end the trace.
+                has_owned_span = a2a_task_span is not None
+                close_trace_here = trace_opened_here or is_resume
+                if has_owned_span or close_trace_here:
+                    # Re-pin the a2a_task span as current before closing. On
+                    # the initial invocation this is defensive (agent's
+                    # generator finally should have already restored it); on
+                    # resume we need to walk the trace to find it.
+                    task_span = a2a_task_span
+                    if task_span is None:
+                        trace = get_current_trace()
+                        if trace is not None:
+                            task_span = next(
+                                (
+                                    s
+                                    for s in trace.spans
+                                    if s.span_type == SpanType.a2a_task
+                                    and s.end_time is None
+                                ),
+                                None,
+                            )
+                    if task_span is not None:
+                        set_current_span(task_span)
+                    # Propagate terminal status onto the a2a_task span AND
+                    # the trace itself (when we close the trace). Precedence:
+                    # cancel > rejected > failed > ok. Cancel takes priority
+                    # because ``_run_agent_impl`` may set ``was_canceled``
+                    # alongside normal terminal flags if a cancel races with
+                    # a response. ``was_rejected`` / ``was_failed`` are set
+                    # by the corresponding ``except`` handlers; when neither
+                    # fires we fall through to ``ok``. ``error`` (not passed
+                    # on the cancel path) forwards the reason/exception
+                    # message so consumers can render it in span views.
+                    if entry.was_canceled:
+                        status = SpanStatus.canceled
+                        error: str | None = None
+                    elif entry.was_rejected:
+                        status = SpanStatus.rejected
+                        error = entry.rejection_reason
+                    elif entry.was_failed:
+                        status = SpanStatus.error
+                        error = entry.failure_error
+                    else:
+                        status = SpanStatus.ok
+                        error = None
+                    if task_span is not None:
+                        await tracer.end_span(status=status, error=error)
+                    if close_trace_here:
+                        await tracer.end_trace(status=status, error=error)
+                        # Clear the saved trace ref — the trace is now ended
+                        # and any subsequent turn on this context will open
+                        # a new one. Reset the terminal-state flags so the
+                        # next turn on this context starts clean (a retry
+                        # after rejection/failure must not be marked
+                        # terminal by stale flags).
+                        entry.trace_session = None
+                        entry.was_canceled = False
+                        entry.was_rejected = False
+                        entry.was_failed = False
+                        entry.rejection_reason = None
+                        entry.failure_error = None
 
     async def _run_agent_impl(
         self,
