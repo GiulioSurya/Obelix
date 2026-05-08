@@ -90,3 +90,37 @@ async def test_concurrent_appends_no_loss_under_serial_calls():
 
     refreshed = await store.get("t1")
     assert refreshed.metadata["spawned_task_ids"] == ["t3", "t4"]
+
+
+@pytest.mark.asyncio
+async def test_patch_fn_returning_empty_dict_clears_metadata():
+    """Docstring contract: returning ``{}`` clears the metadata."""
+    store = InMemoryTaskStore()
+    task = _seed_task(store, "t1", metadata={"existing": "value"})
+    await store.save(task)
+
+    async def clear(_meta: dict) -> dict:
+        return {}
+
+    await update_task_metadata(store, "t1", clear)
+
+    refreshed = await store.get("t1")
+    assert refreshed is not None
+    assert refreshed.metadata == {}
+
+
+@pytest.mark.asyncio
+async def test_patch_fn_returning_none_clears_metadata():
+    """Docstring contract: returning ``None`` is treated as ``{}``."""
+    store = InMemoryTaskStore()
+    task = _seed_task(store, "t1", metadata={"existing": "value"})
+    await store.save(task)
+
+    async def clear(_meta: dict):
+        return None
+
+    await update_task_metadata(store, "t1", clear)
+
+    refreshed = await store.get("t1")
+    assert refreshed is not None
+    assert refreshed.metadata == {}
