@@ -632,6 +632,16 @@ class ObelixAgentExecutor(AgentExecutor):
                 # time the task spent in ``input_required``.
                 await self._close_deferred_wait_span(entry)
                 stream = agent.resume_after_deferred()
+            elif is_drain_spawn:
+                # Drain-spawn: the conversation history already contains the
+                # drained <remote_task_update> notifications (see
+                # _run_drain_task). Reuse the same primitive as the deferred
+                # resume path — restart the loop on the existing history
+                # WITHOUT appending a new HumanMessage. This avoids the
+                # synthetic empty-string HumanMessage that would otherwise
+                # be appended via ``execute_query_stream("")`` and rejected
+                # by Anthropic ("text content blocks must be non-empty").
+                stream = agent.resume_after_deferred()
             elif attachments:
                 # Pass as HumanMessage with attachments for multimodal
                 query = HumanMessage(content=user_text, attachments=attachments)
@@ -643,7 +653,8 @@ class ObelixAgentExecutor(AgentExecutor):
             # invocation only. On resume the input is a DataPart (deferred
             # tool response) conceptually continuing the same turn, not a
             # new user query, so we skip emitting a second human span.
-            if self._tracer and not is_resume:
+            # Drain-spawn shares the same semantics — no new user input.
+            if self._tracer and not is_resume and not is_drain_spawn:
                 await self._tracer.start_span(
                     SpanType.human,
                     "human.input",
@@ -1248,8 +1259,28 @@ class ObelixAgentExecutor(AgentExecutor):
                 task_id=task_id,
                 context_id=context_id,
             )
+            logger.info(
+                f"[A2A drain] event_queue=DrainSpawnEventQueue "
+                f"task_id={task_id} target={entry.client_webhook_url}"
+            )
         else:
             event_queue = _NullEventQueue()
+            logger.warning(
+                f"[A2A drain] event_queue=NullEventQueue (NO POST to CLI) "
+                f"task_id={task_id} client_webhook_url={entry.client_webhook_url!r} "
+                f"httpx_client_set={self._httpx_client is not None}"
+            )
+
+        # Drain pending_notifications into the agent history BEFORE running.
+        # The drain-spawn path bypasses ``execute()`` (where the same drain
+        # lives at lines 334-341), so we replicate it here. Same swap-pattern
+        # to avoid losing notifications that arrive concurrently from the
+        # webhook/polling worker.
+        if entry.pending_notifications:
+            drained = entry.pending_notifications
+            entry.pending_notifications = []
+            entry.history.extend(drained)
+
         try:
             await self._run_agent(
                 task_id=task_id,
@@ -1311,8 +1342,16 @@ class _DrainSpawnEventQueue:
         self._webhook_token = webhook_token
         self._task_id = task_id
         self._context_id = context_id
-        # Last assembled Task state we POSTed (avoid POST storms on identical state)
-        self._last_state: str | None = None
+        # Accumulated artifacts (keyed by artifact_id) so each POST carries
+        # the cumulative artifact list, not just the most recent delta.
+        # The agent stream emits N TaskArtifactUpdateEvent (one per chunk
+        # in streaming mode) — these MUST be merged before forwarding the
+        # final Task to the CLI, otherwise the CLI sees ``completed`` with
+        # an empty payload.
+        # ``Artifact`` resolved at runtime via the import inside enqueue_event;
+        # the dict value type is intentionally untyped here to avoid an extra
+        # top-level a2a.types import for a single annotation.
+        self._artifacts: dict = {}
 
     async def enqueue_event(self, event) -> None:
         from a2a.types import (
@@ -1321,31 +1360,67 @@ class _DrainSpawnEventQueue:
             TaskStatusUpdateEvent,
         )
 
+        evt_type = type(event).__name__
+        logger.info(
+            f"[A2A drain] enqueue_event task_id={self._task_id} type={evt_type}"
+        )
         if isinstance(event, Task):
+            # Full Task event: trust its artifacts as authoritative.
+            if event.artifacts:
+                for art in event.artifacts:
+                    self._artifacts[art.artifact_id] = art
             await self._post(event)
+        elif isinstance(event, TaskArtifactUpdateEvent):
+            # Merge into the accumulator. ``append=True`` extends parts of
+            # an existing artifact (streaming chunks); otherwise replace.
+            self._merge_artifact_update(event)
+            logger.info(
+                f"[A2A drain] merged ArtifactUpdate task_id={self._task_id} "
+                f"total_artifacts={len(self._artifacts)}"
+            )
         elif isinstance(event, TaskStatusUpdateEvent):
-            # Reconstruct a minimal Task from the event for the webhook
+            # Reconstruct a Task from the event AND attach accumulated artifacts.
+            artifacts = list(self._artifacts.values()) or None
             task = Task(
                 id=self._task_id,
                 context_id=self._context_id,
                 status=event.status,
+                artifacts=artifacts,
             )
             await self._post(task)
-        elif isinstance(event, TaskArtifactUpdateEvent):
-            # Artifact-only delta: skip POST here, rely on the eventual completed
-            # status update (which carries the final task with artifacts).
-            pass
+        else:
+            logger.warning(
+                f"[A2A drain] UNRECOGNIZED event type={evt_type} task_id={self._task_id}"
+            )
+
+    def _merge_artifact_update(self, event) -> None:
+        """Apply ``TaskArtifactUpdateEvent`` to ``self._artifacts``.
+
+        - ``append=True`` and same artifact_id present: extend ``parts``
+          on the existing artifact (streaming chunks).
+        - Otherwise: replace (or insert if new artifact_id).
+        """
+        new = event.artifact
+        existing = self._artifacts.get(new.artifact_id)
+        if event.append and existing is not None:
+            existing.parts = list(existing.parts or []) + list(new.parts or [])
+        else:
+            self._artifacts[new.artifact_id] = new
 
     async def close(self) -> None:
         return None
 
     async def _post(self, task) -> None:
+        # NOTE: no dedup-by-state. Two consecutive ``working`` updates carry
+        # different payloads (e.g. the second has the agent's
+        # ``status.message`` attached) and both must reach the CLI.
         try:
             state = task.status.state.value
-            if state == self._last_state:
-                return
-            self._last_state = state
             payload = task.model_dump(mode="json", exclude_none=True)
+            logger.info(
+                f"[A2A drain] _post POSTING task_id={self._task_id} state={state} "
+                f"artifacts={len(task.artifacts or [])} url={self._webhook_url}"
+            )
             response = await self._httpx_client.post(
                 self._webhook_url,
                 json=payload,
@@ -1353,8 +1428,12 @@ class _DrainSpawnEventQueue:
                 timeout=5.0,
             )
             response.raise_for_status()
-        except Exception:
+            logger.info(
+                f"[A2A drain] _post OK task_id={self._task_id} state={state} "
+                f"http_status={response.status_code}"
+            )
+        except Exception as e:
             logger.warning(
-                "[A2A drain] webhook POST failed (best-effort)",
+                f"[A2A drain] webhook POST failed task_id={self._task_id} error={e}",
                 exc_info=True,
             )

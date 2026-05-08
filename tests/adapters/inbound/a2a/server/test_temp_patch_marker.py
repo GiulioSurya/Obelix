@@ -16,7 +16,7 @@ from pathlib import Path
 
 # Update this number ONLY when consciously adding/removing a TEMP-PATCH-SPEC-1
 # marker. A mismatch is a signal that the cleanup audit is out of date.
-EXPECTED_COUNT = 12
+EXPECTED_COUNT = 13
 
 
 def _find_repo_root() -> Path:

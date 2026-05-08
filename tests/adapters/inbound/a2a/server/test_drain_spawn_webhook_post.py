@@ -114,8 +114,18 @@ async def test_drain_spawn_event_queue_posts_on_status_update_event():
 
 
 @pytest.mark.asyncio
-async def test_drain_spawn_event_queue_dedupes_same_state():
-    """Two updates with same state result in only ONE POST (avoid storms)."""
+async def test_drain_spawn_event_queue_no_dedup_each_event_posts():
+    """Each TaskStatusUpdateEvent must produce a POST.
+
+    The previous implementation deduped by ``status.state`` and dropped
+    consecutive ``working`` updates — that broke the realistic flow where
+    the agent's reply arrives via a second ``working`` update (with
+    ``status.message`` populated) BEFORE the ``completed`` update. Dedup
+    by state alone silently lost the agent's message body.
+
+    The new contract: post every ``TaskStatusUpdateEvent`` as-is. Volume
+    is low (typical drain-spawn turn produces 3-4 status updates).
+    """
     from a2a.types import TaskState, TaskStatus, TaskStatusUpdateEvent
 
     from obelix.adapters.inbound.a2a.server.executor import _DrainSpawnEventQueue
@@ -152,7 +162,7 @@ async def test_drain_spawn_event_queue_dedupes_same_state():
         await queue.enqueue_event(evt)
         await queue.enqueue_event(evt)
 
-    assert len(received) == 1, f"expected 1 POST, got {len(received)}"
+    assert len(received) == 3, f"Expected 3 POSTs (no dedup), got {len(received)}"
 
 
 @pytest.mark.asyncio

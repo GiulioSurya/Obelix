@@ -29,6 +29,7 @@ from a2a.client import (
     ClientConfig,
     ClientFactory,
 )
+from a2a.client.errors import A2AClientJSONRPCError
 from a2a.types import (
     DataPart,
     FilePart,
@@ -381,7 +382,10 @@ class CLIClient(App):
         self.dispatcher = dispatcher
         self.urls = urls or []
         self._webhook_host = webhook_host
-        self.tracker = TaskTracker()
+        # Resolver to attribute server-spawned tasks (drain-spawn) to the
+        # right agent based on the payload's contextId. Without this, those
+        # tasks would surface in the status bar as 'unknown: 1 new'.
+        self.tracker = TaskTracker(context_resolver=self._resolve_agent_by_context)
         self.agents: list[AgentConnection] = []
         self.current = 0
         self._webhook_server: WebhookServer | None = None
@@ -490,7 +494,13 @@ class CLIClient(App):
 
         # Resolve agents
         self._httpx_client = httpx.AsyncClient(timeout=httpx.Timeout(180.0))
-        push_configs = [PushNotificationConfig(url=self._webhook_url)]
+        # TEMP-PATCH-SPEC-1: include the per-session token so the server's
+        # push_sender attaches the X-A2A-Notification-Token header on every
+        # POST to our local WebhookServer. Without it, the WebhookServer
+        # rejects with 401 and we lose every push (only polling fallback).
+        push_configs = [
+            PushNotificationConfig(url=self._webhook_url, token=self._webhook_token)
+        ]
         config = ClientConfig(
             httpx_client=self._httpx_client,
             streaming=False,
@@ -612,6 +622,24 @@ class CLIClient(App):
             chat.write(Text(f"  [poll] bad response: {exc.message}", style="dim red"))
             self._last_poll[task_id] = float("inf")  # never retry
             return
+        except A2AClientJSONRPCError as exc:
+            # JSON-RPC error from the server. Code -32001 = TaskNotFound:
+            # the task is not in the server's SDK task store. This happens
+            # routinely for drain-spawn tasks (server-spawned, fire-and-
+            # forget, never registered in the SDK store) — they're
+            # delivered to us via push only. Disable retry silently.
+            # Other JSON-RPC errors are surfaced as before.
+            if getattr(exc.error, "code", None) == -32001:
+                self._last_poll[task_id] = float("inf")
+                return
+            chat.write(
+                Text(
+                    f"  [poll] JSON-RPC {exc.error.code}: {exc.error.message}",
+                    style="dim red",
+                )
+            )
+            self._last_poll[task_id] = float("inf")
+            return
         except Exception as exc:
             chat.write(Text(f"  [poll] unexpected error: {exc}", style="dim red"))
             self._last_poll[task_id] = float("inf")
@@ -729,6 +757,18 @@ class CLIClient(App):
             if isinstance(p, dict) and "text" in p:
                 return p["text"]
         return ""
+
+    def _resolve_agent_by_context(self, context_id: str) -> str | None:
+        """Map an A2A context_id to one of our connected agents' name.
+
+        Used as the TaskTracker.context_resolver callback so server-spawned
+        tasks (drain-spawn) get attributed to the originating agent rather
+        than appearing as 'unknown' in the status bar.
+        """
+        for agent in self.agents:
+            if agent.context_id == context_id:
+                return agent.name
+        return None
 
     def _update_input_placeholder(self) -> None:
         if self.agents:
