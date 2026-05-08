@@ -33,6 +33,8 @@ from obelix.core.tracer.models import SpanType
 from obelix.infrastructure.logging import get_logger
 
 if TYPE_CHECKING:
+    from a2a.server.tasks.task_store import TaskStore
+
     from obelix.adapters.inbound.a2a.server.context import ContextStore
     from obelix.adapters.inbound.a2a.server.drainer import _DrainExecutorProtocol
     from obelix.adapters.outbound.a2a.registry import RemoteAgentRegistry
@@ -49,6 +51,7 @@ def make_webhook_handler(
     *,
     executor: _DrainExecutorProtocol | None = None,
     tracer: Tracer | None = None,
+    task_store: TaskStore | None = None,
 ) -> Callable[[Request], Awaitable[JSONResponse]]:
     """Build the /webhook handler closure.
 
@@ -151,6 +154,29 @@ def make_webhook_handler(
         handle_remote_update(
             entry=entry, task_id=task_id, fresh=fresh, registry=registry
         )
+
+        # Mirror the (possibly new) peer state onto T_parent.metadata.
+        # ``handle_remote_update`` is idempotent — same-state polls early-return
+        # before mutating, but reading state.status after the call still gives
+        # the canonical post-update value. The CLI status bar polls this
+        # metadata to render one segment per active peer.
+        if task_store is not None and entry.current_task_id is not None:
+            from obelix.adapters.inbound.a2a.server.metadata_patch import (
+                update_dispatched_peer_state,
+            )
+
+            mirrored_state = (
+                entry.remote_tasks[task_id].status
+                if task_id in entry.remote_tasks
+                else None
+            )
+            if mirrored_state is not None:
+                await update_dispatched_peer_state(
+                    task_store,
+                    entry.current_task_id,
+                    task_id,
+                    mirrored_state,
+                )
 
         # Drainer: kick a fresh A2A turn if the update produced a pending
         # notification AND the context is idle. ``maybe_spawn_drain_task``

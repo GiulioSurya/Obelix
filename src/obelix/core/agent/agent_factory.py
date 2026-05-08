@@ -720,21 +720,28 @@ class AgentFactory:
         if remote_agents:
             # Build the webhook handler now that the executor exists — the
             # drainer needs it to spawn fresh A2A turns on incoming push
-            # notifications (spec 1).
+            # notifications (spec 1). Also forward the shared task_store so
+            # webhook updates mirror onto T_parent.metadata.dispatched_peers
+            # (spec 2: CLI status bar polls T1.metadata for peer state).
             webhook_handler = make_webhook_handler(
                 registry,
                 context_store,
                 executor=executor,
                 tracer=self._tracer,
+                task_store=task_store,
             )
             # Same reason for the polling worker fallback path: when a
             # webhook is missed, the worker's stale-detection HTTP
             # fallback still needs the executor to spawn a drain turn
-            # after handle_remote_update queues a notification.
+            # after handle_remote_update queues a notification. The
+            # task_store kwarg keeps T_parent.metadata in sync with the
+            # local RemoteTaskState whenever polling observes a state
+            # change (or hits the giveup threshold).
             polling_worker = PollingWorker(
                 registry=registry,
                 context_store=context_store,
                 executor=executor,
+                task_store=task_store,
             )
 
         request_handler = DefaultRequestHandler(

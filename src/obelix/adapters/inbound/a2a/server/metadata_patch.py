@@ -37,3 +37,30 @@ async def update_task_metadata(
     new_meta = await patch_fn(current)
     task.metadata = new_meta or {}
     await store.save(task)
+
+
+async def update_dispatched_peer_state(
+    store: TaskStore,
+    parent_task_id: str,
+    peer_task_id: str,
+    new_state: str,
+) -> None:
+    """Patch T_parent.metadata.dispatched_peers[*].state where the entry's
+    task_id == peer_task_id. No-op if the parent task or peer entry is
+    absent.
+
+    The CLI status bar reads dispatched_peers off T_parent.metadata via
+    polling and renders one segment per active peer. This helper is called
+    from every site that mutates ``entry.remote_tasks[*].status`` (webhook,
+    polling, handler) so the two views stay in sync.
+    """
+
+    async def _patch(meta: dict) -> dict:
+        peers = list(meta.get("dispatched_peers", []))
+        for peer in peers:
+            if peer.get("task_id") == peer_task_id:
+                peer["state"] = new_state
+        meta["dispatched_peers"] = peers
+        return meta
+
+    await update_task_metadata(store, parent_task_id, _patch)

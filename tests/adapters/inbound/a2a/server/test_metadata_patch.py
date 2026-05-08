@@ -124,3 +124,57 @@ async def test_patch_fn_returning_none_clears_metadata():
     refreshed = await store.get("t1")
     assert refreshed is not None
     assert refreshed.metadata == {}
+
+
+@pytest.mark.asyncio
+async def test_update_dispatched_peer_state_changes_only_matching_entry():
+    from obelix.adapters.inbound.a2a.server.metadata_patch import (
+        update_dispatched_peer_state,
+    )
+
+    store = InMemoryTaskStore()
+    await store.save(
+        Task(
+            id="t1",
+            context_id="ctx-1",
+            status=TaskStatus(state=TaskState.working),
+            metadata={
+                "dispatched_peers": [
+                    {"name": "A", "task_id": "tA", "state": "working"},
+                    {"name": "B", "task_id": "tB", "state": "working"},
+                ]
+            },
+        )
+    )
+
+    await update_dispatched_peer_state(store, "t1", "tA", "completed")
+
+    refreshed = await store.get("t1")
+    peers = refreshed.metadata["dispatched_peers"]
+    assert peers[0]["state"] == "completed"
+    assert peers[1]["state"] == "working"
+
+
+@pytest.mark.asyncio
+async def test_update_dispatched_peer_state_noop_when_peer_unknown():
+    from obelix.adapters.inbound.a2a.server.metadata_patch import (
+        update_dispatched_peer_state,
+    )
+
+    store = InMemoryTaskStore()
+    await store.save(
+        Task(
+            id="t1",
+            context_id="ctx-1",
+            status=TaskStatus(state=TaskState.working),
+            metadata={
+                "dispatched_peers": [{"name": "A", "task_id": "tA", "state": "working"}]
+            },
+        )
+    )
+
+    await update_dispatched_peer_state(store, "t1", "tUnknown", "completed")
+
+    refreshed = await store.get("t1")
+    peers = refreshed.metadata["dispatched_peers"]
+    assert peers == [{"name": "A", "task_id": "tA", "state": "working"}]

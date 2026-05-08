@@ -21,6 +21,8 @@ from obelix.core.tool.tool_decorator import tool
 from obelix.infrastructure.logging import get_logger
 
 if TYPE_CHECKING:
+    from a2a.server.tasks.task_store import TaskStore
+
     from obelix.adapters.outbound.a2a.registry import RemoteAgentRegistry
 
 logger = get_logger(__name__)
@@ -53,12 +55,23 @@ class RespondToRemoteTool(_ContextAware):
     def __init__(self, registry: RemoteAgentRegistry) -> None:
         self._registry = registry
         self._webhook_url: str | None = None
+        self._task_store: TaskStore | None = None
 
     def set_webhook_url(self, url: str) -> None:
         """Set the webhook URL passed to the remote in the continuation's
         push_notification_config (same URL as the original dispatch — must
         be set by AgentFactory at registration)."""
         self._webhook_url = url
+
+    def set_task_store(self, store: TaskStore) -> None:
+        """Inject the SDK TaskStore so the tool can mirror the local
+        ``input_required → submitted`` transition onto T_parent.metadata.
+
+        Called by the executor's ``_inject_context_entry`` helper before
+        the agent runs (same wiring path as DispatchAgentTool). When None,
+        respond still works — only the metadata mirror is skipped.
+        """
+        self._task_store = store
 
     async def execute(self) -> dict:
         ctx_entry = self._require_context("RespondToRemoteTool")
@@ -110,6 +123,21 @@ class RespondToRemoteTool(_ContextAware):
         # Local state transition: input_required → submitted.
         state.status = "submitted"
         state.deferred_calls = None
+
+        # Mirror onto T_parent.metadata so the CLI status bar reflects the
+        # transition immediately (otherwise the segment would freeze on
+        # input_required until the next webhook/polling tick).
+        if self._task_store is not None and ctx_entry.current_task_id is not None:
+            from obelix.adapters.inbound.a2a.server.metadata_patch import (
+                update_dispatched_peer_state,
+            )
+
+            await update_dispatched_peer_state(
+                self._task_store,
+                ctx_entry.current_task_id,
+                self.task_id,
+                "submitted",
+            )
 
         # Refresh the token's TTL: the input_required cycle may have lasted
         # hours waiting for human input, and the resume notifications need

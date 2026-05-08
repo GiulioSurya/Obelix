@@ -22,6 +22,8 @@ from obelix.adapters.outbound.a2a.notification import (
 from obelix.infrastructure.logging import get_logger
 
 if TYPE_CHECKING:
+    from a2a.server.tasks.task_store import TaskStore
+
     from obelix.adapters.inbound.a2a.server.context import ContextEntry, ContextStore
     from obelix.adapters.inbound.a2a.server.drainer import _DrainExecutorProtocol
     from obelix.adapters.outbound.a2a.registry import RemoteAgentRegistry
@@ -44,6 +46,7 @@ class PollingWorker:
         context_store: ContextStore,
         executor: _DrainExecutorProtocol | None = None,
         tick_seconds: float = 5.0,
+        task_store: TaskStore | None = None,
     ) -> None:
         self._registry = registry
         self._store = context_store
@@ -55,6 +58,12 @@ class PollingWorker:
         # already running, so passing the executor unconditionally is safe.
         self._executor = executor
         self._tick = tick_seconds
+        # Optional SDK TaskStore — when wired, every observed peer-state
+        # change is mirrored onto T_parent.metadata.dispatched_peers so the
+        # CLI status bar (which polls T1.metadata) stays in sync with
+        # entry.remote_tasks. Defaults to None for backwards compatibility
+        # with existing tests that exercise polling in isolation.
+        self._task_store = task_store
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
 
@@ -133,6 +142,23 @@ class PollingWorker:
                     )
                 )
                 self._registry.revoke(state.token)
+                # Mirror to T_parent.metadata so the CLI status bar shows
+                # the failed peer immediately rather than freezing on
+                # "working" until the next manual refresh.
+                if (
+                    self._task_store is not None
+                    and ctx_entry.current_task_id is not None
+                ):
+                    from obelix.adapters.inbound.a2a.server.metadata_patch import (
+                        update_dispatched_peer_state,
+                    )
+
+                    await update_dispatched_peer_state(
+                        self._task_store,
+                        ctx_entry.current_task_id,
+                        state.task_id,
+                        "failed",
+                    )
                 logger.warning(
                     f"[A2A polling] giveup | task_id={state.task_id} "
                     f"after {_MAX_FAILURES} consecutive failures"
@@ -157,6 +183,29 @@ class PollingWorker:
             fresh=fresh,
             registry=self._registry,
         )
+
+        # Mirror the (possibly new) peer state onto T_parent.metadata.
+        # ``handle_remote_update`` is idempotent — same-state polls early-return
+        # before mutating, but reading state.status after the call still gives
+        # the canonical post-update value. The CLI status bar polls this
+        # metadata to render one segment per active peer.
+        if self._task_store is not None and ctx_entry.current_task_id is not None:
+            from obelix.adapters.inbound.a2a.server.metadata_patch import (
+                update_dispatched_peer_state,
+            )
+
+            mirrored_state = (
+                ctx_entry.remote_tasks[state.task_id].status
+                if state.task_id in ctx_entry.remote_tasks
+                else None
+            )
+            if mirrored_state is not None:
+                await update_dispatched_peer_state(
+                    self._task_store,
+                    ctx_entry.current_task_id,
+                    state.task_id,
+                    mirrored_state,
+                )
 
         # Drainer: kick a fresh A2A turn if the update produced a pending
         # notification AND the context is idle. ``maybe_spawn_drain_task``
