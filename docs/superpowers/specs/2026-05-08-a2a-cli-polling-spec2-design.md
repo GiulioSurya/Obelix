@@ -119,27 +119,24 @@ implementiamo kill-all — KISS).
 | Append a `dispatched_peers` | Tool `dispatch_agent` | Subito dopo `client.send_message` verso il peer. State iniziale `working`. |
 | Update di `dispatched_peers[*].state` | Push handler A↔B (esistente) | Ogni notifica push da peer: cambio stato. |
 
-### Vincolo SDK aperto (open assumption #1)
+<!-- amended per docs/superpowers/research/2026-05-08-a2a-cli-polling-spec2-design.md amendment 1 on 2026-05-08 -->
+### Vincolo SDK risolto (open assumption #1)
 
-A2A SDK non documenta come modificare `Task.metadata` post-creation. Due
-candidati di implementazione, da verificare in pre-impl research:
+Verificato in pre-impl research (`docs/superpowers/research/2026-05-08-a2a-cli-polling-spec2-design.md` finding "Task.metadata mutability"): l'a2a-sdk 0.3.25 supporta solo l'**in-place TaskStore patch**.
 
-1. **In-place TaskStore patch**: il drainer recupera il Task dallo store
-   SDK, modifica `metadata`, lo riscrive. Il prossimo `tasks/get(T1)` legge
-   il Task aggiornato. Pro: semplice, immediato. Contro: bypassa il
-   meccanismo eventi (potenziale race con altri reader).
+**Pattern obbligatorio**:
 
-2. **TaskStatusUpdateEvent metadata-only**: il drainer emette un evento
-   `TaskStatusUpdateEvent(task_id=T1, status=<unchanged>, metadata={...},
-   final=False)` sulla EventQueue di T1. `ClientTaskManager.save_task_event`
-   merge-a `event.metadata` su `task.metadata` (vedi
-   `client_task_manager.py:125-128`). Pro: SDK-canonical. Contro: **se T1 è
-   già terminal la EventQueue è chiusa**, l'evento non si propaga. Da
-   verificare se l'SDK lo accetta o solleva.
+```python
+task = await task_store.get(task_id)
+if task is None:
+    return  # task evicted, niente da fare
+task.metadata = {**(task.metadata or {}), "spawned_task_ids": [...]}
+await task_store.save(task)
+```
 
-Decisione: si parte preferendo l'opzione 2 (SDK-canonical). Se la
-pre-impl research dimostra che opzione 2 fallisce dopo task terminale, si
-ripiega su opzione 1.
+`task_store.save` è un upsert keyed by `task.id` (`InMemoryTaskStore.save` at `.venv/Lib/site-packages/a2a/server/tasks/inmemory_task_store.py:25-31`). Il prossimo `client.get_task(T1)` ritorna il Task con metadata aggiornato senza alcuna logica di invalidation, perché `DefaultRequestHandler.on_get_task` rilegge sempre dal `task_store` (no in-memory cache, verificato a `.venv/Lib/site-packages/a2a/server/request_handlers/default_request_handler.py:111-122`). Niente caching client-side in `JsonRpcTransport.get_task` (verificato a `.venv/Lib/site-packages/a2a/client/transports/jsonrpc.py:224-247`).
+
+**Path eliminato**: emettere `TaskStatusUpdateEvent(metadata={...}, final=False)` sulla EventQueue del task terminale è impossibile — la queue viene chiusa da `_cleanup_producer` prima che il drainer possa fire. L'evento sarebbe silently dropped (`EventQueue.enqueue_event` su queue chiusa = warning + early return).
 
 ### Flow CLI
 
@@ -195,17 +192,31 @@ sta al server scegliere). Niente two-press kill-all in spec 2.
 L'ultimo punto evita di perdere drain-spawn tardivi: T1 può essere
 `completed` da molti secondi quando finalmente arriva la risposta async.
 
+<!-- amended per docs/superpowers/research/2026-05-08-a2a-cli-polling-spec2-design.md amendment 2 on 2026-05-08 -->
 **Errori transienti** durante `tasks/get`:
 
 - 5xx, timeout, network error: continua il loop al prossimo ciclo.
 - 4xx: stop di quel task, log dell'errore in chat (non più con prefisso
   `[poll]` — è il canale primario, non un fallback).
-- JSON-RPC `-32001 Task not found`: non dovrebbe più accadere (i drain-spawn
-  task in spec 2 sono task A2A regolari nello SDK store). Se accade è un
-  bug genuino — log e stop di quel task. **Open assumption #2**: la
-  pre-impl research deve verificare che il drainer registri T3 nel
-  TaskStore SDK PRIMA di scrivere `T3.id` in `T1.metadata.spawned_task_ids`,
-  per evitare race fra annuncio del task e disponibilità via `tasks/get`.
+- JSON-RPC `-32001 Task not found` su `tasks/get`: non dovrebbe più accadere
+  (i drain-spawn task in spec 2 sono task A2A regolari nello SDK store). Se
+  accade è un bug genuino — log e stop di quel task.
+
+**Errori su `cancel_task`** (ESC dell'utente):
+
+- JSON-RPC `-32002 TaskNotCancelableError`: il task era già in stato terminale
+  al momento del cancel (race fra completion naturale e keypress utente).
+  Trattare come no-op silenzioso (log debug, niente messaggio in chat).
+  Verificato in pre-impl research finding "cancel-no-cascade".
+- JSON-RPC `-32001 TaskNotFoundError`: il task era stato evict dal TaskStore
+  fra il tracking di `last_task_id` e il cancel. Trattare come no-op silenzioso.
+- Altri errori: log e messaggio in chat come oggi.
+
+**Race ordering vincolante** (drain-spawn append vs TaskStore registration):
+il drainer DEVE registrare T3 nel `TaskStore` SDK (via `task_store.save(T3)`)
+PRIMA di scrivere `T3.id` in `T1.metadata.spawned_task_ids` (via il pattern
+in-place patch del § 3). Se invertito, la CLI può fare poll del nuovo
+`T3.id` prima che il task sia disponibile e ricevere `-32001`.
 
 **Side-effect UI**:
 
@@ -416,43 +427,44 @@ reali del SDK.
 
 ---
 
-## 8. Open assumptions (per pre-implementation research)
+<!-- amended per docs/superpowers/research/2026-05-08-a2a-cli-polling-spec2-design.md amendment 3 on 2026-05-08 -->
+## 8. Open assumptions — risolte in pre-implementation research
 
-Da risolvere in `docs/superpowers/research/2026-05-08-a2a-cli-polling-spec2-design.md`
-prima del piano:
+Pre-implementation research completata 2026-05-08, vedi
+`docs/superpowers/research/2026-05-08-a2a-cli-polling-spec2-design.md`.
+Esiti delle 6 open assumption iniziali:
 
-1. **Mutabilità di `Task.metadata` post-creation nell'a2a-sdk**.
-   - Verificare se `TaskStatusUpdateEvent(metadata={...}, final=False)`
-     emesso DOPO che il Task è in stato terminal (state=completed) è
-     accettato dal server SDK e propagato correttamente al
-     `ClientTaskManager` lato client.
-   - Se sì → opzione 2 (SDK-canonical).
-   - Se no → opzione 1 (in-place TaskStore patch). Verificare API SDK per
-     update di Task nello store.
-2. **Race fra append a `spawned_task_ids` e registrazione del child task
-   nel TaskStore**. Il drainer deve garantire ordine: prima registra T3 nel
-   TaskStore SDK (così `tasks/get(T3)` ritorna 200), POI append in
-   `T1.metadata.spawned_task_ids`. Verificare API SDK per task
-   pre-registration.
-3. **Come `dispatched_peers` viene aggiornato in metadata**: stessa
-   questione di #1 ma per update di un campo esistente (non solo append).
-   Probabile stessa soluzione.
-4. **Comportamento di `client.get_task` su task in stato terminal**.
-   Risponde sempre con il Task corrente (compreso `metadata` aggiornato),
-   o l'SDK lo cache? Se cache, eviction policy?
-5. **Cancellazione di un task con `dispatched_peers` attivi**. Quando
-   `cancel_task(T1)` arriva al server O, cosa succede ai T2 (peer) e ai T3
-   (drain-spawn) attivi server-side? Probabile: nulla automatico (è il caso
-   "no cascade" che vogliamo). Verificare per essere sicuri.
-6. **Conformità al ciclo di vita del Task SDK**. Il drain-spawn task T3 è
-   un task "child" con un suo lifecycle indipendente, ma condivide
-   `context_id` con T1 (per riuso trace_id, già da spec 1). Verificare che
-   l'SDK accetti più Task con stesso `context_id` senza errori.
+1. **`Task.metadata` post-creation** → risolto. Vedi § 3 "Vincolo SDK risolto":
+   solo in-place TaskStore patch funziona; option SDK-canonical via
+   `TaskStatusUpdateEvent` è impossibile (queue chiusa post-terminal).
+2. **Race fra append a `spawned_task_ids` e TaskStore registration** →
+   risolto. Vedi § 4 "Race ordering vincolante": il drainer DEVE chiamare
+   `task_store.save(T3)` PRIMA di scrivere `T3.id` in
+   `T1.metadata.spawned_task_ids`.
+3. **Update di `dispatched_peers` in metadata** → risolto, stesso pattern di
+   #1 (in-place TaskStore patch).
+4. **`client.get_task` freshness** → risolto. Nessun caching client-side in
+   `JsonRpcTransport.get_task`; nessun caching server-side in
+   `DefaultRequestHandler.on_get_task` (rilegge sempre dal `task_store`).
+5. **Cancel-no-cascade** → risolto. Vedi § 4 "Errori su cancel_task":
+   cancel è strettamente task-scoped, no API per cascade su `context_id`.
+   Edge case su cancel di task terminale aggiunto (`-32002`).
+6. **Multi-Task con stesso `context_id`** → risolto. Supportato senza
+   errori; `TaskStore` indicizza solo per `task.id`, non per `context_id`.
+   Lookup context-level deve essere fatto in Obelix (ContextStore), non
+   delegato all'SDK.
 
-Tier subagent dispatch: **T2** (spike-runner) per #1, #2, #4 — comportamento
-SDK richiede esecuzione contro istanza reale. **T1** (doc-verifier) per #5
-e #6 (semantica documentata, non comportamento runtime). **T0** se
-applicabile (dipende da quanto è già verificato nel codebase corrente).
+**Fragilità note residue** (da carry come Open assumptions nel piano):
+
+- `DatabaseTaskStore.save` sotto write concorrenti non caratterizzato.
+  Spec 2 sviluppa contro `InMemoryTaskStore`; switch futuri richiederanno
+  un follow-up spike.
+- Comportamento di SSE subscription aperta durante mutation di
+  `Task.metadata` via TaskStore non testato. Spec 2 non usa SSE → non
+  blocking, ma se client esterni la usano serve test esplicito.
+- Cancel-during-in-flight `agent_executor.cancel()` non esercitato dallo
+  spike (test contro pre-populated idle tasks). Coperto dai test
+  integrazione del piano spec 2.
 
 ---
 
