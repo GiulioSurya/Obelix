@@ -714,7 +714,7 @@ class AgentFactory:
             tracer=self._tracer,
             registry=registry,
             context_store=context_store,
-            httpx_client=httpx_client,
+            task_store=task_store,
         )
 
         if remote_agents:

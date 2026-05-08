@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from a2a.server.agent_execution.agent_executor import AgentExecutor
 from a2a.server.events.event_queue import EventQueue
+from a2a.server.tasks.task_store import TaskStore
 from a2a.types import (
     Artifact,
     DataPart,
@@ -65,7 +66,6 @@ from obelix.core.tracer.models import SpanStatus, SpanType
 from obelix.infrastructure.logging import get_logger
 
 if TYPE_CHECKING:
-    import httpx
     from a2a.server.agent_execution.context import RequestContext
 
     from obelix.adapters.inbound.a2a.server.context import ContextEntry
@@ -101,7 +101,7 @@ class ObelixAgentExecutor(AgentExecutor):
         tracer: Tracer | None = None,
         registry: RemoteAgentRegistry | None = None,
         context_store: ContextStore | None = None,
-        httpx_client: httpx.AsyncClient | None = None,
+        task_store: TaskStore | None = None,
     ) -> None:
         self._agent_factory = agent_factory
         self._store = (
@@ -110,11 +110,9 @@ class ObelixAgentExecutor(AgentExecutor):
         self._store_lock = asyncio.Lock()
         self._tracer = tracer
         self._registry = registry
-        # TEMP-PATCH-SPEC-1: shared httpx client used by _DrainSpawnEventQueue
-        # to POST drain-spawn task state to the CLI webhook. May be None when
-        # a2a_serve was invoked without ``remote_agents`` — in that case no
-        # drain-spawn ever fires, so the absence is harmless.
-        self._httpx_client = httpx_client
+        # SDK's TaskStore — used by metadata-patch helpers (Tasks 4-7) to expose
+        # spawned_task_ids and dispatched_peers to polling clients.
+        self._task_store = task_store
 
     async def _emit_state(
         self,
@@ -1245,31 +1243,17 @@ class ObelixAgentExecutor(AgentExecutor):
         Calls ``_run_agent`` with ``is_drain_spawn=True``. Errors are logged but
         not re-raised — the spawn is fire-and-forget.
 
-        TEMP-PATCH-SPEC-1: when ``entry.client_webhook_url`` is set AND a
-        shared ``httpx_client`` was passed to the executor, the event queue is
-        a ``_DrainSpawnEventQueue`` that POSTs each task state change to the
-        CLI webhook. Otherwise the event queue is a no-op (_NullEventQueue).
+        Spec 2: the executor no longer holds an httpx_client (the CLI webhook
+        is gone — replaced by polling). Drain-spawn now always uses a no-op
+        event queue. The drain-spawn path itself is rewritten in Task 16 to
+        publish state via TaskStore metadata patches that polling clients
+        observe directly.
         """
-        event_queue: _DrainSpawnEventQueue | _NullEventQueue
-        if entry.client_webhook_url and self._httpx_client is not None:
-            event_queue = _DrainSpawnEventQueue(
-                httpx_client=self._httpx_client,
-                webhook_url=entry.client_webhook_url,
-                webhook_token=entry.client_webhook_token or "",
-                task_id=task_id,
-                context_id=context_id,
-            )
-            logger.info(
-                f"[A2A drain] event_queue=DrainSpawnEventQueue "
-                f"task_id={task_id} target={entry.client_webhook_url}"
-            )
-        else:
-            event_queue = _NullEventQueue()
-            logger.warning(
-                f"[A2A drain] event_queue=NullEventQueue (NO POST to CLI) "
-                f"task_id={task_id} client_webhook_url={entry.client_webhook_url!r} "
-                f"httpx_client_set={self._httpx_client is not None}"
-            )
+        event_queue: _NullEventQueue = _NullEventQueue()
+        logger.info(
+            f"[A2A drain] event_queue=NullEventQueue (spec 2 - polling) "
+            f"task_id={task_id}"
+        )
 
         # Drain pending_notifications into the agent history BEFORE running.
         # The drain-spawn path bypasses ``execute()`` (where the same drain

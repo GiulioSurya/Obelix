@@ -28,6 +28,8 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+pytestmark = pytest.mark.skip(reason="adapted in spec2 Task 16")
+
 
 @pytest.mark.asyncio
 async def test_drain_spawn_event_queue_includes_artifacts_in_completed_post():

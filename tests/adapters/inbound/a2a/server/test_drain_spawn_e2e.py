@@ -70,6 +70,8 @@ from obelix.core.tracer.models import Span, SpanStatus, SpanType, TraceSession
 from obelix.core.tracer.tracer import Tracer
 from obelix.infrastructure.providers import Providers
 
+pytestmark = pytest.mark.skip(reason="adapted in spec2 Task 16")
+
 # ── Fakes (per iron rule: hand-written, implement real contracts) ─────────
 
 

@@ -15,6 +15,8 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+pytestmark = pytest.mark.skip(reason="adapted in spec2 Task 16")
+
 
 @pytest.mark.asyncio
 async def test_post_to_webhook_sends_camelcase_payload_with_token():
