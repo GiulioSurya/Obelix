@@ -30,7 +30,10 @@ async def test_spawn_drain_task_returns_immediately_and_schedules_background():
     class FastSpawnExecutor(ObelixAgentExecutor):
         def __init__(self):
             # Skip parent __init__ — only test spawn_drain_task here.
-            pass
+            # Race-safe metadata write in spawn_drain_task reads
+            # ``self._task_store``; declare it as None since these tests
+            # don't exercise the metadata-patch branch.
+            self._task_store = None
 
         async def _run_drain_task(self, *, task_id, context_id, entry, message):
             sleep_started.set()
@@ -66,7 +69,9 @@ async def test_spawn_drain_task_passes_synthetic_message_with_empty_parts():
 
     class CapturingExecutor(ObelixAgentExecutor):
         def __init__(self):
-            pass
+            # Bypass parent __init__; declare _task_store=None so the
+            # spawn_drain_task metadata-patch branch is skipped.
+            self._task_store = None
 
         async def _run_drain_task(self, *, task_id, context_id, entry, message):
             captured["task_id"] = task_id
@@ -102,7 +107,9 @@ async def test_spawn_drain_task_does_not_propagate_exceptions():
 
     class BoomExecutor(ObelixAgentExecutor):
         def __init__(self):
-            pass
+            # Bypass parent __init__; declare _task_store=None so the
+            # spawn_drain_task metadata-patch branch is skipped.
+            self._task_store = None
 
         async def _run_drain_task(self, *, task_id, context_id, entry, message):
             raise RuntimeError("boom")

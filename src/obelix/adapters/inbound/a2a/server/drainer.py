@@ -38,8 +38,12 @@ class _DrainExecutorProtocol(Protocol):
     """
 
     async def spawn_drain_task(
-        self, *, entry: ContextEntry, context_id: str
-    ) -> None: ...
+        self,
+        *,
+        entry: ContextEntry,
+        context_id: str,
+        parent_task_id: str | None = None,
+    ) -> str: ...
 
 
 async def maybe_spawn_drain_task(

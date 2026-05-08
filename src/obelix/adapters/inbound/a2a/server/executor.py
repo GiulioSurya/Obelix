@@ -34,6 +34,7 @@ from a2a.types import (
     Message,
     Part,
     Role,
+    Task,
     TaskArtifactUpdateEvent,
     TaskState,
     TaskStatus,
@@ -52,6 +53,7 @@ from obelix.adapters.inbound.a2a.server.helpers import (
     DEFAULT_MAX_CONTEXTS,
     agent_message,
 )
+from obelix.adapters.inbound.a2a.server.metadata_patch import update_task_metadata
 from obelix.core.agent.exceptions import TaskRejectedError
 from obelix.core.model.assistant_message import AssistantResponse
 from obelix.core.model.human_message import HumanMessage
@@ -1199,18 +1201,52 @@ class ObelixAgentExecutor(AgentExecutor):
         *,
         entry: ContextEntry,
         context_id: str,
-    ) -> None:
+        parent_task_id: str | None = None,
+    ) -> str:
         """Spawn a new A2A task internally to drain pending notifications.
 
-        Fire-and-forget: schedules a background asyncio task and returns
-        immediately. The drain logic relies on ``entry.idle.is_set()`` for
-        deduplication — the spawned coroutine clears idle as its first action
-        (inherited from the standard executor pipeline via _run_agent).
+        Fire-and-forget for the agent run itself: returns as soon as the
+        new task has been registered in the SDK ``TaskStore`` and the
+        parent T1 metadata has been patched. The agent loop is started
+        via ``asyncio.create_task`` and not awaited.
 
-        Called by ``maybe_spawn_drain_task`` from webhook.py and polling.py
+        Race ordering (spec 2 §2): when ``self._task_store`` is wired AND
+        ``parent_task_id`` is provided, the new task T3 is saved to the
+        store FIRST and only THEN appended to
+        ``T_parent.metadata.spawned_task_ids``. A polling client that
+        learns ``T3.id`` via the parent metadata is therefore guaranteed
+        to find T3 already in the store on the next ``tasks/get`` —
+        avoiding the ``-32001 TaskNotFoundError`` race observed in
+        spec 1 smoke testing (Bug 6).
+
+        Called by ``maybe_spawn_drain_task`` from polling.py
         when notifications arrive on a context whose A2A task has terminated.
+
+        Returns the freshly-generated child task_id (T3).
         """
         task_id = str(uuid.uuid4())
+
+        # Race-safe metadata exposure for polling clients.
+        # 1. Register T3 in the SDK store first.
+        # 2. Then append T3.id onto T1.metadata.spawned_task_ids.
+        if self._task_store is not None and parent_task_id is not None:
+            await self._task_store.save(
+                Task(
+                    id=task_id,
+                    context_id=context_id,
+                    status=TaskStatus(state=TaskState.submitted),
+                    metadata=None,
+                )
+            )
+
+            async def _append_child(meta: dict) -> dict:
+                existing = list(meta.get("spawned_task_ids", []))
+                existing.append(task_id)
+                meta["spawned_task_ids"] = existing
+                return meta
+
+            await update_task_metadata(self._task_store, parent_task_id, _append_child)
+
         synthetic_message = Message(
             message_id=str(uuid.uuid4()),
             role=Role.user,
@@ -1219,6 +1255,7 @@ class ObelixAgentExecutor(AgentExecutor):
         )
         logger.info(
             f"[A2A drain] spawned task | task_id={task_id} context_id={context_id}"
+            f" parent_task_id={parent_task_id}"
         )
         asyncio.create_task(
             self._run_drain_task(
@@ -1229,6 +1266,7 @@ class ObelixAgentExecutor(AgentExecutor):
             ),
             name=f"drain-spawn-{task_id[:8]}",
         )
+        return task_id
 
     async def _run_drain_task(
         self,
