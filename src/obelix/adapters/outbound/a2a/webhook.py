@@ -165,6 +165,7 @@ def make_webhook_handler(
                 entry=entry,
                 context_id=route.context_id,
                 executor=executor,
+                parent_task_id=entry.current_task_id,
             )
 
         return JSONResponse({"ok": True})

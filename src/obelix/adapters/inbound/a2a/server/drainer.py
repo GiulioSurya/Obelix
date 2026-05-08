@@ -51,6 +51,7 @@ async def maybe_spawn_drain_task(
     entry: ContextEntry,
     context_id: str,
     executor: _DrainExecutorProtocol,
+    parent_task_id: str | None = None,
 ) -> None:
     """If notifications are pending and no turn is active, spawn a drain task.
 
@@ -59,6 +60,12 @@ async def maybe_spawn_drain_task(
     spawning is prevented by the spawned task itself, which calls
     ``entry.idle.clear()`` early — making subsequent invocations short-circuit
     at check 2 below.
+
+    ``parent_task_id`` is forwarded to ``executor.spawn_drain_task`` so the
+    drainer can patch ``T_parent.metadata.spawned_task_ids`` for polling
+    clients (spec 2 §2). Callers should pass ``entry.current_task_id`` —
+    when the parent task already finished and the executor cleared the slot,
+    ``None`` here makes the metadata-patch branch safely no-op.
     """
     # Check 1: anything to drain?
     if not entry.pending_notifications:
@@ -71,6 +78,11 @@ async def maybe_spawn_drain_task(
 
     logger.debug(
         f"[A2A drain] spawning drain task | context_id={context_id} "
-        f"pending={len(entry.pending_notifications)}"
+        f"pending={len(entry.pending_notifications)} "
+        f"parent_task_id={parent_task_id}"
     )
-    await executor.spawn_drain_task(entry=entry, context_id=context_id)
+    await executor.spawn_drain_task(
+        entry=entry,
+        context_id=context_id,
+        parent_task_id=parent_task_id,
+    )

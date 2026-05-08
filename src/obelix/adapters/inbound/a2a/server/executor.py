@@ -460,6 +460,13 @@ class ObelixAgentExecutor(AgentExecutor):
         """
 
         tracer = self._tracer
+        # Publish the in-flight task_id on the context so drainer call
+        # sites (polling.py, webhook.py) can forward it to
+        # ``maybe_spawn_drain_task`` as ``parent_task_id``. Set BEFORE any
+        # suspension point so the metadata-patch branch fires from the
+        # very first await. Cleared in the outer finally below regardless
+        # of how this turn terminates.
+        entry.current_task_id = task_id
         a2a_task_span, trace_opened_here = await self._open_a2a_task_span(
             task_id=task_id,
             context_id=context_id,
@@ -554,6 +561,11 @@ class ObelixAgentExecutor(AgentExecutor):
                         entry.was_failed = False
                         entry.rejection_reason = None
                         entry.failure_error = None
+            # Clear the in-flight task_id. When the next turn (or drain-spawn,
+            # or deferred resume) opens, it will set this anew at the top of
+            # _run_agent. If a drainer call site reads this between turns it
+            # will see ``None`` and the metadata-patch branch safely no-ops.
+            entry.current_task_id = None
 
     async def _run_agent_impl(
         self,

@@ -45,6 +45,7 @@ class ContextEntry:
         "pending_notifications",
         "client_webhook_url",  # TEMP-PATCH-SPEC-1
         "client_webhook_token",  # TEMP-PATCH-SPEC-1
+        "current_task_id",
     )
 
     def __init__(self) -> None:
@@ -97,6 +98,13 @@ class ContextEntry:
         # in executor.py. Both removed when spec 2 (CLI streaming) lands.
         self.client_webhook_url: str | None = None
         self.client_webhook_token: str | None = None
+        # task_id of the A2A task currently being processed by ``_run_agent``
+        # on this context. Set at the top of every entry path in the executor
+        # and cleared in the matching ``finally``. Drainer call sites
+        # (polling.py, webhook.py) read this and forward it to
+        # ``maybe_spawn_drain_task`` as ``parent_task_id`` so the drainer can
+        # patch ``T_parent.metadata.spawned_task_ids`` for polling clients.
+        self.current_task_id: str | None = None
 
     def is_evictable(self) -> bool:
         """LRU eviction guard. False if any non-terminal remote task

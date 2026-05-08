@@ -19,10 +19,16 @@ class FakeExecutor:
     """Records spawn_drain_task invocations. Real executor signature is preserved."""
 
     def __init__(self) -> None:
-        self.spawn_calls: list[tuple[ContextEntry, str]] = []
+        self.spawn_calls: list[tuple[ContextEntry, str, str | None]] = []
 
-    async def spawn_drain_task(self, *, entry: ContextEntry, context_id: str) -> None:
-        self.spawn_calls.append((entry, context_id))
+    async def spawn_drain_task(
+        self,
+        *,
+        entry: ContextEntry,
+        context_id: str,
+        parent_task_id: str | None = None,
+    ) -> None:
+        self.spawn_calls.append((entry, context_id, parent_task_id))
 
 
 @pytest.mark.asyncio
@@ -56,7 +62,7 @@ async def test_spawns_when_pending_and_idle():
     await maybe_spawn_drain_task(entry=entry, context_id="ctx-1", executor=executor)
 
     assert len(executor.spawn_calls) == 1
-    assert executor.spawn_calls[0] == (entry, "ctx-1")
+    assert executor.spawn_calls[0] == (entry, "ctx-1", None)
 
 
 @pytest.mark.asyncio
@@ -77,8 +83,10 @@ async def test_does_not_block_on_spawn():
     entry.pending_notifications.append(HumanMessage(content="x"))
 
     class SlowFakeExecutor(FakeExecutor):
-        async def spawn_drain_task(self, *, entry, context_id):
-            self.spawn_calls.append((entry, context_id))
+        async def spawn_drain_task(
+            self, *, entry, context_id, parent_task_id: str | None = None
+        ):
+            self.spawn_calls.append((entry, context_id, parent_task_id))
 
     executor = SlowFakeExecutor()
     await asyncio.wait_for(

@@ -68,9 +68,11 @@ async def test_drainer_appends_spawned_task_id_after_saving_child():
         entry=entry,
     )
 
-    # Wait briefly for the spawned background task to register T3 + patch
-    # T1.metadata. The drainer is fire-and-forget; we observe both
-    # side effects landed.
+    # The metadata writes (store.save(T3) + update_task_metadata(T1)) complete
+    # synchronously inside spawn_drain_task BEFORE the asyncio.create_task that
+    # kicks the agent run. The sleep below only yields so the background drain
+    # task can start and fail fast (agent_factory raises, errors swallowed by
+    # the drainer) — the assertions below do not depend on it.
     await asyncio.sleep(0.1)
 
     assert isinstance(new_id, str) and new_id, (
@@ -90,4 +92,52 @@ async def test_drainer_appends_spawned_task_id_after_saving_child():
     assert new_id in refreshed.metadata.get("spawned_task_ids", []), (
         f"expected T3.id={new_id!r} in T1.metadata.spawned_task_ids, "
         f"got metadata={refreshed.metadata!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_drainer_via_drainer_module_writes_metadata_when_current_task_id_is_set():
+    """Smoke test that mirrors the production call site: drainer.maybe_spawn_drain_task
+    is invoked with an executor whose entry.current_task_id is set. The metadata path
+    must fire end-to-end (this is the spec-2 requirement that Task 4 closes)."""
+    from obelix.adapters.inbound.a2a.server.drainer import maybe_spawn_drain_task
+    from obelix.core.model.human_message import HumanMessage
+
+    store = InMemoryTaskStore()
+    parent = Task(
+        id="t1",
+        context_id="ctx-prod",
+        status=TaskStatus(state=TaskState.completed),
+        metadata=None,
+    )
+    await store.save(parent)
+
+    executor = _build_executor(store)
+    entry = ContextEntry()
+    entry.context_id = "ctx-prod"
+    entry.history = []
+    # maybe_spawn_drain_task short-circuits when pending_notifications is
+    # empty — load one notification to force the drainer down its happy path.
+    entry.pending_notifications = [HumanMessage(content="remote update")]
+    entry.current_task_id = "t1"
+
+    await maybe_spawn_drain_task(
+        entry=entry,
+        context_id="ctx-prod",
+        executor=executor,
+        parent_task_id=entry.current_task_id,
+    )
+
+    # Yield to let the background drain task start and fail fast (the
+    # agent_factory raises, errors swallowed by drainer). Metadata writes
+    # complete synchronously before the create_task, so this is just for
+    # the background coroutine's lifecycle, not the assertions.
+    await asyncio.sleep(0.05)
+
+    refreshed = await store.get("t1")
+    assert refreshed is not None
+    assert refreshed.metadata is not None
+    spawned = refreshed.metadata.get("spawned_task_ids", [])
+    assert len(spawned) == 1, (
+        f"production-path drainer must write exactly one spawned_task_id, got {spawned!r}"
     )

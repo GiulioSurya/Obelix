@@ -174,4 +174,5 @@ class PollingWorker:
                 entry=ctx_entry,
                 context_id=ctx_entry.context_id,
                 executor=self._executor,
+                parent_task_id=ctx_entry.current_task_id,
             )

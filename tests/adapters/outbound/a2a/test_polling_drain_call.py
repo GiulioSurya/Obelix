@@ -27,14 +27,21 @@ class _RecordingExecutor:
     """FakeExecutor compatible with the drainer ``_DrainExecutorProtocol``.
 
     Captures every ``spawn_drain_task`` invocation as a tuple
-    ``(entry, context_id)`` so tests can assert call count + args.
+    ``(entry, context_id, parent_task_id)`` so tests can assert call
+    count + args.
     """
 
     def __init__(self) -> None:
-        self.spawn_calls: list[tuple[ContextEntry, str]] = []
+        self.spawn_calls: list[tuple[ContextEntry, str, str | None]] = []
 
-    async def spawn_drain_task(self, *, entry: ContextEntry, context_id: str) -> None:
-        self.spawn_calls.append((entry, context_id))
+    async def spawn_drain_task(
+        self,
+        *,
+        entry: ContextEntry,
+        context_id: str,
+        parent_task_id: str | None = None,
+    ) -> None:
+        self.spawn_calls.append((entry, context_id, parent_task_id))
 
 
 class _FakeClient:
@@ -125,9 +132,12 @@ async def test_polling_invokes_drainer_after_state_change() -> None:
 
     # Drainer was invoked exactly once with the right keyword arguments.
     assert len(executor.spawn_calls) == 1
-    spawned_entry, spawned_context_id = executor.spawn_calls[0]
+    spawned_entry, spawned_context_id, spawned_parent_task_id = executor.spawn_calls[0]
     assert spawned_entry is entry
     assert spawned_context_id == "ctx-orch"
+    # No active turn in this test, so entry.current_task_id stays None and
+    # the drainer forwards None — the metadata-patch branch safely no-ops.
+    assert spawned_parent_task_id is None
 
 
 @pytest.mark.asyncio

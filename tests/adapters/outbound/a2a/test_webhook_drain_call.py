@@ -31,10 +31,16 @@ class _RecordingExecutor:
     """
 
     def __init__(self) -> None:
-        self.spawn_calls: list[tuple[ContextEntry, str]] = []
+        self.spawn_calls: list[tuple[ContextEntry, str, str | None]] = []
 
-    async def spawn_drain_task(self, *, entry: ContextEntry, context_id: str) -> None:
-        self.spawn_calls.append((entry, context_id))
+    async def spawn_drain_task(
+        self,
+        *,
+        entry: ContextEntry,
+        context_id: str,
+        parent_task_id: str | None = None,
+    ) -> None:
+        self.spawn_calls.append((entry, context_id, parent_task_id))
 
 
 def _make_request(headers: dict[str, str], body: dict) -> Request:
@@ -129,9 +135,13 @@ async def test_webhook_handler_invokes_drainer_after_terminal_update() -> None:
 
     # Drainer was invoked exactly once with the right keyword arguments.
     assert len(executor.spawn_calls) == 1
-    spawned_entry, spawned_context_id = executor.spawn_calls[0]
+    spawned_entry, spawned_context_id, spawned_parent_task_id = executor.spawn_calls[0]
     assert spawned_entry is entry
     assert spawned_context_id == "ctx-DRAIN"
+    # No active turn: entry.current_task_id stays None and is forwarded as
+    # ``parent_task_id``. The metadata-patch branch in spawn_drain_task
+    # safely no-ops on None (real production passes the live task_id).
+    assert spawned_parent_task_id is None
 
 
 @pytest.mark.asyncio
