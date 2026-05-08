@@ -11,6 +11,7 @@ import asyncio
 import os
 import socket
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -38,10 +39,19 @@ class TaskInfo:
 class TaskTracker:
     """Thread-safe tracker for background A2A tasks."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        context_resolver: Callable[[str], str | None] | None = None,
+    ) -> None:
         self._tasks: dict[str, TaskInfo] = {}
         self._lock = asyncio.Lock()
         self._on_update: asyncio.Event = asyncio.Event()
+        # Optional callback ``(context_id) -> agent_name | None`` consulted
+        # when a push notification arrives for an UNKNOWN task_id (typically
+        # a server-spawned drain task that the CLI never registered). Lets
+        # the tracker attribute the task to the originating agent based on
+        # its context_id rather than tagging it as 'unknown'.
+        self._context_resolver = context_resolver
 
     async def register(self, task_id: str, agent_name: str) -> None:
         """Register a new task before sending."""
@@ -61,10 +71,24 @@ class TaskTracker:
                 info.timestamp = time.time()
                 info.task_data = task_data
             else:
-                # Push arrived before register — create entry
+                # Push arrived for an unknown task_id (typically a server-
+                # spawned drain task). Try to attribute it to the originating
+                # agent via the context_resolver, falling back to "unknown"
+                # only if no resolver is configured or the context is
+                # genuinely unrecognized.
+                agent_name = "unknown"
+                if self._context_resolver is not None:
+                    # A2A SDK serializes Task in camelCase ("contextId").
+                    context_id = task_data.get("contextId") or task_data.get(
+                        "context_id"
+                    )
+                    if context_id:
+                        resolved = self._context_resolver(context_id)
+                        if resolved:
+                            agent_name = resolved
                 self._tasks[task_id] = TaskInfo(
                     task_id=task_id,
-                    agent_name="unknown",
+                    agent_name=agent_name,
                     state=state,
                     task_data=task_data,
                 )
@@ -162,6 +186,7 @@ class WebhookServer:
         tracker: TaskTracker,
         webhook_host: str | None = None,
         webhook_port: int | None = None,
+        expected_token: str | None = None,
     ) -> None:
         self._tracker = tracker
         self._webhook_host = (
@@ -173,8 +198,14 @@ class WebhookServer:
         )
         self._port: int = 0
         self._task: asyncio.Task | None = None
+        self._expected_token: str | None = expected_token
 
         async def webhook_handler(request: Request) -> JSONResponse:
+            # TEMP-PATCH-SPEC-1: validate auth token if configured
+            if self._expected_token:
+                got = request.headers.get("X-A2A-Notification-Token", "")
+                if got != self._expected_token:
+                    return JSONResponse({"error": "unauthorized"}, status_code=401)
             try:
                 body = await request.json()
                 await self._tracker.update(body)

@@ -12,6 +12,7 @@ import base64
 import mimetypes
 import platform
 import re
+import secrets
 import shutil
 import subprocess
 import time
@@ -28,6 +29,7 @@ from a2a.client import (
     ClientConfig,
     ClientFactory,
 )
+from a2a.client.errors import A2AClientJSONRPCError
 from a2a.types import (
     DataPart,
     FilePart,
@@ -380,7 +382,10 @@ class CLIClient(App):
         self.dispatcher = dispatcher
         self.urls = urls or []
         self._webhook_host = webhook_host
-        self.tracker = TaskTracker()
+        # Resolver to attribute server-spawned tasks (drain-spawn) to the
+        # right agent based on the payload's contextId. Without this, those
+        # tasks would surface in the status bar as 'unknown: 1 new'.
+        self.tracker = TaskTracker(context_resolver=self._resolve_agent_by_context)
         self.agents: list[AgentConnection] = []
         self.current = 0
         self._webhook_server: WebhookServer | None = None
@@ -397,6 +402,10 @@ class CLIClient(App):
         self._agent_select_mode: bool = False
         self._agent_select_idx: int = 0
         self._shell_info: dict = _probe_shell_info()
+        # TEMP-PATCH-SPEC-1: random per-session token, sent to the server
+        # via Message.metadata so the server can authenticate drain-spawn
+        # POSTs back to our webhook. Removed when spec 2 (CLI streaming) lands.
+        self._webhook_token: str = secrets.token_urlsafe(32)
 
     @classmethod
     def from_cli(cls, argv: list[str] | None = None) -> CLIClient:
@@ -475,7 +484,9 @@ class CLIClient(App):
 
         # Webhook server
         self._webhook_server = WebhookServer(
-            self.tracker, webhook_host=self._webhook_host
+            self.tracker,
+            webhook_host=self._webhook_host,
+            expected_token=self._webhook_token,
         )
         await self._webhook_server.start()
         self._webhook_url = self._webhook_server.get_url()
@@ -483,7 +494,13 @@ class CLIClient(App):
 
         # Resolve agents
         self._httpx_client = httpx.AsyncClient(timeout=httpx.Timeout(180.0))
-        push_configs = [PushNotificationConfig(url=self._webhook_url)]
+        # TEMP-PATCH-SPEC-1: include the per-session token so the server's
+        # push_sender attaches the X-A2A-Notification-Token header on every
+        # POST to our local WebhookServer. Without it, the WebhookServer
+        # rejects with 401 and we lose every push (only polling fallback).
+        push_configs = [
+            PushNotificationConfig(url=self._webhook_url, token=self._webhook_token)
+        ]
         config = ClientConfig(
             httpx_client=self._httpx_client,
             streaming=False,
@@ -605,6 +622,24 @@ class CLIClient(App):
             chat.write(Text(f"  [poll] bad response: {exc.message}", style="dim red"))
             self._last_poll[task_id] = float("inf")  # never retry
             return
+        except A2AClientJSONRPCError as exc:
+            # JSON-RPC error from the server. Code -32001 = TaskNotFound:
+            # the task is not in the server's SDK task store. This happens
+            # routinely for drain-spawn tasks (server-spawned, fire-and-
+            # forget, never registered in the SDK store) — they're
+            # delivered to us via push only. Disable retry silently.
+            # Other JSON-RPC errors are surfaced as before.
+            if getattr(exc.error, "code", None) == -32001:
+                self._last_poll[task_id] = float("inf")
+                return
+            chat.write(
+                Text(
+                    f"  [poll] JSON-RPC {exc.error.code}: {exc.error.message}",
+                    style="dim red",
+                )
+            )
+            self._last_poll[task_id] = float("inf")
+            return
         except Exception as exc:
             chat.write(Text(f"  [poll] unexpected error: {exc}", style="dim red"))
             self._last_poll[task_id] = float("inf")
@@ -722,6 +757,18 @@ class CLIClient(App):
             if isinstance(p, dict) and "text" in p:
                 return p["text"]
         return ""
+
+    def _resolve_agent_by_context(self, context_id: str) -> str | None:
+        """Map an A2A context_id to one of our connected agents' name.
+
+        Used as the TaskTracker.context_resolver callback so server-spawned
+        tasks (drain-spawn) get attributed to the originating agent rather
+        than appearing as 'unknown' in the status bar.
+        """
+        for agent in self.agents:
+            if agent.context_id == context_id:
+                return agent.name
+        return None
 
     def _update_input_placeholder(self) -> None:
         if self.agents:
@@ -981,10 +1028,20 @@ class CLIClient(App):
         agent = self.agents[self.current]
         chat = self.query_one("#chat", RichLog)
 
-        # First message to this agent: attach client shell info as metadata
+        # First message to this agent: attach client shell info + webhook patch.
+        # TEMP-PATCH-SPEC-1: client_webhook_url/token sent on first message
+        # so the server can POST drain-spawn task state changes back to us.
+        # Removed in spec 2 (CLI streaming SSE).
         metadata = None
-        if agent.context_id is None and self._shell_info:
-            metadata = {"client_info": self._shell_info}
+        if agent.context_id is None:
+            metadata = {}
+            if self._shell_info:
+                metadata["client_info"] = self._shell_info
+            if self._webhook_url:
+                metadata["client_webhook_url"] = self._webhook_url
+                metadata["client_webhook_token"] = self._webhook_token
+            if not metadata:
+                metadata = None
 
         clean_text, file_parts = _parse_attachments(text)
         if file_parts:

@@ -18,8 +18,11 @@ injects it as a ToolMessage, and restarts the agent loop.
 from __future__ import annotations
 
 import asyncio
+import inspect
+import time
 import uuid
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from a2a.server.agent_execution.agent_executor import AgentExecutor
@@ -62,9 +65,13 @@ from obelix.core.tracer.models import SpanStatus, SpanType
 from obelix.infrastructure.logging import get_logger
 
 if TYPE_CHECKING:
+    import httpx
     from a2a.server.agent_execution.context import RequestContext
 
+    from obelix.adapters.inbound.a2a.server.context import ContextEntry
+    from obelix.adapters.outbound.a2a.registry import RemoteAgentRegistry
     from obelix.core.agent.base_agent import BaseAgent
+    from obelix.core.tracer.models import Span
     from obelix.core.tracer.tracer import Tracer
 
 logger = get_logger(__name__)
@@ -92,11 +99,22 @@ class ObelixAgentExecutor(AgentExecutor):
         *,
         max_contexts: int = DEFAULT_MAX_CONTEXTS,
         tracer: Tracer | None = None,
+        registry: RemoteAgentRegistry | None = None,
+        context_store: ContextStore | None = None,
+        httpx_client: httpx.AsyncClient | None = None,
     ) -> None:
         self._agent_factory = agent_factory
-        self._store = ContextStore(max_contexts)
+        self._store = (
+            context_store if context_store is not None else ContextStore(max_contexts)
+        )
         self._store_lock = asyncio.Lock()
         self._tracer = tracer
+        self._registry = registry
+        # TEMP-PATCH-SPEC-1: shared httpx client used by _DrainSpawnEventQueue
+        # to POST drain-spawn task state to the CLI webhook. May be None when
+        # a2a_serve was invoked without ``remote_agents`` — in that case no
+        # drain-spawn ever fires, so the absence is harmless.
+        self._httpx_client = httpx_client
 
     async def _emit_state(
         self,
@@ -295,6 +313,9 @@ class ObelixAgentExecutor(AgentExecutor):
         async with self._store_lock:
             entry = self._store.get_or_create(context_id)
 
+        # TEMP-PATCH-SPEC-1
+        self._apply_webhook_metadata_patch(entry=entry, metadata=message.metadata)
+
         # Serialize requests on the same context
         await entry.idle.wait()
         entry.idle.clear()
@@ -304,6 +325,20 @@ class ObelixAgentExecutor(AgentExecutor):
             is_resume = bool(entry.deferred_tool_calls)
             if is_resume:
                 inject_deferred_response(entry, message)
+
+            # Drain pending remote-task notifications BEFORE starting the
+            # agent. Goes AFTER inject_deferred_response so the deferred
+            # ToolMessage stays adjacent to its AssistantMessage; remote-task
+            # notifications append after as fresh user-role messages. Runs
+            # for both first-turn and resume paths — no-op when empty.
+            if entry.pending_notifications:
+                # Atomic-ish swap: any notification arriving from the webhook
+                # between this read and the extend() goes onto the *new* empty
+                # list and will be drained at the next request. Without the swap,
+                # an extend()+clear() race could silently drop a notification.
+                drained = entry.pending_notifications
+                entry.pending_notifications = []
+                entry.history.extend(drained)
 
             await self._run_agent(
                 task_id=task_id,
@@ -318,6 +353,81 @@ class ObelixAgentExecutor(AgentExecutor):
             entry.active_agent = None
             entry.idle.set()
 
+    async def _open_a2a_task_span(
+        self,
+        *,
+        task_id: str,
+        context_id: str,
+        entry,
+        is_resume: bool,
+        is_drain_spawn: bool,
+    ) -> tuple[Span | None, bool]:
+        """Open the a2a_task root span for ``_run_agent`` and report ownership.
+
+        Three branches, mutually exclusive:
+
+        - ``is_resume=True``: the trace + a2a_task span are restored by
+          ``_run_agent_impl`` from ``entry.trace_session`` / ``entry.trace_span``.
+          Returns ``(None, False)``: caller did not open a span here, and the
+          trace is owned by the original turn (will be closed by this same
+          finally because ``is_resume`` flips the close-trace condition).
+        - ``is_drain_spawn=True`` AND ``entry.trace_session`` non-None:
+          reuse the existing trace, open a NEW ``a2a_task`` sibling span.
+          Returns ``(span, False)``: the span belongs to this invocation
+          and must be closed in finally, but the trace is owned by the
+          context's first task and must NOT be closed here.
+        - Else (user-triggered first turn, or drain-spawn fallback when no
+          saved trace): open a fresh trace AND a fresh ``a2a_task`` span.
+          Returns ``(span, True)``: this invocation owns both — close span
+          and end trace in finally.
+
+        No-op on tracer not configured: returns ``(None, False)``.
+        """
+        tracer = self._tracer
+        if not tracer:
+            return None, False
+
+        if is_resume:
+            # Existing path: deferred tool resume, trace already active.
+            return None, False
+
+        if is_drain_spawn and entry.trace_session is not None:
+            # Drain-spawned task: reuse the context's existing trace so the
+            # new a2a_task span shares trace_id with the previous task(s)
+            # under the same context.
+            set_current_trace(entry.trace_session)
+            span = await tracer.start_span(
+                SpanType.a2a_task,
+                name=f"task {task_id[:8] if task_id else 'unknown'} (drain-spawn)",
+                input={"context_id": context_id, "drain_spawn": True},
+                metadata={
+                    "task_id": task_id,
+                    "context_id": context_id,
+                    "drain_spawn": True,
+                },
+            )
+            # entry.trace_session unchanged: entry already owns the trace.
+            return span, False
+
+        # Existing path: new user-triggered task (or drain-spawn fallback).
+        await tracer.start_trace(
+            name="a2a.task",
+            metadata={"task_id": task_id, "context_id": context_id},
+        )
+        span = await tracer.start_span(
+            SpanType.a2a_task,
+            name=f"task {task_id[:8] if task_id else 'unknown'}",
+            input={"context_id": context_id},
+            metadata={"task_id": task_id, "context_id": context_id},
+        )
+        # Store the live trace on the entry so ``cancel()`` (which runs in a
+        # different asyncio task and therefore has empty contextvars) can
+        # find it and emit ``cancellation.requested`` on the a2a_task span.
+        # The deferred-suspension path later overwrites this with the same
+        # trace when it saves context for resume.
+        entry.trace_session = get_current_trace()
+        return span, True
+
     async def _run_agent(
         self,
         *,
@@ -328,6 +438,7 @@ class ObelixAgentExecutor(AgentExecutor):
         entry,
         event_queue: EventQueue,
         is_resume: bool = False,
+        is_drain_spawn: bool = False,
     ) -> None:
         """Run the agent with isolated context and persist history.
 
@@ -337,32 +448,25 @@ class ObelixAgentExecutor(AgentExecutor):
         span are left open so ``resume_after_deferred`` can continue inside
         them; they are closed on any terminal outcome (completed / failed /
         rejected / canceled) or on the resume invocation that finishes them.
+
+        Span/trace lifecycle (set by ``_open_a2a_task_span``):
+
+        - User-triggered first turn: opens trace + span; finally closes both.
+        - Resume: span/trace inherited; finally closes both (trace owned by
+          the original turn, terminating now).
+        - Drain-spawn (with saved trace_session): opens span, NOT trace;
+          finally closes the span only, leaving the trace open for the
+          context's other tasks.
         """
 
         tracer = self._tracer
-        # Open a2a_task root span on first invocation; on resume we reuse the
-        # trace + a2a_task span that are already restored by ``_run_agent_impl``
-        # via ``set_current_trace`` / ``set_current_span``.
-        a2a_task_span = None
-        trace_opened_here = False
-        if tracer and not is_resume:
-            await tracer.start_trace(
-                name="a2a.task",
-                metadata={"task_id": task_id, "context_id": context_id},
-            )
-            a2a_task_span = await tracer.start_span(
-                SpanType.a2a_task,
-                name=f"task {task_id[:8] if task_id else 'unknown'}",
-                input={"context_id": context_id},
-                metadata={"task_id": task_id, "context_id": context_id},
-            )
-            trace_opened_here = True
-            # Store the live trace on the entry so ``cancel()`` (which runs in
-            # a different asyncio task and therefore has empty contextvars) can
-            # find it and emit ``cancellation.requested`` on the a2a_task span.
-            # The deferred-suspension path later overwrites this with the same
-            # trace when it saves context for resume.
-            entry.trace_session = get_current_trace()
+        a2a_task_span, trace_opened_here = await self._open_a2a_task_span(
+            task_id=task_id,
+            context_id=context_id,
+            entry=entry,
+            is_resume=is_resume,
+            is_drain_spawn=is_drain_spawn,
+        )
 
         # Tracks whether the executor suspended for a deferred tool. When
         # True, the finally block leaves the trace + a2a_task span open so
@@ -378,62 +482,78 @@ class ObelixAgentExecutor(AgentExecutor):
                 entry=entry,
                 event_queue=event_queue,
                 is_resume=is_resume,
+                is_drain_spawn=is_drain_spawn,
             )
         finally:
-            if tracer and not deferred_suspended and (trace_opened_here or is_resume):
-                # Re-pin the a2a_task span as current before closing. On the
-                # initial invocation this is defensive (agent's generator
-                # finally should have already restored it); on resume we
-                # need to walk the trace to find it.
-                task_span = a2a_task_span
-                if task_span is None:
-                    trace = get_current_trace()
-                    if trace is not None:
-                        task_span = next(
-                            (
-                                s
-                                for s in trace.spans
-                                if s.span_type == SpanType.a2a_task
-                                and s.end_time is None
-                            ),
-                            None,
-                        )
-                if task_span is not None:
-                    set_current_span(task_span)
-                # Propagate terminal status onto the a2a_task span AND the
-                # trace itself. Precedence: cancel > rejected > failed > ok.
-                # Cancel takes priority because ``_run_agent_impl`` may set
-                # ``was_canceled`` alongside normal terminal flags if a cancel
-                # races with a response. ``was_rejected`` / ``was_failed`` are
-                # set by the corresponding ``except`` handlers; when neither
-                # fires we fall through to ``ok``. ``error`` (not passed on
-                # the cancel path) forwards the reason/exception message so
-                # consumers can render it in span views.
-                if entry.was_canceled:
-                    status = SpanStatus.canceled
-                    error: str | None = None
-                elif entry.was_rejected:
-                    status = SpanStatus.rejected
-                    error = entry.rejection_reason
-                elif entry.was_failed:
-                    status = SpanStatus.error
-                    error = entry.failure_error
-                else:
-                    status = SpanStatus.ok
-                    error = None
-                await tracer.end_span(status=status, error=error)
-                await tracer.end_trace(status=status, error=error)
-                # Clear the saved trace ref — the trace is now ended and any
-                # subsequent turn on this context will open a new one. Reset
-                # the terminal-state flags so the next turn on this context
-                # starts clean (a retry after rejection/failure must not be
-                # marked terminal by stale flags).
-                entry.trace_session = None
-                entry.was_canceled = False
-                entry.was_rejected = False
-                entry.was_failed = False
-                entry.rejection_reason = None
-                entry.failure_error = None
+            if tracer and not deferred_suspended:
+                # Determine whether this invocation has a span to close.
+                # Three sources:
+                #  - First-turn / drain-spawn: ``a2a_task_span`` returned by
+                #    ``_open_a2a_task_span``.
+                #  - Resume: span/trace restored by ``_run_agent_impl``; we
+                #    walk the trace to find the open ``a2a_task`` span.
+                # Drain-spawn closes the span only; first-turn and resume
+                # close the span AND end the trace.
+                has_owned_span = a2a_task_span is not None
+                close_trace_here = trace_opened_here or is_resume
+                if has_owned_span or close_trace_here:
+                    # Re-pin the a2a_task span as current before closing. On
+                    # the initial invocation this is defensive (agent's
+                    # generator finally should have already restored it); on
+                    # resume we need to walk the trace to find it.
+                    task_span = a2a_task_span
+                    if task_span is None:
+                        trace = get_current_trace()
+                        if trace is not None:
+                            task_span = next(
+                                (
+                                    s
+                                    for s in trace.spans
+                                    if s.span_type == SpanType.a2a_task
+                                    and s.end_time is None
+                                ),
+                                None,
+                            )
+                    if task_span is not None:
+                        set_current_span(task_span)
+                    # Propagate terminal status onto the a2a_task span AND
+                    # the trace itself (when we close the trace). Precedence:
+                    # cancel > rejected > failed > ok. Cancel takes priority
+                    # because ``_run_agent_impl`` may set ``was_canceled``
+                    # alongside normal terminal flags if a cancel races with
+                    # a response. ``was_rejected`` / ``was_failed`` are set
+                    # by the corresponding ``except`` handlers; when neither
+                    # fires we fall through to ``ok``. ``error`` (not passed
+                    # on the cancel path) forwards the reason/exception
+                    # message so consumers can render it in span views.
+                    if entry.was_canceled:
+                        status = SpanStatus.canceled
+                        error: str | None = None
+                    elif entry.was_rejected:
+                        status = SpanStatus.rejected
+                        error = entry.rejection_reason
+                    elif entry.was_failed:
+                        status = SpanStatus.error
+                        error = entry.failure_error
+                    else:
+                        status = SpanStatus.ok
+                        error = None
+                    if task_span is not None:
+                        await tracer.end_span(status=status, error=error)
+                    if close_trace_here:
+                        await tracer.end_trace(status=status, error=error)
+                        # Clear the saved trace ref — the trace is now ended
+                        # and any subsequent turn on this context will open
+                        # a new one. Reset the terminal-state flags so the
+                        # next turn on this context starts clean (a retry
+                        # after rejection/failure must not be marked
+                        # terminal by stale flags).
+                        entry.trace_session = None
+                        entry.was_canceled = False
+                        entry.was_rejected = False
+                        entry.was_failed = False
+                        entry.rejection_reason = None
+                        entry.failure_error = None
 
     async def _run_agent_impl(
         self,
@@ -445,6 +565,7 @@ class ObelixAgentExecutor(AgentExecutor):
         entry,
         event_queue: EventQueue,
         is_resume: bool = False,
+        is_drain_spawn: bool = False,
     ) -> bool:
         """Inner agent runner. Returns True if suspended for a deferred tool."""
 
@@ -461,6 +582,11 @@ class ObelixAgentExecutor(AgentExecutor):
         # Inject client shell info into BashTool's ClientShellExecutor
         if entry.client_info:
             self._inject_client_info(agent, entry.client_info)
+
+        # Inject the per-request ContextEntry into outbound A2A tools
+        # (DispatchAgentTool, TaskListTool, etc.) so they can read/mutate
+        # entry.remote_tasks and entry.pending_notifications.
+        self._inject_context_entry(agent, entry, context_id)
 
         # Inject conversation history from this context
         if entry.history:
@@ -506,6 +632,16 @@ class ObelixAgentExecutor(AgentExecutor):
                 # time the task spent in ``input_required``.
                 await self._close_deferred_wait_span(entry)
                 stream = agent.resume_after_deferred()
+            elif is_drain_spawn:
+                # Drain-spawn: the conversation history already contains the
+                # drained <remote_task_update> notifications (see
+                # _run_drain_task). Reuse the same primitive as the deferred
+                # resume path — restart the loop on the existing history
+                # WITHOUT appending a new HumanMessage. This avoids the
+                # synthetic empty-string HumanMessage that would otherwise
+                # be appended via ``execute_query_stream("")`` and rejected
+                # by Anthropic ("text content blocks must be non-empty").
+                stream = agent.resume_after_deferred()
             elif attachments:
                 # Pass as HumanMessage with attachments for multimodal
                 query = HumanMessage(content=user_text, attachments=attachments)
@@ -517,7 +653,8 @@ class ObelixAgentExecutor(AgentExecutor):
             # invocation only. On resume the input is a DataPart (deferred
             # tool response) conceptually continuing the same turn, not a
             # new user query, so we skip emitting a second human span.
-            if self._tracer and not is_resume:
+            # Drain-spawn shares the same semantics — no new user input.
+            if self._tracer and not is_resume and not is_drain_spawn:
                 await self._tracer.start_span(
                     SpanType.human,
                     "human.input",
@@ -720,6 +857,10 @@ class ObelixAgentExecutor(AgentExecutor):
             # Mark the context so the outer _run_agent finally closes the
             # a2a_task span with SpanStatus.canceled.
             entry.was_canceled = True
+            # Sweep any in-flight remote tasks dispatched from this context
+            # — silence late webhooks (token revoke) and flip status to
+            # "killed". No wire call to the remote — Decision 7.
+            self._revoke_in_flight_remote_tokens(entry, self._registry)
             logger.info(f"[A2A] Agent canceled | task_id={task_id}")
             await event_queue.enqueue_event(
                 TaskStatusUpdateEvent(
@@ -823,6 +964,24 @@ class ObelixAgentExecutor(AgentExecutor):
         # for deferred input, so the caller should close the trace.
         return False
 
+    def _apply_webhook_metadata_patch(
+        self,
+        *,
+        entry: ContextEntry,
+        metadata: dict | None,
+    ) -> None:
+        """TEMP-PATCH-SPEC-1: read client webhook URL+token from Message
+        metadata on the first request of a context (first-write wins so a
+        reconnect on the same context_id cannot hijack the registration).
+
+        Removed when spec 2 (CLI streaming SSE) lands.
+        """
+        if not metadata:
+            return
+        if entry.client_webhook_url is None:
+            entry.client_webhook_url = metadata.get("client_webhook_url")
+            entry.client_webhook_token = metadata.get("client_webhook_token")
+
     @staticmethod
     def _inject_client_info(agent: BaseAgent, client_info: dict) -> None:
         """Inject client shell environment into the agent's system message.
@@ -842,6 +1001,81 @@ class ObelixAgentExecutor(AgentExecutor):
                 if fragment and fragment not in agent.system_message.content:
                     agent.system_message.content += fragment
                     logger.info("[A2A] Injected client shell info into system message")
+
+    @staticmethod
+    def _inject_context_entry(
+        agent: BaseAgent,
+        entry: ContextEntry,
+        context_id: str,
+    ) -> None:
+        """Inject the per-request ContextEntry (and surrounding context_id)
+        into outbound A2A tools that opt in via ``set_context_entry``.
+
+        Mirrors the precedent of ``_inject_client_info`` for BashTool but
+        targets a different family of tools (the outbound A2A tools that
+        track per-context remote_tasks and pending_notifications).
+
+        Tools have heterogeneous signatures:
+        - DispatchAgentTool: ``set_context_entry(entry, *, context_id)``
+        - RespondToRemoteTool, TaskListTool, TaskGetTool, TaskStopTool:
+          ``set_context_entry(entry)``
+
+        We use ``inspect.signature`` to detect which form to invoke,
+        so adding new tools with either signature is safe. When the setter
+        accepts ``context_id``, it is passed as a keyword argument. If
+        introspection fails (``TypeError`` or ``ValueError``, e.g., on
+        MagicMock or C-extension callables), we fall back to the single-arg
+        form ``setter(entry)``.
+        """
+        for tool in agent.registered_tools:
+            setter = getattr(tool, "set_context_entry", None)
+            if setter is None or not callable(setter):
+                continue
+            try:
+                sig = inspect.signature(setter)
+            except (TypeError, ValueError):
+                # Some MagicMock / C-extension setters can't be introspected;
+                # default to the single-arg form.
+                setter(entry)
+                continue
+            if "context_id" in sig.parameters:
+                setter(entry, context_id=context_id)
+            else:
+                setter(entry)
+
+    @staticmethod
+    def _revoke_in_flight_remote_tokens(
+        entry: ContextEntry,
+        registry: RemoteAgentRegistry | None,
+    ) -> None:
+        """On context cancel, silence late webhooks for non-terminal remote
+        tasks by revoking their tokens locally and flipping status to
+        ``"killed"``. NO wire call to the remote — per Decision 7, the
+        remote owns its own lifecycle.
+
+        Safe to call when ``registry`` is None (no remote_agents
+        configured) — in that case it's a no-op.
+        """
+        if registry is None:
+            return
+        killed_ids: list[str] = []
+        for state in list(entry.remote_tasks.values()):
+            if state.is_terminal:
+                continue
+            registry.revoke(state.token)
+            state.status = "killed"
+            # Pair last_update with last_update_monotonic — same contract
+            # as handler.py, dispatch.py, and task_ops.py: both must be
+            # written together on every state change so task_list/task_get
+            # don't surface a stale wall-clock timestamp to the LLM.
+            state.last_update = datetime.now(UTC)
+            state.last_update_monotonic = time.monotonic()
+            killed_ids.append(state.task_id)
+        if killed_ids:
+            logger.info(
+                f"[A2A] revoked in-flight remote tasks on cancel | "
+                f"count={len(killed_ids)} task_ids={killed_ids}"
+            )
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         task_id = context.task_id
@@ -904,6 +1138,10 @@ class ObelixAgentExecutor(AgentExecutor):
                 entry.trace_session = None
                 entry.trace_span = None
 
+            # Sweep any other in-flight remote tasks (besides the deferred
+            # one) — see Decision 7. NO wire call.
+            self._revoke_in_flight_remote_tokens(entry, self._registry)
+
             await event_queue.enqueue_event(
                 TaskStatusUpdateEvent(
                     task_id=task_id,
@@ -957,3 +1195,245 @@ class ObelixAgentExecutor(AgentExecutor):
                 finally:
                     set_current_trace(prior_trace)
                     set_current_span(prior_span)
+
+    async def spawn_drain_task(
+        self,
+        *,
+        entry: ContextEntry,
+        context_id: str,
+    ) -> None:
+        """Spawn a new A2A task internally to drain pending notifications.
+
+        Fire-and-forget: schedules a background asyncio task and returns
+        immediately. The drain logic relies on ``entry.idle.is_set()`` for
+        deduplication — the spawned coroutine clears idle as its first action
+        (inherited from the standard executor pipeline via _run_agent).
+
+        Called by ``maybe_spawn_drain_task`` from webhook.py and polling.py
+        when notifications arrive on a context whose A2A task has terminated.
+        """
+        task_id = str(uuid.uuid4())
+        synthetic_message = Message(
+            message_id=str(uuid.uuid4()),
+            role=Role.user,
+            parts=[],
+            context_id=context_id,
+        )
+        logger.info(
+            f"[A2A drain] spawned task | task_id={task_id} context_id={context_id}"
+        )
+        asyncio.create_task(
+            self._run_drain_task(
+                task_id=task_id,
+                context_id=context_id,
+                entry=entry,
+                message=synthetic_message,
+            ),
+            name=f"drain-spawn-{task_id[:8]}",
+        )
+
+    async def _run_drain_task(
+        self,
+        *,
+        task_id: str,
+        context_id: str,
+        entry: ContextEntry,
+        message: Message,
+    ) -> None:
+        """Internal driver for a drain-spawned A2A task.
+
+        Calls ``_run_agent`` with ``is_drain_spawn=True``. Errors are logged but
+        not re-raised — the spawn is fire-and-forget.
+
+        TEMP-PATCH-SPEC-1: when ``entry.client_webhook_url`` is set AND a
+        shared ``httpx_client`` was passed to the executor, the event queue is
+        a ``_DrainSpawnEventQueue`` that POSTs each task state change to the
+        CLI webhook. Otherwise the event queue is a no-op (_NullEventQueue).
+        """
+        event_queue: _DrainSpawnEventQueue | _NullEventQueue
+        if entry.client_webhook_url and self._httpx_client is not None:
+            event_queue = _DrainSpawnEventQueue(
+                httpx_client=self._httpx_client,
+                webhook_url=entry.client_webhook_url,
+                webhook_token=entry.client_webhook_token or "",
+                task_id=task_id,
+                context_id=context_id,
+            )
+            logger.info(
+                f"[A2A drain] event_queue=DrainSpawnEventQueue "
+                f"task_id={task_id} target={entry.client_webhook_url}"
+            )
+        else:
+            event_queue = _NullEventQueue()
+            logger.warning(
+                f"[A2A drain] event_queue=NullEventQueue (NO POST to CLI) "
+                f"task_id={task_id} client_webhook_url={entry.client_webhook_url!r} "
+                f"httpx_client_set={self._httpx_client is not None}"
+            )
+
+        # Drain pending_notifications into the agent history BEFORE running.
+        # The drain-spawn path bypasses ``execute()`` (where the same drain
+        # lives at lines 334-341), so we replicate it here. Same swap-pattern
+        # to avoid losing notifications that arrive concurrently from the
+        # webhook/polling worker.
+        if entry.pending_notifications:
+            drained = entry.pending_notifications
+            entry.pending_notifications = []
+            entry.history.extend(drained)
+
+        try:
+            await self._run_agent(
+                task_id=task_id,
+                context_id=context_id,
+                user_text="",
+                attachments=[],
+                entry=entry,
+                event_queue=event_queue,
+                is_resume=False,
+                is_drain_spawn=True,
+            )
+        except Exception as e:
+            logger.exception(
+                f"[A2A drain] spawned task failed | task_id={task_id} error={e}"
+            )
+
+
+class _NullEventQueue:
+    """Drop-in replacement for an absent A2A event_queue used by drain-spawn
+    tasks where the result is delivered via the temp webhook patch instead.
+    TEMP-PATCH-SPEC-1.
+    """
+
+    async def enqueue_event(self, event) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+
+class _DrainSpawnEventQueue:
+    """TEMP-PATCH-SPEC-1: For drain-spawn tasks, sniffs A2A events and POSTs
+    the assembled Task to entry.client_webhook_url. Best-effort; no retry.
+
+    Removed when spec 2 (CLI streaming SSE) lands.
+
+    Behavior:
+    - On a ``Task`` event, POSTs the task as-is.
+    - On a ``TaskStatusUpdateEvent``, reconstructs a minimal ``Task`` from
+      ``task_id``/``context_id``/``status`` and POSTs it.
+    - On a ``TaskArtifactUpdateEvent``, no POST: artifact deltas are
+      delivered via the eventual completed status update.
+    - Dedupes consecutive POSTs that share the same ``status.state`` (avoids
+      storms when the executor emits multiple working/working updates).
+    - Swallows POST failures (5xx / network errors / timeout) — best-effort.
+    """
+
+    def __init__(
+        self,
+        *,
+        httpx_client,
+        webhook_url: str,
+        webhook_token: str,
+        task_id: str,
+        context_id: str,
+    ) -> None:
+        self._httpx_client = httpx_client
+        self._webhook_url = webhook_url
+        self._webhook_token = webhook_token
+        self._task_id = task_id
+        self._context_id = context_id
+        # Accumulated artifacts (keyed by artifact_id) so each POST carries
+        # the cumulative artifact list, not just the most recent delta.
+        # The agent stream emits N TaskArtifactUpdateEvent (one per chunk
+        # in streaming mode) — these MUST be merged before forwarding the
+        # final Task to the CLI, otherwise the CLI sees ``completed`` with
+        # an empty payload.
+        # ``Artifact`` resolved at runtime via the import inside enqueue_event;
+        # the dict value type is intentionally untyped here to avoid an extra
+        # top-level a2a.types import for a single annotation.
+        self._artifacts: dict = {}
+
+    async def enqueue_event(self, event) -> None:
+        from a2a.types import (
+            Task,
+            TaskArtifactUpdateEvent,
+            TaskStatusUpdateEvent,
+        )
+
+        evt_type = type(event).__name__
+        logger.info(
+            f"[A2A drain] enqueue_event task_id={self._task_id} type={evt_type}"
+        )
+        if isinstance(event, Task):
+            # Full Task event: trust its artifacts as authoritative.
+            if event.artifacts:
+                for art in event.artifacts:
+                    self._artifacts[art.artifact_id] = art
+            await self._post(event)
+        elif isinstance(event, TaskArtifactUpdateEvent):
+            # Merge into the accumulator. ``append=True`` extends parts of
+            # an existing artifact (streaming chunks); otherwise replace.
+            self._merge_artifact_update(event)
+            logger.info(
+                f"[A2A drain] merged ArtifactUpdate task_id={self._task_id} "
+                f"total_artifacts={len(self._artifacts)}"
+            )
+        elif isinstance(event, TaskStatusUpdateEvent):
+            # Reconstruct a Task from the event AND attach accumulated artifacts.
+            artifacts = list(self._artifacts.values()) or None
+            task = Task(
+                id=self._task_id,
+                context_id=self._context_id,
+                status=event.status,
+                artifacts=artifacts,
+            )
+            await self._post(task)
+        else:
+            logger.warning(
+                f"[A2A drain] UNRECOGNIZED event type={evt_type} task_id={self._task_id}"
+            )
+
+    def _merge_artifact_update(self, event) -> None:
+        """Apply ``TaskArtifactUpdateEvent`` to ``self._artifacts``.
+
+        - ``append=True`` and same artifact_id present: extend ``parts``
+          on the existing artifact (streaming chunks).
+        - Otherwise: replace (or insert if new artifact_id).
+        """
+        new = event.artifact
+        existing = self._artifacts.get(new.artifact_id)
+        if event.append and existing is not None:
+            existing.parts = list(existing.parts or []) + list(new.parts or [])
+        else:
+            self._artifacts[new.artifact_id] = new
+
+    async def close(self) -> None:
+        return None
+
+    async def _post(self, task) -> None:
+        # NOTE: no dedup-by-state. Two consecutive ``working`` updates carry
+        # different payloads (e.g. the second has the agent's
+        # ``status.message`` attached) and both must reach the CLI.
+        try:
+            state = task.status.state.value
+            payload = task.model_dump(mode="json", exclude_none=True)
+            logger.info(
+                f"[A2A drain] _post POSTING task_id={self._task_id} state={state} "
+                f"artifacts={len(task.artifacts or [])} url={self._webhook_url}"
+            )
+            response = await self._httpx_client.post(
+                self._webhook_url,
+                json=payload,
+                headers={"X-A2A-Notification-Token": self._webhook_token},
+                timeout=5.0,
+            )
+            response.raise_for_status()
+            logger.info(
+                f"[A2A drain] _post OK task_id={self._task_id} state={state} "
+                f"http_status={response.status_code}"
+            )
+        except Exception as e:
+            logger.warning(
+                f"[A2A drain] webhook POST failed task_id={self._task_id} error={e}",
+                exc_info=True,
+            )
