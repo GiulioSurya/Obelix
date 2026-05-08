@@ -1283,8 +1283,12 @@ class ObelixAgentExecutor(AgentExecutor):
 
 
 class _NullEventQueue:
-    """Drop-in replacement for an absent A2A event_queue used by drain-spawn
-    tasks where the result is delivered via the temp webhook patch instead.
+    """No-op EventQueue for drain-spawn tasks in spec 2 (interim).
+
+    Drain-spawn state is observed by polling clients via TaskStore
+    metadata patches (Tasks 4-7). This class is deleted in Task 5
+    once the SDK's normal EventQueue handles drain-spawn directly.
+
     TEMP-PATCH-SPEC-1.
     """
 

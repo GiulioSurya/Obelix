@@ -65,3 +65,11 @@ def test_executor_no_longer_accepts_httpx_client():
             task_store=store,
             httpx_client=httpx.AsyncClient(),
         )
+
+
+def test_executor_defaults_task_store_to_none():
+    """Spec 2 keeps task_store optional so non-A2A code paths can construct
+    the executor without an SDK store. Tasks 4-7 must guard against the
+    None case; this test pins the default."""
+    executor = ObelixAgentExecutor(agent_factory=_agent_factory)
+    assert executor._task_store is None
