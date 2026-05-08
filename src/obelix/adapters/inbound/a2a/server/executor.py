@@ -1014,8 +1014,8 @@ class ObelixAgentExecutor(AgentExecutor):
                     agent.system_message.content += fragment
                     logger.info("[A2A] Injected client shell info into system message")
 
-    @staticmethod
     def _inject_context_entry(
+        self,
         agent: BaseAgent,
         entry: ContextEntry,
         context_id: str,
@@ -1038,6 +1038,10 @@ class ObelixAgentExecutor(AgentExecutor):
         introspection fails (``TypeError`` or ``ValueError``, e.g., on
         MagicMock or C-extension callables), we fall back to the single-arg
         form ``setter(entry)``.
+
+        Additionally, any tool exposing ``set_task_store`` receives the
+        executor's TaskStore so it can patch parent-task metadata
+        (e.g. ``DispatchAgentTool.dispatched_peers``).
         """
         for tool in agent.registered_tools:
             setter = getattr(tool, "set_context_entry", None)
@@ -1054,6 +1058,15 @@ class ObelixAgentExecutor(AgentExecutor):
                 setter(entry, context_id=context_id)
             else:
                 setter(entry)
+
+        # Push the SDK TaskStore to any tool that wants it. Done in a
+        # second pass so the iteration order matches set_context_entry
+        # and a tool can opt into either, both, or neither setter.
+        if self._task_store is not None:
+            for tool in agent.registered_tools:
+                store_setter = getattr(tool, "set_task_store", None)
+                if callable(store_setter):
+                    store_setter(self._task_store)
 
     @staticmethod
     def _revoke_in_flight_remote_tokens(

@@ -13,6 +13,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from a2a.server.tasks.task_store import TaskStore
 from a2a.types import (
     Message,
     MessageSendConfiguration,
@@ -23,6 +24,7 @@ from a2a.types import (
 )
 from pydantic import Field
 
+from obelix.adapters.inbound.a2a.server.metadata_patch import update_task_metadata
 from obelix.adapters.outbound.a2a.state import RemoteTaskState
 from obelix.core.tool.tool_decorator import tool
 from obelix.infrastructure.logging import get_logger
@@ -77,6 +79,7 @@ class DispatchAgentTool:
         self._ctx_entry: ContextEntry | None = None
         self._context_id: str | None = None
         self._webhook_url: str | None = None
+        self._task_store: TaskStore | None = None
 
     def set_context_entry(self, entry: ContextEntry, *, context_id: str) -> None:
         """Inject the per-request ContextEntry and the surrounding context_id.
@@ -97,6 +100,16 @@ class DispatchAgentTool:
         Called once at registration time by AgentFactory.a2a_serve (T14).
         """
         self._webhook_url = url
+
+    def set_task_store(self, store: TaskStore) -> None:
+        """Inject the SDK TaskStore so the tool can patch T1.metadata.
+
+        Called by the executor's _inject_context_entry helper before the
+        agent runs. When non-None, dispatch surfaces each successful peer
+        delegation onto T_parent.metadata.dispatched_peers so polling
+        clients can render coordinator-level status.
+        """
+        self._task_store = store
 
     def system_prompt_fragment(self) -> str | None:
         """Build the LLM-visible block listing available remote agents.
@@ -208,6 +221,29 @@ class DispatchAgentTool:
             last_artifact=None,
             deferred_calls=None,
         )
+
+        # Surface the dispatched peer on T_parent.metadata.dispatched_peers
+        # so polling clients can render coordinator-level status (spec 2 §2).
+        # parent_task_id is the in-flight T1 set by the executor on
+        # ``entry.current_task_id`` at the top of ``_run_agent``.
+        parent_task_id = (
+            self._ctx_entry.current_task_id if self._ctx_entry is not None else None
+        )
+        if self._task_store is not None and parent_task_id is not None:
+
+            async def _append(meta: dict) -> dict:
+                peers = list(meta.get("dispatched_peers", []))
+                peers.append(
+                    {
+                        "name": self.agent_name,
+                        "task_id": task.id,
+                        "state": "working",
+                    }
+                )
+                meta["dispatched_peers"] = peers
+                return meta
+
+            await update_task_metadata(self._task_store, parent_task_id, _append)
 
         logger.info(
             f"[A2A dispatch] task launched | agent={self.agent_name} "

@@ -15,6 +15,17 @@ from obelix.adapters.outbound.a2a.state import RemoteTaskState
 from obelix.core.model.human_message import HumanMessage
 
 
+def _executor() -> ObelixAgentExecutor:
+    """Build an executor instance for tests that exercise instance methods.
+
+    ``_inject_context_entry`` became a regular method (Task 6) so it can
+    consult ``self._task_store`` for the second injection pass; tests that
+    used to call it on the class now create a minimal executor with a
+    no-op factory.
+    """
+    return ObelixAgentExecutor(agent_factory=lambda: MagicMock())
+
+
 def _running_remote_task() -> RemoteTaskState:
     return RemoteTaskState(
         task_id="t-1",
@@ -41,7 +52,7 @@ def test_inject_context_entry_calls_set_on_supporting_tools():
     agent.registered_tools = [tool_a, tool_b]
 
     entry = ContextEntry()
-    ObelixAgentExecutor._inject_context_entry(agent, entry, "ctx-MARIO")
+    _executor()._inject_context_entry(agent, entry, "ctx-MARIO")
 
     tool_a.set_context_entry.assert_called_once()
 
@@ -63,7 +74,7 @@ def test_inject_context_entry_passes_context_id_when_signature_accepts():
     agent.registered_tools = [tool_with_ctx]
 
     entry = ContextEntry()
-    ObelixAgentExecutor._inject_context_entry(agent, entry, "ctx-MARIO")
+    _executor()._inject_context_entry(agent, entry, "ctx-MARIO")
 
     assert _set_with_ctx.received == (entry, "ctx-MARIO")
 
@@ -82,7 +93,7 @@ def test_inject_context_entry_omits_context_id_when_signature_lacks_it():
     agent.registered_tools = [tool_simple]
 
     entry = ContextEntry()
-    ObelixAgentExecutor._inject_context_entry(agent, entry, "ctx-MARIO")
+    _executor()._inject_context_entry(agent, entry, "ctx-MARIO")
 
     assert _set_simple.received is entry
 
@@ -93,7 +104,7 @@ def test_inject_context_entry_handles_no_tools():
     agent.registered_tools = []
     entry = ContextEntry()
     # Must not raise.
-    ObelixAgentExecutor._inject_context_entry(agent, entry, "ctx-MARIO")
+    _executor()._inject_context_entry(agent, entry, "ctx-MARIO")
 
 
 def test_inject_context_entry_falls_back_when_signature_fails():
@@ -130,7 +141,7 @@ def test_inject_context_entry_falls_back_when_signature_fails():
         "obelix.adapters.inbound.a2a.server.executor.inspect.signature",
         side_effect=_raising_signature,
     ):
-        ObelixAgentExecutor._inject_context_entry(agent, entry, "ctx-MARIO")
+        _executor()._inject_context_entry(agent, entry, "ctx-MARIO")
 
     # Despite signature inspection failing, the setter was still called
     # with just the entry (single-arg fallback).
@@ -151,7 +162,7 @@ def test_inject_context_entry_propagates_setter_exceptions():
 
     entry = ContextEntry()
     with pytest.raises(RuntimeError, match="broken setter"):
-        ObelixAgentExecutor._inject_context_entry(agent, entry, "ctx-MARIO")
+        _executor()._inject_context_entry(agent, entry, "ctx-MARIO")
 
 
 # ── pending_notifications drain logic ─────────────────────────────────────
