@@ -8,12 +8,12 @@ Iron rule: we never mock a2a.* symbols; the SDK runs against itself.
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
-from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
+from a2a.client import A2ACardResolver, Client, ClientConfig, ClientFactory
 from a2a.server.agent_execution.agent_executor import AgentExecutor
+from a2a.server.agent_execution.context import RequestContext
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.events.event_queue import EventQueue
 from a2a.server.request_handlers.default_request_handler import (
@@ -27,10 +27,10 @@ class _NoopExecutor(AgentExecutor):
     """Default executor used when a test only needs the request handlers
     (tasks/get, tasks/cancel) — never produces events, never runs an agent."""
 
-    async def execute(self, context, event_queue: EventQueue) -> None:  # noqa: D401
+    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:  # noqa: D401
         return
 
-    async def cancel(self, context, event_queue: EventQueue) -> None:  # noqa: D401
+    async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:  # noqa: D401
         return
 
 
@@ -42,7 +42,7 @@ def _default_card(url: str = "http://fake-a2a") -> AgentCard:
         version="0.0.0",
         capabilities=AgentCapabilities(
             streaming=True,
-            push_notifications=True,
+            push_notifications=False,  # spec-2 polling-only fixture
             supports_authenticated_extended_card=False,
         ),
         skills=[
@@ -98,7 +98,7 @@ class FakeA2AServer:
             timeout=30.0,
         )
         self._streaming = streaming
-        self.client = None  # populated in __aenter__
+        self.client: Client | None = None  # populated in __aenter__; use 'async with'
 
     async def __aenter__(self) -> FakeA2AServer:
         resolver = A2ACardResolver(httpx_client=self._httpx, base_url=self._card.url)
@@ -117,13 +117,6 @@ class FakeA2AServer:
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
         await self._httpx.aclose()
-
-    @asynccontextmanager
-    async def lifespan(self):
-        """Convenience: ``async with server.lifespan(): ...`` for tests
-        that don't want to use the class itself as a context manager."""
-        async with self as s:
-            yield s
 
 
 def make_server(
