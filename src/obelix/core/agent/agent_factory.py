@@ -25,27 +25,6 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-# Wildcard bind addresses that are valid for ``uvicorn.bind()`` but NOT
-# routable as client endpoints. Used by ``_resolve_webhook_host`` so that
-# the auto-built webhook URL passed to remote agents resolves to loopback
-# instead of "0.0.0.0:8005" (which fails connection-refused).
-_WILDCARD_BIND_HOSTS = {"0.0.0.0", "::", "0:0:0:0:0:0:0:0"}
-
-
-def _resolve_webhook_host(host: str) -> str:
-    """Translate a bind host to a client-routable host for the webhook URL.
-
-    When ``a2a_serve`` is called with the default ``host="0.0.0.0"`` (or any
-    wildcard), the bind address is fine for uvicorn but cannot be used as
-    a destination URL by remote agents POSTing back to us. Replace it with
-    ``127.0.0.1`` so same-host peers reach us. For cross-host deployments,
-    callers must pass an explicit ``endpoint=...`` (handled separately).
-    """
-    if host in _WILDCARD_BIND_HOSTS:
-        return "127.0.0.1"
-    return host
-
-
 @dataclass
 class AgentSpec:
     """
@@ -663,18 +642,11 @@ class AgentFactory:
             asyncio.run(_resolve_with_timeout())
 
             # Webhook URL: prefer explicit endpoint override, else bind addr.
-            # IMPORTANT: ``host`` may be a wildcard bind (``0.0.0.0`` or ``::``)
-            # which is fine for uvicorn.bind() but is NOT a routable endpoint
-            # for remote agents that need to POST back. Rewrite wildcard to
-            # loopback (``127.0.0.1``) so same-host peers can reach us. For
-            # cross-host deployments, callers MUST pass an explicit
-            # ``endpoint=...`` argument with the publicly reachable URL.
-            webhook_host_for_url = _resolve_webhook_host(host)
-            base_url = (
-                endpoint.rstrip("/")
-                if endpoint
-                else f"http://{webhook_host_for_url}:{port}"
-            )
+            # For cross-host deployments, callers MUST pass an explicit
+            # ``endpoint=...`` argument with the publicly reachable URL —
+            # passing a wildcard bind address (``0.0.0.0`` or ``::``) here
+            # will produce a non-routable URL.
+            base_url = endpoint.rstrip("/") if endpoint else f"http://{host}:{port}"
             webhook_url = f"{base_url}/webhook"
 
             # PollingWorker construction is deferred until after the
