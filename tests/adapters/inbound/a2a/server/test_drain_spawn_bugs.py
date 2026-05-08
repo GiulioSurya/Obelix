@@ -1,5 +1,15 @@
 """Regression tests for the drain-spawn path.
 
+NOTE (spec 2, Task 5): These tests build the executor without a TaskStore
+and call ``_run_drain_task`` directly, relying on the now-deleted
+``_NullEventQueue`` to swallow events without persisting state. Task 5
+rewires the drainer onto the SDK's normal ``EventQueue + EventConsumer +
+TaskManager`` pipeline, which requires a real ``TaskStore``. These three
+tests are therefore skipped here and rewritten in Task 16 against the
+new pipeline (with a real ``InMemoryTaskStore`` so the agent run actually
+persists artifact + status). The new equivalent end-to-end coverage lives
+in ``test_drain_run_writes_to_store.py``.
+
 Two structural bugs were discovered during the spec-1 smoke test and
 fixed in the same commit as these tests:
 
@@ -43,6 +53,20 @@ from obelix.core.model.assistant_message import AssistantMessage
 from obelix.core.model.human_message import HumanMessage
 from obelix.core.model.usage import Usage
 from obelix.infrastructure.providers import Providers
+
+# Spec 2 / Task 5: drainer now drives a real SDK EventQueue +
+# EventConsumer + TaskManager. The legacy assertions in this file inspect
+# state that requires the drainer's old _NullEventQueue (deleted) and a
+# missing TaskStore (now mandatory). Task 16 rewrites the equivalent
+# coverage against the new pipeline with a real InMemoryTaskStore. The
+# end-to-end shape is already exercised in test_drain_run_writes_to_store.
+pytestmark = pytest.mark.skip(
+    reason=(
+        "Legacy drain-spawn assertions: rewritten in Task 16 against the "
+        "new SDK pipeline. See test_drain_run_writes_to_store.py for the "
+        "current end-to-end coverage."
+    )
+)
 
 
 class _FakeProvider:

@@ -1290,20 +1290,23 @@ class ObelixAgentExecutor(AgentExecutor):
     ) -> None:
         """Internal driver for a drain-spawned A2A task.
 
-        Calls ``_run_agent`` with ``is_drain_spawn=True``. Errors are logged but
-        not re-raised — the spawn is fire-and-forget.
+        Drives the drain-spawned task through the SDK's normal event pipeline
+        (``EventQueue`` -> ``EventConsumer`` -> ``TaskManager``) so that
+        ``TaskStatusUpdateEvent`` / ``TaskArtifactUpdateEvent`` emitted by
+        ``_run_agent_impl`` land in ``self._task_store``. A polling client
+        then observes the artifact + completed status via ``tasks/get(T3)``.
 
-        Spec 2: the executor no longer holds an httpx_client (the CLI webhook
-        is gone — replaced by polling). Drain-spawn now always uses a no-op
-        event queue. The drain-spawn path itself is rewritten in Task 16 to
-        publish state via TaskStore metadata patches that polling clients
-        observe directly.
+        T3 is already pre-registered in the store by ``spawn_drain_task``
+        (Task 4), so ``TaskManager`` just updates the existing row.
+
+        Errors are logged but not re-raised — the spawn is fire-and-forget.
         """
-        event_queue: _NullEventQueue = _NullEventQueue()
-        logger.info(
-            f"[A2A drain] event_queue=NullEventQueue (spec 2 - polling) "
-            f"task_id={task_id}"
-        )
+        if self._task_store is None:
+            logger.warning(
+                f"[A2A drain] no task_store available, skipping drain spawn "
+                f"task_id={task_id}"
+            )
+            return
 
         # Drain pending_notifications into the agent history BEFORE running.
         # The drain-spawn path bypasses ``execute()`` (where the same drain
@@ -1315,6 +1318,31 @@ class ObelixAgentExecutor(AgentExecutor):
             entry.pending_notifications = []
             entry.history.extend(drained)
 
+        from a2a.server.events.event_consumer import EventConsumer
+        from a2a.server.tasks.task_manager import TaskManager
+
+        queue = EventQueue()
+        task_manager = TaskManager(
+            task_id=task_id,
+            context_id=context_id,
+            task_store=self._task_store,
+            initial_message=None,
+        )
+        consumer = EventConsumer(queue=queue)
+
+        async def _drive_consumer() -> None:
+            # Pull events from the queue and feed each one through the
+            # TaskManager so the SDK persists status + artifacts on
+            # ``self._task_store``. Exit when the consumer signals end of
+            # stream (final TaskStatusUpdateEvent or queue closed).
+            async for event in consumer.consume_all():
+                await task_manager.process(event)
+
+        consumer_task = asyncio.create_task(
+            _drive_consumer(),
+            name=f"drain-consume-{task_id[:8]}",
+        )
+
         try:
             await self._run_agent(
                 task_id=task_id,
@@ -1322,7 +1350,7 @@ class ObelixAgentExecutor(AgentExecutor):
                 user_text="",
                 attachments=[],
                 entry=entry,
-                event_queue=event_queue,
+                event_queue=queue,
                 is_resume=False,
                 is_drain_spawn=True,
             )
@@ -1330,148 +1358,22 @@ class ObelixAgentExecutor(AgentExecutor):
             logger.exception(
                 f"[A2A drain] spawned task failed | task_id={task_id} error={e}"
             )
-
-
-class _NullEventQueue:
-    """No-op EventQueue for drain-spawn tasks in spec 2 (interim).
-
-    Drain-spawn state is observed by polling clients via TaskStore
-    metadata patches (Tasks 4-7). This class is deleted in Task 5
-    once the SDK's normal EventQueue handles drain-spawn directly.
-
-    TEMP-PATCH-SPEC-1.
-    """
-
-    async def enqueue_event(self, event) -> None:
-        return None
-
-    async def close(self) -> None:
-        return None
-
-
-class _DrainSpawnEventQueue:
-    """TEMP-PATCH-SPEC-1: For drain-spawn tasks, sniffs A2A events and POSTs
-    the assembled Task to entry.client_webhook_url. Best-effort; no retry.
-
-    Removed when spec 2 (CLI streaming SSE) lands.
-
-    Behavior:
-    - On a ``Task`` event, POSTs the task as-is.
-    - On a ``TaskStatusUpdateEvent``, reconstructs a minimal ``Task`` from
-      ``task_id``/``context_id``/``status`` and POSTs it.
-    - On a ``TaskArtifactUpdateEvent``, no POST: artifact deltas are
-      delivered via the eventual completed status update.
-    - Dedupes consecutive POSTs that share the same ``status.state`` (avoids
-      storms when the executor emits multiple working/working updates).
-    - Swallows POST failures (5xx / network errors / timeout) — best-effort.
-    """
-
-    def __init__(
-        self,
-        *,
-        httpx_client,
-        webhook_url: str,
-        webhook_token: str,
-        task_id: str,
-        context_id: str,
-    ) -> None:
-        self._httpx_client = httpx_client
-        self._webhook_url = webhook_url
-        self._webhook_token = webhook_token
-        self._task_id = task_id
-        self._context_id = context_id
-        # Accumulated artifacts (keyed by artifact_id) so each POST carries
-        # the cumulative artifact list, not just the most recent delta.
-        # The agent stream emits N TaskArtifactUpdateEvent (one per chunk
-        # in streaming mode) — these MUST be merged before forwarding the
-        # final Task to the CLI, otherwise the CLI sees ``completed`` with
-        # an empty payload.
-        # ``Artifact`` resolved at runtime via the import inside enqueue_event;
-        # the dict value type is intentionally untyped here to avoid an extra
-        # top-level a2a.types import for a single annotation.
-        self._artifacts: dict = {}
-
-    async def enqueue_event(self, event) -> None:
-        from a2a.types import (
-            Task,
-            TaskArtifactUpdateEvent,
-            TaskStatusUpdateEvent,
-        )
-
-        evt_type = type(event).__name__
-        logger.info(
-            f"[A2A drain] enqueue_event task_id={self._task_id} type={evt_type}"
-        )
-        if isinstance(event, Task):
-            # Full Task event: trust its artifacts as authoritative.
-            if event.artifacts:
-                for art in event.artifacts:
-                    self._artifacts[art.artifact_id] = art
-            await self._post(event)
-        elif isinstance(event, TaskArtifactUpdateEvent):
-            # Merge into the accumulator. ``append=True`` extends parts of
-            # an existing artifact (streaming chunks); otherwise replace.
-            self._merge_artifact_update(event)
-            logger.info(
-                f"[A2A drain] merged ArtifactUpdate task_id={self._task_id} "
-                f"total_artifacts={len(self._artifacts)}"
-            )
-        elif isinstance(event, TaskStatusUpdateEvent):
-            # Reconstruct a Task from the event AND attach accumulated artifacts.
-            artifacts = list(self._artifacts.values()) or None
-            task = Task(
-                id=self._task_id,
-                context_id=self._context_id,
-                status=event.status,
-                artifacts=artifacts,
-            )
-            await self._post(task)
-        else:
-            logger.warning(
-                f"[A2A drain] UNRECOGNIZED event type={evt_type} task_id={self._task_id}"
-            )
-
-    def _merge_artifact_update(self, event) -> None:
-        """Apply ``TaskArtifactUpdateEvent`` to ``self._artifacts``.
-
-        - ``append=True`` and same artifact_id present: extend ``parts``
-          on the existing artifact (streaming chunks).
-        - Otherwise: replace (or insert if new artifact_id).
-        """
-        new = event.artifact
-        existing = self._artifacts.get(new.artifact_id)
-        if event.append and existing is not None:
-            existing.parts = list(existing.parts or []) + list(new.parts or [])
-        else:
-            self._artifacts[new.artifact_id] = new
-
-    async def close(self) -> None:
-        return None
-
-    async def _post(self, task) -> None:
-        # NOTE: no dedup-by-state. Two consecutive ``working`` updates carry
-        # different payloads (e.g. the second has the agent's
-        # ``status.message`` attached) and both must reach the CLI.
-        try:
-            state = task.status.state.value
-            payload = task.model_dump(mode="json", exclude_none=True)
-            logger.info(
-                f"[A2A drain] _post POSTING task_id={self._task_id} state={state} "
-                f"artifacts={len(task.artifacts or [])} url={self._webhook_url}"
-            )
-            response = await self._httpx_client.post(
-                self._webhook_url,
-                json=payload,
-                headers={"X-A2A-Notification-Token": self._webhook_token},
-                timeout=5.0,
-            )
-            response.raise_for_status()
-            logger.info(
-                f"[A2A drain] _post OK task_id={self._task_id} state={state} "
-                f"http_status={response.status_code}"
-            )
-        except Exception as e:
-            logger.warning(
-                f"[A2A drain] webhook POST failed task_id={self._task_id} error={e}",
-                exc_info=True,
-            )
+        finally:
+            # _run_agent_impl emits a final TaskStatusUpdateEvent
+            # (final=True) on completed/failed/canceled/rejected; the
+            # EventConsumer closes the queue right after seeing it. Ensure
+            # the queue is closed if for some reason no final event was
+            # produced (defensive belt + suspenders) so the consumer can
+            # exit instead of timing out.
+            if not queue.is_closed():
+                try:
+                    await queue.close()
+                except Exception:  # pragma: no cover - defensive
+                    pass
+            try:
+                await asyncio.wait_for(consumer_task, timeout=5.0)
+            except TimeoutError:
+                logger.warning(
+                    f"[A2A drain] consumer did not finish within 5s task_id={task_id}"
+                )
+                consumer_task.cancel()
