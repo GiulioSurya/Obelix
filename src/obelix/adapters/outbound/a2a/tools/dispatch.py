@@ -225,10 +225,11 @@ class DispatchAgentTool:
         # Surface the dispatched peer on T_parent.metadata.dispatched_peers
         # so polling clients can render coordinator-level status (spec 2 §2).
         # parent_task_id is the in-flight T1 set by the executor on
-        # ``entry.current_task_id`` at the top of ``_run_agent``.
-        parent_task_id = (
-            self._ctx_entry.current_task_id if self._ctx_entry is not None else None
-        )
+        # ``entry.current_task_id`` at the top of ``_run_agent``. The
+        # ``self._ctx_entry is not None`` guard above (lines 133-137) already
+        # raises if the entry was never injected, so dereferencing it here
+        # is safe.
+        parent_task_id = self._ctx_entry.current_task_id
         if self._task_store is not None and parent_task_id is not None:
 
             async def _append(meta: dict) -> dict:

@@ -136,3 +136,44 @@ async def test_dispatch_skips_metadata_write_when_task_store_unset():
         )
         assert result.status == ToolStatus.SUCCESS
         assert result.result["status"] == "submitted"  # works regardless
+
+
+@pytest.mark.asyncio
+async def test_dispatch_skips_metadata_write_when_no_current_task_id():
+    """If entry.current_task_id is None (no parent task in flight), the
+    metadata-patch branch must not fire — even if a task_store is injected.
+    Covers the half of the guard not tested by
+    test_dispatch_skips_metadata_write_when_task_store_unset."""
+    async with FakeA2AServer(executor=_SubmittedTaskExecutor()) as remote:
+        local_store = InMemoryTaskStore()
+        # Note: no T1 seeded — no parent task at all.
+
+        import httpx
+
+        # FRAGILE: splices private attrs because RemoteAgentRegistry has no
+        # public add() API. Same pattern as the other two tests in this file.
+        registry = RemoteAgentRegistry(urls=[], httpx_client=httpx.AsyncClient())
+        remote_name = remote._card.name
+        registry._cards[remote_name] = remote._card
+        registry._clients[remote_name] = remote.client
+
+        entry = ContextEntry()
+        entry.context_id = "ctx-1"
+        entry.current_task_id = None  # NO parent task
+
+        tool = DispatchAgentTool(registry=registry)
+        tool.set_context_entry(entry, context_id="ctx-1")
+        tool.set_webhook_url("http://placeholder/webhook")
+        tool.set_task_store(local_store)
+
+        result = await tool.execute(
+            _make_call({"agent_name": remote_name, "query": "do something"})
+        )
+        assert result.status == ToolStatus.SUCCESS
+        assert result.result["status"] == "submitted"
+
+        # No T1 in store -> no metadata anywhere -> nothing to assert beyond
+        # "didn't crash and didn't try to patch a non-existent task". The
+        # update_task_metadata helper no-ops on missing tasks (Task 3 contract).
+        # Verify no T1 was created accidentally.
+        assert await local_store.get("t1") is None
