@@ -313,9 +313,6 @@ class ObelixAgentExecutor(AgentExecutor):
         async with self._store_lock:
             entry = self._store.get_or_create(context_id)
 
-        # TEMP-PATCH-SPEC-1
-        self._apply_webhook_metadata_patch(entry=entry, metadata=message.metadata)
-
         # Serialize requests on the same context
         await entry.idle.wait()
         entry.idle.clear()
@@ -975,24 +972,6 @@ class ObelixAgentExecutor(AgentExecutor):
         # Normal termination (completed / rejected / failed): not suspended
         # for deferred input, so the caller should close the trace.
         return False
-
-    def _apply_webhook_metadata_patch(
-        self,
-        *,
-        entry: ContextEntry,
-        metadata: dict | None,
-    ) -> None:
-        """TEMP-PATCH-SPEC-1: read client webhook URL+token from Message
-        metadata on the first request of a context (first-write wins so a
-        reconnect on the same context_id cannot hijack the registration).
-
-        Removed when spec 2 (CLI streaming SSE) lands.
-        """
-        if not metadata:
-            return
-        if entry.client_webhook_url is None:
-            entry.client_webhook_url = metadata.get("client_webhook_url")
-            entry.client_webhook_token = metadata.get("client_webhook_token")
 
     @staticmethod
     def _inject_client_info(agent: BaseAgent, client_info: dict) -> None:

@@ -43,8 +43,6 @@ class ContextEntry:
         "failure_error",
         "remote_tasks",
         "pending_notifications",
-        "client_webhook_url",  # TEMP-PATCH-SPEC-1
-        "client_webhook_token",  # TEMP-PATCH-SPEC-1
         "current_task_id",
     )
 
@@ -93,11 +91,6 @@ class ContextEntry:
         # terminal/input_required state changes. Drained at the start of
         # the next request on this context (executor._run_agent_impl).
         self.pending_notifications: list[HumanMessage] = []
-        # TEMP-PATCH-SPEC-1: webhook URL + auth token sent by the CLI client
-        # in the metadata of its first Message; used by the drain-spawn POST
-        # in executor.py. Both removed when spec 2 (CLI streaming) lands.
-        self.client_webhook_url: str | None = None
-        self.client_webhook_token: str | None = None
         # task_id of the A2A task currently being processed by ``_run_agent``
         # on this context. Set at the top of every entry path in the executor
         # and cleared in the matching ``finally``. Drainer call sites
